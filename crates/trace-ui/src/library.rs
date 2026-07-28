@@ -11,9 +11,9 @@ use gtk::glib::{self, ControlFlow};
 use gtk::pango;
 use gtk::prelude::*;
 use gtk::{
-    AlertDialog, Align, AspectFrame, Box as GtkBox, Button, ContentFit, Entry, FlowBox,
-    FlowBoxChild, Grid, Image, Label, Orientation, Overlay, Picture, ScrolledWindow, SelectionMode,
-    Stack, Video,
+    Align, AspectFrame, Box as GtkBox, Button, ContentFit, Entry, FlowBox, FlowBoxChild, Grid,
+    Image, Label, Orientation, Overlay, Picture, Popover, PositionType, ScrolledWindow,
+    SelectionMode, Stack, Video,
 };
 use trace_core::clips::{self, Clip, ClipPreview};
 use trace_core::config::Config;
@@ -345,41 +345,62 @@ fn clip_card(clip: &Clip, state: &Rc<LibraryState>) -> (FlowBoxChild, PreviewWid
 }
 
 fn confirm_delete(button: &Button, clip: &Clip, state: &Rc<LibraryState>) {
-    let dialog = AlertDialog::builder()
-        .modal(true)
-        .message("Delete this clip?")
-        .detail(format!(
-            "{} will be permanently removed from this machine.",
-            clip.title
-        ))
-        .build();
-    dialog.set_buttons(&["Cancel", "Delete"]);
-    dialog.set_cancel_button(0);
-    dialog.set_default_button(0);
-    let parent = button
-        .root()
-        .and_then(|root| root.downcast::<gtk::Window>().ok());
+    let popover = Popover::new();
+    popover.add_css_class("delete-confirmation");
+    popover.set_position(PositionType::Bottom);
+    popover.set_autohide(true);
+    popover.set_parent(button);
+
+    let content = GtkBox::new(Orientation::Vertical, 5);
+    content.add_css_class("delete-confirmation-content");
+    let title = Label::new(Some("Delete clip?"));
+    title.add_css_class("delete-confirmation-title");
+    title.set_halign(Align::Start);
+    let detail = Label::new(Some(&clip.title));
+    detail.add_css_class("delete-confirmation-detail");
+    detail.set_halign(Align::Start);
+    detail.set_ellipsize(pango::EllipsizeMode::Middle);
+    detail.set_max_width_chars(32);
+    let warning = Label::new(Some("This permanently removes the local file."));
+    warning.add_css_class("delete-confirmation-warning");
+    warning.set_halign(Align::Start);
+    warning.set_margin_top(2);
+    let actions = GtkBox::new(Orientation::Horizontal, 8);
+    actions.set_halign(Align::End);
+    actions.set_margin_top(9);
+    let cancel = Button::with_label("Cancel");
+    cancel.add_css_class("popover-action");
+    let confirm = Button::with_label("Delete");
+    confirm.add_css_class("danger-action");
+    actions.append(&cancel);
+    actions.append(&confirm);
+    content.append(&title);
+    content.append(&detail);
+    content.append(&warning);
+    content.append(&actions);
+    popover.set_child(Some(&content));
+    popover.connect_closed(|popover| popover.unparent());
+
+    let cancelled = popover.clone();
+    cancel.connect_clicked(move |_| cancelled.popdown());
 
     let deleted = clip.clone();
     let delete_state = state.clone();
-    dialog.choose(
-        parent.as_ref(),
-        None::<&gio::Cancellable>,
-        move |response| {
-            if response == Ok(1) {
-                if let Err(error) = clips::delete(&deleted, &delete_state.thumbnail_directory) {
-                    delete_state
-                        .count
-                        .set_text(&format!("Could not delete clip: {error}"));
-                    delete_state.count.add_css_class("error");
-                } else {
-                    delete_state.count.remove_css_class("error");
-                    reload_clips(&delete_state, &delete_state.directory);
-                    render_clips(&delete_state);
-                }
-            }
-        },
-    );
+    let confirmed = popover.clone();
+    confirm.connect_clicked(move |_| {
+        confirmed.popdown();
+        if let Err(error) = clips::delete(&deleted, &delete_state.thumbnail_directory) {
+            delete_state
+                .count
+                .set_text(&format!("Could not delete clip: {error}"));
+            delete_state.count.add_css_class("error");
+        } else {
+            delete_state.count.remove_css_class("error");
+            reload_clips(&delete_state, &delete_state.directory);
+            render_clips(&delete_state);
+        }
+    });
+    popover.popup();
 }
 
 fn empty_state(directory: &std::path::Path) -> GtkBox {

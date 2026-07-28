@@ -202,6 +202,67 @@ button.clip-delete:hover {
   background: transparent;
 }
 
+popover.delete-confirmation contents {
+  padding: 0;
+  color: #e9ebf2;
+  background: @trace_surface;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
+}
+
+.delete-confirmation-content {
+  min-width: 246px;
+  padding: 16px;
+}
+
+.delete-confirmation-title {
+  color: #f2f3f7;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.delete-confirmation-detail {
+  color: #a4a8b4;
+  font-size: 11px;
+}
+
+.delete-confirmation-warning {
+  color: #666c7a;
+  font-size: 10px;
+}
+
+button.popover-action,
+button.danger-action {
+  min-height: 32px;
+  padding: 0 13px;
+  border-radius: 7px;
+  box-shadow: none;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+button.popover-action {
+  color: #aeb2bf;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+button.popover-action:hover {
+  color: #eef0f5;
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+button.danger-action {
+  color: #fff1f1;
+  background: #b9484f;
+  border: none;
+}
+
+button.danger-action:hover {
+  background: #ce555d;
+}
+
 .clip-title {
   color: #dfe1e8;
   font-size: 12px;
@@ -260,6 +321,13 @@ button.clip-delete:hover {
 .row-label {
   color: #a6aab7;
   font-size: 12px;
+}
+
+.gain-value {
+  color: #c7cad4;
+  font-size: 11px;
+  font-weight: 700;
+  font-feature-settings: "tnum";
 }
 
 separator {

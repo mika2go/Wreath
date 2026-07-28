@@ -201,7 +201,7 @@ fn install_responsive_layout(
         let width = window.width();
         let compact_sidebar = width < 760;
         let narrow_content = width < 980;
-        let compact_header = width < 700;
+        let compact_header = width < 820;
         let clip_columns = if width >= 1_120 {
             3
         } else if width >= 700 {

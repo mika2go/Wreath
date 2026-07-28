@@ -140,15 +140,15 @@ pub fn build() -> SettingsView {
     root.append(&control_grid);
 
     root.append(&section_separator());
-    root.append(&section_title("AUDIO & STORAGE"));
-    let final_grid = settings_grid();
-    grids.push(final_grid.clone());
+    root.append(&section_title("AUDIO"));
+    let audio_grid = settings_grid();
+    grids.push(audio_grid.clone());
     let desktop_audio = CheckButton::with_label("Desktop audio");
     desktop_audio.set_active(config.audio.desktop);
-    rows.push(attach_row(&final_grid, 0, "Audio", &desktop_audio));
-    let microphone = CheckButton::with_label("Microphone");
+    rows.push(attach_row(&audio_grid, 0, "System sound", &desktop_audio));
+    let microphone = CheckButton::with_label("Include microphone");
     microphone.set_active(config.audio.microphone);
-    rows.push(attach_row(&final_grid, 1, "", &microphone));
+    rows.push(attach_row(&audio_grid, 1, "Voice", &microphone));
     let microphone_model = microphone_model(&microphones);
     let microphone_dropdown = DropDown::new(Some(microphone_model), None::<gtk::Expression>);
     microphone_dropdown.set_hexpand(true);
@@ -156,21 +156,56 @@ pub fn build() -> SettingsView {
     microphone_dropdown.set_sensitive(config.audio.microphone && !microphones.is_empty());
     microphone_dropdown.set_tooltip_text(Some("PipeWire microphone used in new clips"));
     rows.push(attach_row(
-        &final_grid,
+        &audio_grid,
         2,
         "Input device",
         &microphone_dropdown,
     ));
+    let microphone_gain = Scale::with_range(Orientation::Horizontal, 0.0, 200.0, 5.0);
+    microphone_gain.set_value(f64::from(config.audio.microphone_gain_percent));
+    microphone_gain.set_draw_value(false);
+    microphone_gain.set_hexpand(true);
+    microphone_gain.set_sensitive(config.audio.microphone);
+    microphone_gain.set_tooltip_text(Some(
+        "Only changes microphone loudness in Trace recordings, never the system microphone volume",
+    ));
+    let microphone_gain_value =
+        Label::new(Some(&format!("{}%", config.audio.microphone_gain_percent)));
+    microphone_gain_value.add_css_class("gain-value");
+    microphone_gain_value.set_width_chars(4);
+    microphone_gain_value.set_xalign(1.0);
+    let microphone_gain_control = GtkBox::new(Orientation::Horizontal, 14);
+    microphone_gain_control.set_hexpand(true);
+    microphone_gain_control.append(&microphone_gain);
+    microphone_gain_control.append(&microphone_gain_value);
+    rows.push(attach_row(
+        &audio_grid,
+        3,
+        "Recording level",
+        &microphone_gain_control,
+    ));
+    let displayed_gain = microphone_gain_value.clone();
+    microphone_gain.connect_value_changed(move |scale| {
+        displayed_gain.set_text(&format!("{:.0}%", scale.value()));
+    });
     let microphone_toggle_dropdown = microphone_dropdown.clone();
+    let microphone_toggle_gain = microphone_gain.clone();
     let microphones_available = !microphones.is_empty();
     microphone.connect_toggled(move |toggle| {
         microphone_toggle_dropdown.set_sensitive(toggle.is_active() && microphones_available);
+        microphone_toggle_gain.set_sensitive(toggle.is_active());
     });
+    root.append(&audio_grid);
+
+    root.append(&section_separator());
+    root.append(&section_title("STORAGE"));
+    let storage_grid = settings_grid();
+    grids.push(storage_grid.clone());
     let output = Entry::new();
     output.set_text(&config.storage.directory.to_string_lossy());
     output.set_hexpand(true);
-    rows.push(attach_row(&final_grid, 3, "Save location", &output));
-    root.append(&final_grid);
+    rows.push(attach_row(&storage_grid, 0, "Save location", &output));
+    root.append(&storage_grid);
 
     let footer = GtkBox::new(Orientation::Horizontal, 18);
     footer.set_margin_top(32);
@@ -201,6 +236,7 @@ pub fn build() -> SettingsView {
             &microphone,
             &microphones,
             &microphone_dropdown,
+            &microphone_gain,
             &output,
         ) {
             Ok(()) => {
@@ -241,6 +277,7 @@ fn collect_and_save(
     microphone: &CheckButton,
     microphones: &[Microphone],
     microphone_dropdown: &DropDown,
+    microphone_gain: &Scale,
     output: &Entry,
 ) -> Result<(), String> {
     let mut config = Config::load(paths).unwrap_or_default();
@@ -270,6 +307,7 @@ fn collect_and_save(
     config.audio.microphone_device = microphones
         .get(microphone_index)
         .map(|microphone| microphone.name.clone());
+    config.audio.microphone_gain_percent = microphone_gain.value().round().clamp(0.0, 200.0) as u16;
     if config.audio.microphone && config.audio.microphone_device.is_none() {
         return Err("Select an available microphone.".into());
     }
