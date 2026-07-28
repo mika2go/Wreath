@@ -171,6 +171,7 @@ struct MicrophoneGainSource {
 
 impl MicrophoneGainSource {
     fn create(master: &str, gain_percent: u16) -> Result<Self, EngineError> {
+        Self::unload_stale_sources();
         let name = format!("trace_recording_mic_{}", std::process::id());
         let output = Command::new("pactl")
             .args([
@@ -213,6 +214,25 @@ impl MicrophoneGainSource {
         }
         Ok(source)
     }
+
+    fn unload_stale_sources() {
+        let Ok(output) = Command::new("pactl")
+            .args(["list", "short", "modules"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+        else {
+            return;
+        };
+        for module_id in stale_trace_module_ids(&String::from_utf8_lossy(&output.stdout)) {
+            let _ = Command::new("pactl")
+                .args(["unload-module", module_id.as_str()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
 }
 
 impl Drop for MicrophoneGainSource {
@@ -224,6 +244,21 @@ impl Drop for MicrophoneGainSource {
             .stderr(Stdio::null())
             .status();
     }
+}
+
+fn stale_trace_module_ids(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let module_id = fields.next()?;
+            let module_name = fields.next()?;
+            let arguments = fields.next()?;
+            (module_name == "module-remap-source"
+                && arguments.contains("source_name=trace_recording_mic_"))
+            .then(|| module_id.to_owned())
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -476,6 +511,16 @@ mod tests {
         );
         assert_eq!(nvidia.vendor, "nvidia");
         assert_eq!(nvidia.video_codecs, ["h264", "hevc"]);
+    }
+
+    #[test]
+    fn identifies_only_stale_trace_microphone_modules() {
+        let modules = concat!(
+            "10\tmodule-remap-source\tmaster=mic source_name=trace_recording_mic_123 remix=yes\t\n",
+            "11\tmodule-remap-source\tmaster=mic source_name=other_app\t\n",
+            "12\tmodule-null-sink\tsink_name=trace_recording_mic_456\t\n",
+        );
+        assert_eq!(stale_trace_module_ids(modules), ["10"]);
     }
 
     #[test]
