@@ -1,6 +1,10 @@
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::rc::Rc;
+use std::time::Duration;
 
+use gtk::glib;
 use gtk::prelude::*;
 use gtk::{
     Adjustment, Align, Box as GtkBox, Button, CheckButton, DropDown, Entry, Grid, Label,
@@ -222,7 +226,11 @@ pub fn build() -> SettingsView {
 
     let save_paths = paths.clone();
     let saved_feedback = feedback.clone();
+    let saved_apply = apply.clone();
+    let save_generation = Rc::new(Cell::new(0_u64));
     apply.connect_clicked(move |_| {
+        let generation = save_generation.get().wrapping_add(1);
+        save_generation.set(generation);
         match collect_and_save(
             &save_paths,
             &monitors,
@@ -240,12 +248,36 @@ pub fn build() -> SettingsView {
             &output,
         ) {
             Ok(()) => {
-                saved_feedback.set_text("Saved locally.");
+                saved_feedback.set_text("✓ Changes saved locally. Recorder updated.");
                 saved_feedback.remove_css_class("error");
+                saved_feedback.add_css_class("success");
+                saved_apply.set_label("✓ Saved");
+                saved_apply.add_css_class("saved");
+
+                let reset_apply = saved_apply.clone();
+                let reset_generation = save_generation.clone();
+                glib::timeout_add_local_once(Duration::from_millis(2200), move || {
+                    if reset_generation.get() == generation {
+                        reset_apply.set_label("Save changes");
+                        reset_apply.remove_css_class("saved");
+                    }
+                });
+
+                let reset_feedback = saved_feedback.clone();
+                let reset_generation = save_generation.clone();
+                glib::timeout_add_local_once(Duration::from_secs(5), move || {
+                    if reset_generation.get() == generation {
+                        reset_feedback.set_text("Everything stays on this machine.");
+                        reset_feedback.remove_css_class("success");
+                    }
+                });
             }
             Err(error) => {
                 saved_feedback.set_text(&error);
+                saved_feedback.remove_css_class("success");
                 saved_feedback.add_css_class("error");
+                saved_apply.set_label("Save changes");
+                saved_apply.remove_css_class("saved");
             }
         }
     });

@@ -179,7 +179,9 @@ impl MicrophoneGainSource {
                 &format!("master={master}"),
                 &format!("source_name={name}"),
                 "source_properties=device.description=TraceRecordingMicrophone",
-                "remix=no",
+                "channels=2",
+                "channel_map=front-left,front-right",
+                "remix=yes",
             ])
             .stdin(Stdio::null())
             .stderr(Stdio::piped())
@@ -242,8 +244,7 @@ impl GpuScreenRecorder {
         executable: impl AsRef<std::ffi::OsStr>,
     ) -> Result<Self, EngineError> {
         fs::create_dir_all(&spec.output_directory)?;
-        let microphone_gain_source = if spec.microphone_audio && spec.microphone_gain_percent != 100
-        {
+        let microphone_gain_source = if spec.microphone_audio {
             let master = spec
                 .microphone_device
                 .as_deref()

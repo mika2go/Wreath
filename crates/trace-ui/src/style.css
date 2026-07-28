@@ -414,6 +414,17 @@ button.primary-action:hover {
   background: @trace_accent_strong;
 }
 
+.feedback.success {
+  color: #76d9a3;
+  font-weight: 650;
+}
+
+button.primary-action.saved,
+button.primary-action.saved:hover {
+  color: #eafff2;
+  background: #33835b;
+}
+
 .feedback.error {
   color: #e58b8b;
 }
