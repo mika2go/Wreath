@@ -69,7 +69,7 @@ fn build_ui(application: &Application) {
     let brand = GtkBox::new(Orientation::Horizontal, 10);
     brand.add_css_class("brand");
     let mark = Image::from_icon_name("io.github.mika2go.Trace-symbolic");
-    mark.set_pixel_size(21);
+    mark.set_pixel_size(24);
     mark.add_css_class("brand-mark");
     let brand_name = Label::new(Some("TRACE"));
     brand_name.add_css_class("brand-name");
