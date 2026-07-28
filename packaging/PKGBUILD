@@ -5,7 +5,16 @@ pkgdesc="Lightweight local-first instant replay recorder for Hyprland"
 arch=('x86_64')
 url="https://github.com/mika2go/trace"
 license=('MIT')
-depends=('gpu-screen-recorder' 'gtk4' 'hyprland')
+depends=(
+  'ffmpeg'
+  'gpu-screen-recorder'
+  'gst-libav'
+  'gst-plugins-base'
+  'gst-plugins-good'
+  'gtk4'
+  'hyprland'
+  'xdg-utils'
+)
 makedepends=('cargo' 'git')
 provides=('trace')
 conflicts=('trace')

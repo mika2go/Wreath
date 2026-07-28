@@ -16,13 +16,15 @@ Trace is under active development. The current milestone provides:
 - a hardware replay adapter for the official Arch `gpu-screen-recorder` package;
 - Hyprland monitor discovery and native Lua-provider hotkey registration;
 - a local Unix-socket control protocol;
-- a separate, non-resident GTK4 settings app.
+- a modern, non-resident GTK4 app with a local clip library and player;
+- cached thumbnails generated locally with FFmpeg;
+- a desktop entry for app launchers plus a quick “Save clip” action.
 
-## Planned processes
+## Processes
 
 - `traced` — the small recorder daemon;
 - `tracectl` — a fast CLI used by Hyprland binds;
-- `trace-ui` — settings only, never resident in the background.
+- `trace-ui` — clip library, player, and settings; never resident in the background.
 
 ## Local data
 
@@ -37,10 +39,11 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-The recorder engine is a small package from Arch's official repositories:
+The recorder engine and local playback plug-ins are available from Arch's
+official repositories:
 
 ```bash
-sudo pacman -S gpu-screen-recorder
+sudo pacman -S gpu-screen-recorder gst-plugins-base gst-plugins-good gst-libav
 ```
 
 Run the settings app during development with:

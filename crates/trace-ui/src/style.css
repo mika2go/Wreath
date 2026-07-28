@@ -1,61 +1,257 @@
 window.trace-window {
-  background: #111318;
-  color: #e7e9ee;
+  background: #0b0d12;
+  color: #eef0f6;
 }
 
-.eyebrow,
-.section-title {
-  color: #747b88;
-  font-size: 10px;
-  font-weight: 700;
+.sidebar {
+  padding: 24px 14px 18px;
+  background: #0e1118;
+  border-right: 1px solid rgba(255, 255, 255, 0.065);
 }
 
-.title {
-  color: #f5f6f8;
-  font-size: 30px;
-  font-weight: 700;
+.brand {
+  padding: 2px 10px 24px;
 }
 
-.subtitle,
-.feedback {
-  color: #8e95a1;
-  font-size: 12px;
+.brand-mark {
+  color: #8d78ff;
+  font-size: 18px;
 }
 
-.state {
-  color: #79c99e;
-  font-size: 10px;
-  font-weight: 700;
-  padding-top: 7px;
+.brand-name {
+  color: #f4f3ff;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 2px;
 }
 
-.row-label {
-  color: #a8aeba;
-  font-size: 13px;
+.capture-status {
+  min-height: 34px;
+  margin: 0 6px 28px;
+  padding: 0 10px;
+  background: rgba(137, 113, 255, 0.08);
+  border-left: 2px solid #8d78ff;
 }
 
-separator {
-  min-height: 1px;
-  background: rgba(255, 255, 255, 0.08);
+.status-dot {
+  color: #73d2a1;
+  font-size: 8px;
 }
 
-entry,
-dropdown,
-spinbutton {
-  min-height: 36px;
-  padding: 0 4px;
-  color: #eef0f4;
+.status-dot.inactive {
+  color: #646b79;
+}
+
+.status-text {
+  color: #b6b9c7;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.nav-label {
+  margin: 0 12px 8px;
+  color: #5f6473;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+button.nav-button {
+  min-height: 42px;
+  margin: 2px 0;
+  padding: 0 12px;
+  color: #8e93a3;
   background: transparent;
   border: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 7px;
+  box-shadow: none;
+}
+
+button.nav-button:hover {
+  color: #d7d9e2;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+button.nav-button.active {
+  color: #f2efff;
+  background: rgba(139, 113, 255, 0.13);
+}
+
+.nav-icon {
+  min-width: 20px;
+  color: inherit;
+  font-size: 16px;
+}
+
+.nav-text {
+  color: inherit;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.privacy {
+  margin: 0 10px;
+  color: #515766;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.clips-page,
+.player-page,
+.settings-page {
+  background: #0b0d12;
+}
+
+.page-title {
+  color: #f4f5f9;
+  font-size: 27px;
+  font-weight: 750;
+}
+
+.page-subtitle,
+.feedback {
+  color: #777e8e;
+  font-size: 11px;
+}
+
+entry.search {
+  min-height: 38px;
+  padding: 0 14px;
+  color: #e9ebf2;
+  background: #11151e;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+entry.search:focus {
+  border-color: rgba(141, 120, 255, 0.65);
+}
+
+button.icon-action,
+button.back-action,
+button.secondary-action {
+  color: #a6aaba;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 7px;
+  box-shadow: none;
+}
+
+button.icon-action:hover,
+button.back-action:hover,
+button.secondary-action:hover {
+  color: #f0eff8;
+  border-color: rgba(141, 120, 255, 0.6);
+  background: rgba(141, 120, 255, 0.06);
+}
+
+flowboxchild {
+  padding: 0;
+  background: transparent;
+}
+
+button.clip-card {
+  min-width: 230px;
+  padding: 0;
+  color: #e8e9ef;
+  background: transparent;
+  border: none;
   border-radius: 0;
   box-shadow: none;
 }
 
-entry:focus,
+button.clip-card:hover .clip-preview {
+  outline: 2px solid rgba(141, 120, 255, 0.75);
+  outline-offset: -2px;
+}
+
+.clip-preview {
+  min-height: 142px;
+  background: #131722;
+  border-radius: 8px;
+}
+
+.clip-title {
+  color: #dfe1e8;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.clip-meta {
+  color: #656b7a;
+  font-size: 10px;
+}
+
+.duration {
+  color: #aeb2c0;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.empty-state {
+  color: #747a89;
+}
+
+.empty-icon {
+  color: #4d5260;
+  font-size: 38px;
+}
+
+.empty-title {
+  color: #d9dbe3;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.empty-detail {
+  color: #686e7d;
+  font-size: 11px;
+}
+
+.player-title {
+  color: #f1f2f6;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.video-stage {
+  min-height: 480px;
+  background: #050609;
+  border-radius: 9px;
+}
+
+.section-title {
+  color: #646a79;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.row-label {
+  color: #a6aab7;
+  font-size: 12px;
+}
+
+separator {
+  min-height: 1px;
+  background: rgba(255, 255, 255, 0.065);
+}
+
+entry:not(.search),
+dropdown,
+spinbutton {
+  min-height: 38px;
+  padding: 0 7px;
+  color: #eceef4;
+  background: #10141c;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 7px;
+  box-shadow: none;
+}
+
+entry:not(.search):focus,
 dropdown:focus,
 spinbutton:focus {
-  border-bottom-color: #89a9e8;
+  border-color: rgba(141, 120, 255, 0.7);
   box-shadow: none;
 }
 
@@ -67,57 +263,56 @@ spinbutton button {
 }
 
 scale trough {
-  min-height: 2px;
-  background: rgba(255, 255, 255, 0.13);
-  border-radius: 0;
+  min-height: 3px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
 }
 
 scale highlight {
-  background: #89a9e8;
-  border-radius: 0;
+  background: #8d78ff;
+  border-radius: 2px;
 }
 
 scale slider {
   min-width: 18px;
   min-height: 18px;
-  background: #dce5f8;
+  background: #d9d2ff;
   border: none;
   box-shadow: none;
 }
 
 checkbutton {
-  min-height: 34px;
-  color: #d7dae1;
+  min-height: 36px;
+  color: #d1d4dd;
 }
 
 checkbutton check {
   min-width: 14px;
   min-height: 14px;
-  background: transparent;
-  border: 1px solid #5f6673;
-  border-radius: 2px;
+  background: #10141c;
+  border: 1px solid #4d5361;
+  border-radius: 3px;
   box-shadow: none;
 }
 
 checkbutton check:checked {
-  color: #111318;
-  background: #89a9e8;
-  border-color: #89a9e8;
+  color: #0b0d12;
+  background: #8d78ff;
+  border-color: #8d78ff;
 }
 
-button.apply {
-  color: #9bb9ef;
-  background: transparent;
+button.primary-action {
+  padding: 0 18px;
+  color: #f7f5ff;
+  background: #745cf0;
   border: none;
-  border-bottom: 1px solid rgba(155, 185, 239, 0.45);
-  border-radius: 0;
+  border-radius: 7px;
   box-shadow: none;
   font-weight: 700;
 }
 
-button.apply:hover {
-  color: #f4f7ff;
-  border-bottom-color: #f4f7ff;
+button.primary-action:hover {
+  background: #826cf5;
 }
 
 .feedback.error {
