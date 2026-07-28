@@ -163,7 +163,7 @@ flowboxchild {
 
 .clip-item {
   min-width: 230px;
-  min-height: 202px;
+  min-height: 302px;
 }
 
 button.clip-open {
@@ -175,15 +175,16 @@ button.clip-open {
   box-shadow: none;
 }
 
-button.clip-open:hover .clip-preview {
+button.clip-open:hover .clip-preview-frame {
   outline: 2px solid alpha(@trace_accent, 0.75);
   outline-offset: -2px;
 }
 
+.clip-preview-frame,
 .clip-preview {
-  min-height: 150px;
+  min-height: 230px;
   background: @trace_surface;
-  border-radius: 8px;
+  border-radius: 12px;
 }
 
 button.clip-delete {

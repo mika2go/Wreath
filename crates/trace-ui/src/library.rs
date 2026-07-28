@@ -11,8 +11,9 @@ use gtk::glib::{self, ControlFlow};
 use gtk::pango;
 use gtk::prelude::*;
 use gtk::{
-    AlertDialog, Align, Box as GtkBox, Button, ContentFit, Entry, FlowBox, FlowBoxChild, Grid,
-    Image, Label, Orientation, Overlay, Picture, ScrolledWindow, SelectionMode, Stack, Video,
+    AlertDialog, Align, AspectFrame, Box as GtkBox, Button, ContentFit, Entry, FlowBox,
+    FlowBoxChild, Grid, Image, Label, Orientation, Overlay, Picture, ScrolledWindow, SelectionMode,
+    Stack, Video,
 };
 use trace_core::clips::{self, Clip, ClipPreview};
 use trace_core::config::Config;
@@ -280,8 +281,13 @@ fn clip_card(clip: &Clip, state: &Rc<LibraryState>) -> (FlowBoxChild, PreviewWid
     picture.set_content_fit(ContentFit::Cover);
     picture.set_can_shrink(true);
     picture.set_hexpand(true);
-    picture.set_size_request(250, 150);
-    body.append(&picture);
+    picture.set_size_request(250, 250);
+    let preview_frame = AspectFrame::new(0.5, 0.5, 1.0, false);
+    preview_frame.add_css_class("clip-preview-frame");
+    preview_frame.set_hexpand(true);
+    preview_frame.set_overflow(gtk::Overflow::Hidden);
+    preview_frame.set_child(Some(&picture));
+    body.append(&preview_frame);
 
     let text = GtkBox::new(Orientation::Vertical, 3);
     text.set_margin_top(11);
