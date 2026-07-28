@@ -158,10 +158,15 @@ button.secondary-action:hover {
 flowboxchild {
   padding: 0;
   background: transparent;
+  min-width: 230px;
 }
 
-button.clip-card {
+.clip-item {
   min-width: 230px;
+  min-height: 202px;
+}
+
+button.clip-open {
   padding: 0;
   color: #e8e9ef;
   background: transparent;
@@ -170,15 +175,30 @@ button.clip-card {
   box-shadow: none;
 }
 
-button.clip-card:hover .clip-preview {
+button.clip-open:hover .clip-preview {
   outline: 2px solid alpha(@trace_accent, 0.75);
   outline-offset: -2px;
 }
 
 .clip-preview {
-  min-height: 142px;
+  min-height: 150px;
   background: @trace_surface;
   border-radius: 8px;
+}
+
+button.clip-delete {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+  color: rgba(255, 255, 255, 0.76);
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+button.clip-delete:hover {
+  color: #ff9b9b;
+  background: transparent;
 }
 
 .clip-title {

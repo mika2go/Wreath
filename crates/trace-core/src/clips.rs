@@ -104,6 +104,16 @@ pub fn thumbnail_path(clip: &Clip, thumbnail_directory: &Path) -> PathBuf {
     thumbnail_directory.join(format!("{:016x}.jpg", hasher.finish()))
 }
 
+pub fn delete(clip: &Clip, thumbnail_directory: &Path) -> io::Result<()> {
+    let thumbnail = thumbnail_path(clip, thumbnail_directory);
+    fs::remove_file(&clip.path)?;
+    match fs::remove_file(thumbnail) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 fn probe_duration(path: &Path) -> Option<u64> {
     let output = Command::new("ffprobe")
         .args([
@@ -192,5 +202,36 @@ mod tests {
         assert_eq!(format_duration(65), "1:05");
         assert_eq!(format_duration(3_661), "1:01:01");
         assert_eq!(format_size(20 * 1_048_576), "20 MB");
+    }
+
+    #[test]
+    fn deletes_clip_and_cached_thumbnail() {
+        let root = std::env::temp_dir().join(format!(
+            "trace-delete-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let thumbnails = root.join("thumbnails");
+        fs::create_dir_all(&thumbnails).unwrap();
+        let path = root.join("clip.mp4");
+        fs::write(&path, b"clip").unwrap();
+        let metadata = fs::metadata(&path).unwrap();
+        let clip = Clip {
+            path: path.clone(),
+            title: "Clip".into(),
+            size_bytes: metadata.len(),
+            modified: metadata.modified().unwrap(),
+        };
+        let thumbnail = thumbnail_path(&clip, &thumbnails);
+        fs::write(&thumbnail, b"thumbnail").unwrap();
+
+        delete(&clip, &thumbnails).unwrap();
+
+        assert!(!path.exists());
+        assert!(!thumbnail.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }

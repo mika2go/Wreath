@@ -192,7 +192,7 @@ fn install_responsive_layout(
         .collect::<Vec<_>>();
     let clip_views = clip_views.clone();
     let settings_view = settings_view.clone();
-    let previous = Rc::new(Cell::new((false, false, false)));
+    let previous = Rc::new(Cell::new((false, false, false, 0_u32)));
 
     glib::timeout_add_local(Duration::from_millis(100), move || {
         let Some(window) = window.upgrade() else {
@@ -202,7 +202,19 @@ fn install_responsive_layout(
         let compact_sidebar = width < 760;
         let narrow_content = width < 980;
         let compact_header = width < 700;
-        let current = (compact_sidebar, narrow_content, compact_header);
+        let clip_columns = if width >= 1_120 {
+            3
+        } else if width >= 700 {
+            2
+        } else {
+            1
+        };
+        let current = (
+            compact_sidebar,
+            narrow_content,
+            compact_header,
+            clip_columns,
+        );
         if previous.get() == current {
             return ControlFlow::Continue;
         }
@@ -219,7 +231,7 @@ fn install_responsive_layout(
         }
         set_css_class(&content, "narrow", narrow_content);
         set_css_class(&content, "very-narrow", compact_header);
-        clip_views.set_compact(compact_header);
+        clip_views.set_layout(compact_header, clip_columns);
         settings_view.set_compact(compact_header);
         content.set_hhomogeneous(compact_header);
         ControlFlow::Continue

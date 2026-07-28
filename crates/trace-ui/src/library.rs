@@ -11,8 +11,8 @@ use gtk::glib::{self, ControlFlow};
 use gtk::pango;
 use gtk::prelude::*;
 use gtk::{
-    Align, Box as GtkBox, Button, ContentFit, Entry, FlowBox, FlowBoxChild, Grid, Image, Label,
-    Orientation, Picture, ScrolledWindow, SelectionMode, Stack, Video,
+    AlertDialog, Align, Box as GtkBox, Button, ContentFit, Entry, FlowBox, FlowBoxChild, Grid,
+    Image, Label, Orientation, Overlay, Picture, ScrolledWindow, SelectionMode, Stack, Video,
 };
 use trace_core::clips::{self, Clip, ClipPreview};
 use trace_core::config::Config;
@@ -26,10 +26,11 @@ pub struct ClipViews {
     heading: GtkBox,
     search: Entry,
     refresh: Button,
+    flow: FlowBox,
 }
 
 impl ClipViews {
-    pub fn set_compact(&self, compact: bool) {
+    pub fn set_layout(&self, compact: bool, columns: u32) {
         self.header.remove(&self.heading);
         self.header.remove(&self.search);
         self.header.remove(&self.refresh);
@@ -46,6 +47,8 @@ impl ClipViews {
             self.header.attach(&self.refresh, 2, 0, 1, 1);
             self.search.set_hexpand(false);
         }
+        self.flow.set_min_children_per_line(columns);
+        self.flow.set_max_children_per_line(columns);
     }
 }
 
@@ -61,6 +64,8 @@ struct PreviewWidgets {
 
 struct LibraryState {
     clips: RefCell<Vec<Clip>>,
+    directory: PathBuf,
+    thumbnail_directory: PathBuf,
     flow: FlowBox,
     empty: GtkBox,
     count: Label,
@@ -135,10 +140,10 @@ pub fn build(stack: &Stack) -> ClipViews {
 
     let flow = FlowBox::new();
     flow.set_selection_mode(SelectionMode::None);
-    flow.set_column_spacing(18);
-    flow.set_row_spacing(22);
+    flow.set_column_spacing(20);
+    flow.set_row_spacing(24);
     flow.set_min_children_per_line(1);
-    flow.set_max_children_per_line(4);
+    flow.set_max_children_per_line(3);
     flow.set_homogeneous(true);
     flow.set_valign(Align::Start);
 
@@ -154,6 +159,8 @@ pub fn build(stack: &Stack) -> ClipViews {
 
     let state = Rc::new(LibraryState {
         clips: RefCell::new(Vec::new()),
+        directory: config.storage.directory.clone(),
+        thumbnail_directory: paths.thumbnail_dir.clone(),
         flow,
         empty,
         count,
@@ -216,6 +223,7 @@ pub fn build(stack: &Stack) -> ClipViews {
         heading,
         search: state.search.clone(),
         refresh,
+        flow: state.flow.clone(),
     }
 }
 
@@ -258,19 +266,25 @@ fn render_clips(state: &Rc<LibraryState>) {
 }
 
 fn clip_card(clip: &Clip, state: &Rc<LibraryState>) -> (FlowBoxChild, PreviewWidgets) {
-    let card = Button::new();
-    card.add_css_class("clip-card");
-    card.set_tooltip_text(Some(&clip.path.to_string_lossy()));
+    let item = Overlay::new();
+    item.add_css_class("clip-item");
+    item.set_hexpand(true);
+
+    let open = Button::new();
+    open.add_css_class("clip-open");
+    open.set_hexpand(true);
+    open.set_tooltip_text(Some(&clip.path.to_string_lossy()));
     let body = GtkBox::new(Orientation::Vertical, 0);
     let picture = Picture::new();
     picture.add_css_class("clip-preview");
     picture.set_content_fit(ContentFit::Cover);
     picture.set_can_shrink(true);
-    picture.set_size_request(250, 142);
+    picture.set_hexpand(true);
+    picture.set_size_request(250, 150);
     body.append(&picture);
 
-    let text = GtkBox::new(Orientation::Vertical, 2);
-    text.set_margin_top(10);
+    let text = GtkBox::new(Orientation::Vertical, 3);
+    text.set_margin_top(11);
     let title = Label::new(Some(&clip.title));
     title.add_css_class("clip-title");
     title.set_halign(Align::Start);
@@ -295,18 +309,71 @@ fn clip_card(clip: &Clip, state: &Rc<LibraryState>) -> (FlowBoxChild, PreviewWid
     text.append(&title);
     text.append(&metadata);
     body.append(&text);
-    card.set_child(Some(&body));
+    open.set_child(Some(&body));
+    item.set_child(Some(&open));
+
+    let delete = Button::from_icon_name("user-trash-symbolic");
+    delete.add_css_class("clip-delete");
+    delete.set_tooltip_text(Some("Delete clip"));
+    delete.set_halign(Align::End);
+    delete.set_valign(Align::Start);
+    delete.set_margin_top(7);
+    delete.set_margin_end(7);
+    delete.set_size_request(34, 34);
+    item.add_overlay(&delete);
 
     let selected = clip.clone();
     let player = state.player.clone();
     let stack = state.stack.clone();
-    card.connect_clicked(move |_| {
+    open.connect_clicked(move |_| {
         show_player(&player, &selected);
         stack.set_visible_child_name("player");
     });
+    let deleted = clip.clone();
+    let delete_state = state.clone();
+    delete.connect_clicked(move |button| confirm_delete(button, &deleted, &delete_state));
+
     let child = FlowBoxChild::new();
-    child.set_child(Some(&card));
+    child.set_child(Some(&item));
     (child, PreviewWidgets { picture, duration })
+}
+
+fn confirm_delete(button: &Button, clip: &Clip, state: &Rc<LibraryState>) {
+    let dialog = AlertDialog::builder()
+        .modal(true)
+        .message("Delete this clip?")
+        .detail(format!(
+            "{} will be permanently removed from this machine.",
+            clip.title
+        ))
+        .build();
+    dialog.set_buttons(&["Cancel", "Delete"]);
+    dialog.set_cancel_button(0);
+    dialog.set_default_button(0);
+    let parent = button
+        .root()
+        .and_then(|root| root.downcast::<gtk::Window>().ok());
+
+    let deleted = clip.clone();
+    let delete_state = state.clone();
+    dialog.choose(
+        parent.as_ref(),
+        None::<&gio::Cancellable>,
+        move |response| {
+            if response == Ok(1) {
+                if let Err(error) = clips::delete(&deleted, &delete_state.thumbnail_directory) {
+                    delete_state
+                        .count
+                        .set_text(&format!("Could not delete clip: {error}"));
+                    delete_state.count.add_css_class("error");
+                } else {
+                    delete_state.count.remove_css_class("error");
+                    reload_clips(&delete_state, &delete_state.directory);
+                    render_clips(&delete_state);
+                }
+            }
+        },
+    );
 }
 
 fn empty_state(directory: &std::path::Path) -> GtkBox {
