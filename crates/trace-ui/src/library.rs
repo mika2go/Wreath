@@ -11,16 +11,42 @@ use gtk::glib::{self, ControlFlow};
 use gtk::pango;
 use gtk::prelude::*;
 use gtk::{
-    Align, Box as GtkBox, Button, ContentFit, Entry, FlowBox, FlowBoxChild, Label, Orientation,
-    Picture, ScrolledWindow, SelectionMode, Stack, Video,
+    Align, Box as GtkBox, Button, ContentFit, Entry, FlowBox, FlowBoxChild, Grid, Label,
+    Orientation, Picture, ScrolledWindow, SelectionMode, Stack, Video,
 };
 use trace_core::clips::{self, Clip, ClipPreview};
 use trace_core::config::Config;
 use trace_core::paths::AppPaths;
 
+#[derive(Clone)]
 pub struct ClipViews {
     pub library: GtkBox,
     pub player: GtkBox,
+    header: Grid,
+    heading: GtkBox,
+    search: Entry,
+    refresh: Button,
+}
+
+impl ClipViews {
+    pub fn set_compact(&self, compact: bool) {
+        self.header.remove(&self.heading);
+        self.header.remove(&self.search);
+        self.header.remove(&self.refresh);
+        if compact {
+            self.header.set_row_spacing(12);
+            self.header.attach(&self.heading, 0, 0, 2, 1);
+            self.header.attach(&self.search, 0, 1, 1, 1);
+            self.header.attach(&self.refresh, 1, 1, 1, 1);
+            self.search.set_hexpand(true);
+        } else {
+            self.header.set_row_spacing(0);
+            self.header.attach(&self.heading, 0, 0, 1, 1);
+            self.header.attach(&self.search, 1, 0, 1, 1);
+            self.header.attach(&self.refresh, 2, 0, 1, 1);
+            self.search.set_hexpand(false);
+        }
+    }
 }
 
 struct PreviewUpdate {
@@ -79,12 +105,9 @@ pub fn build(stack: &Stack) -> ClipViews {
 
     let page = GtkBox::new(Orientation::Vertical, 0);
     page.add_css_class("clips-page");
-    page.set_margin_top(40);
-    page.set_margin_bottom(30);
-    page.set_margin_start(42);
-    page.set_margin_end(42);
 
-    let header = GtkBox::new(Orientation::Horizontal, 16);
+    let header = Grid::new();
+    header.set_column_spacing(16);
     header.set_margin_bottom(26);
     let heading = GtkBox::new(Orientation::Vertical, 3);
     heading.set_hexpand(true);
@@ -99,14 +122,15 @@ pub fn build(stack: &Stack) -> ClipViews {
     let search = Entry::new();
     search.add_css_class("search");
     search.set_placeholder_text(Some("Search clips"));
-    search.set_size_request(240, 40);
+    search.set_size_request(210, 40);
     let refresh = Button::with_label("↻");
     refresh.add_css_class("icon-action");
     refresh.set_tooltip_text(Some("Refresh clips"));
     refresh.set_size_request(42, 40);
-    header.append(&heading);
-    header.append(&search);
-    header.append(&refresh);
+    refresh.set_halign(Align::End);
+    header.attach(&heading, 0, 0, 1, 1);
+    header.attach(&search, 1, 0, 1, 1);
+    header.attach(&refresh, 2, 0, 1, 1);
     page.append(&header);
 
     let flow = FlowBox::new();
@@ -188,6 +212,10 @@ pub fn build(stack: &Stack) -> ClipViews {
     ClipViews {
         library: page,
         player: player_page,
+        header,
+        heading,
+        search: state.search.clone(),
+        refresh,
     }
 }
 
@@ -296,6 +324,9 @@ fn empty_state(directory: &std::path::Path) -> GtkBox {
     )));
     detail.add_css_class("empty-detail");
     detail.set_justify(gtk::Justification::Center);
+    detail.set_wrap(true);
+    detail.set_wrap_mode(pango::WrapMode::WordChar);
+    detail.set_max_width_chars(44);
     empty.append(&icon);
     empty.append(&title);
     empty.append(&detail);
@@ -305,10 +336,6 @@ fn empty_state(directory: &std::path::Path) -> GtkBox {
 fn build_player(stack: &Stack) -> (GtkBox, Rc<PlayerState>) {
     let page = GtkBox::new(Orientation::Vertical, 0);
     page.add_css_class("player-page");
-    page.set_margin_top(34);
-    page.set_margin_bottom(30);
-    page.set_margin_start(42);
-    page.set_margin_end(42);
 
     let header = GtkBox::new(Orientation::Horizontal, 14);
     header.set_margin_bottom(20);

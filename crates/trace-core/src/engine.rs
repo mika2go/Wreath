@@ -166,6 +166,12 @@ pub struct GpuScreenRecorder {
     saved_paths: Receiver<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecorderCapabilities {
+    pub vendor: String,
+    pub video_codecs: Vec<String>,
+}
+
 impl GpuScreenRecorder {
     pub fn start(spec: &ReplaySpec) -> Result<Self, EngineError> {
         let executable =
@@ -254,13 +260,48 @@ fn send_signal(process_id: u32, signal: &str) -> Result<(), EngineError> {
 }
 
 pub fn recorder_available() -> bool {
-    Command::new("gpu-screen-recorder")
-        .arg("--version")
+    recorder_capabilities().is_ok()
+}
+
+pub fn recorder_capabilities() -> Result<RecorderCapabilities, EngineError> {
+    let output = Command::new("gpu-screen-recorder")
+        .arg("--info")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+        .output()?;
+    if !output.status.success() {
+        return Err(EngineError::Exited(output.status.code()));
+    }
+    Ok(parse_recorder_info(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+fn parse_recorder_info(output: &str) -> RecorderCapabilities {
+    let mut section = "";
+    let mut vendor = "unknown".to_owned();
+    let mut video_codecs = Vec::new();
+    for line in output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if let Some(value) = line.strip_prefix("section=") {
+            section = value;
+            continue;
+        }
+        if section == "gpu_info" {
+            if let Some(value) = line.strip_prefix("vendor|") {
+                vendor = value.to_owned();
+            }
+        } else if section == "video_codecs" && !line.contains('|') {
+            video_codecs.push(line.to_owned());
+        }
+    }
+    RecorderCapabilities {
+        vendor,
+        video_codecs,
+    }
 }
 
 #[cfg(test)]
@@ -313,6 +354,21 @@ mod tests {
         assert!(replay.target_bitrate_kbps() >= 2_500);
         assert!(replay.estimated_buffer_megabytes() > 0);
         assert!(replay.estimated_buffer_megabytes() < 100);
+    }
+
+    #[test]
+    fn parses_amd_and_nvidia_recorder_capabilities() {
+        let amd = parse_recorder_info(
+            "section=gpu_info\nvendor|amd\nsection=video_codecs\nh264\nhevc\nav1\n",
+        );
+        assert_eq!(amd.vendor, "amd");
+        assert_eq!(amd.video_codecs, ["h264", "hevc", "av1"]);
+
+        let nvidia = parse_recorder_info(
+            "section=gpu_info\nvendor|nvidia\nsection=video_codecs\nh264\nhevc\n",
+        );
+        assert_eq!(nvidia.vendor, "nvidia");
+        assert_eq!(nvidia.video_codecs, ["h264", "hevc"]);
     }
 
     #[test]

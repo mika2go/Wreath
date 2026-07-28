@@ -10,17 +10,66 @@ use trace_core::config::{Codec, Config, HotkeyConfig};
 use trace_core::hyprland::{self, Monitor};
 use trace_core::paths::AppPaths;
 
-pub fn build() -> ScrolledWindow {
+#[derive(Clone)]
+pub struct SettingsView {
+    pub page: ScrolledWindow,
+    rows: Vec<SettingsRow>,
+    grids: Vec<Grid>,
+    footer: GtkBox,
+    feedback: Label,
+    apply: Button,
+}
+
+#[derive(Clone)]
+struct SettingsRow {
+    grid: Grid,
+    label: Label,
+    control: gtk::Widget,
+    row: i32,
+}
+
+impl SettingsView {
+    pub fn set_compact(&self, compact: bool) {
+        for grid in &self.grids {
+            grid.set_column_spacing(if compact { 0 } else { 28 });
+            grid.set_row_spacing(if compact { 7 } else { 9 });
+        }
+        for row in &self.rows {
+            row.grid.remove(&row.label);
+            row.grid.remove(&row.control);
+            if compact {
+                row.label.set_size_request(-1, -1);
+                row.label.set_margin_bottom(2);
+                row.grid.attach(&row.label, 0, row.row * 2, 1, 1);
+                row.grid.attach(&row.control, 0, row.row * 2 + 1, 1, 1);
+            } else {
+                row.label.set_size_request(132, -1);
+                row.label.set_margin_bottom(0);
+                row.grid.attach(&row.label, 0, row.row, 1, 1);
+                row.grid.attach(&row.control, 1, row.row, 1, 1);
+            }
+        }
+        self.footer.set_orientation(if compact {
+            Orientation::Vertical
+        } else {
+            Orientation::Horizontal
+        });
+        self.footer.set_spacing(if compact { 10 } else { 18 });
+        self.feedback.set_wrap(compact);
+        self.apply
+            .set_halign(if compact { Align::Fill } else { Align::End });
+        self.apply
+            .set_size_request(if compact { -1 } else { 132 }, 42);
+    }
+}
+
+pub fn build() -> SettingsView {
     let paths = AppPaths::discover();
     let config = Config::load(&paths).unwrap_or_default();
     let monitors = hyprland::monitors().unwrap_or_default();
 
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.add_css_class("settings-page");
-    root.set_margin_top(42);
-    root.set_margin_bottom(38);
-    root.set_margin_start(48);
-    root.set_margin_end(48);
 
     let title = Label::new(Some("Settings"));
     title.add_css_class("page-title");
@@ -30,32 +79,37 @@ pub fn build() -> ScrolledWindow {
     ));
     subtitle.add_css_class("page-subtitle");
     subtitle.set_halign(Align::Start);
+    subtitle.set_wrap(true);
     subtitle.set_margin_bottom(34);
     root.append(&title);
     root.append(&subtitle);
 
+    let mut rows = Vec::new();
+    let mut grids = Vec::new();
     root.append(&section_title("DISPLAY"));
     let display_grid = settings_grid();
+    grids.push(display_grid.clone());
     let monitor_model = monitor_model(&monitors);
     let monitor_dropdown = DropDown::new(Some(monitor_model.clone()), None::<gtk::Expression>);
     monitor_dropdown.set_hexpand(true);
     monitor_dropdown.set_selected(selected_monitor_index(&monitors, &config));
-    attach_row(&display_grid, 0, "Monitor", &monitor_dropdown);
+    rows.push(attach_row(&display_grid, 0, "Monitor", &monitor_dropdown));
     root.append(&display_grid);
 
     root.append(&section_separator());
     root.append(&section_title("CAPTURE"));
     let capture_grid = settings_grid();
+    grids.push(capture_grid.clone());
     let duration = spin_button(5.0, 600.0, 5.0, f64::from(config.capture.duration_seconds));
     duration.set_tooltip_text(Some("Seconds retained in the encoded replay buffer"));
-    attach_row(&capture_grid, 0, "Clip length", &duration);
+    rows.push(attach_row(&capture_grid, 0, "Clip length", &duration));
     let fps = spin_button(
         15.0,
         240.0,
         15.0,
         f64::from(config.capture.frames_per_second),
     );
-    attach_row(&capture_grid, 1, "Frames per second", &fps);
+    rows.push(attach_row(&capture_grid, 1, "Frames per second", &fps));
     let codec_model = StringList::new(&["Automatic", "H.264", "HEVC", "AV1"]);
     let codec = DropDown::new(Some(codec_model), None::<gtk::Expression>);
     codec.set_selected(match config.capture.codec {
@@ -64,37 +118,39 @@ pub fn build() -> ScrolledWindow {
         Codec::Hevc => 2,
         Codec::Av1 => 3,
     });
-    attach_row(&capture_grid, 2, "Codec", &codec);
+    rows.push(attach_row(&capture_grid, 2, "Codec", &codec));
     let quality = Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
     quality.set_value(f64::from(config.capture.quality));
     quality.set_draw_value(false);
     quality.set_hexpand(true);
-    attach_row(&capture_grid, 3, "Quality", &quality);
+    rows.push(attach_row(&capture_grid, 3, "Quality", &quality));
     root.append(&capture_grid);
 
     root.append(&section_separator());
     root.append(&section_title("CONTROL"));
     let control_grid = settings_grid();
+    grids.push(control_grid.clone());
     let hotkey = Entry::new();
     hotkey.set_text(&config.hotkey.to_string());
     hotkey.set_placeholder_text(Some("SUPER+SHIFT+R"));
     hotkey.set_hexpand(true);
-    attach_row(&control_grid, 0, "Save replay", &hotkey);
+    rows.push(attach_row(&control_grid, 0, "Save replay", &hotkey));
     root.append(&control_grid);
 
     root.append(&section_separator());
     root.append(&section_title("AUDIO & STORAGE"));
     let final_grid = settings_grid();
+    grids.push(final_grid.clone());
     let desktop_audio = CheckButton::with_label("Desktop audio");
     desktop_audio.set_active(config.audio.desktop);
-    attach_row(&final_grid, 0, "Audio", &desktop_audio);
+    rows.push(attach_row(&final_grid, 0, "Audio", &desktop_audio));
     let microphone = CheckButton::with_label("Microphone");
     microphone.set_active(config.audio.microphone);
-    attach_row(&final_grid, 1, "", &microphone);
+    rows.push(attach_row(&final_grid, 1, "", &microphone));
     let output = Entry::new();
     output.set_text(&config.storage.directory.to_string_lossy());
     output.set_hexpand(true);
-    attach_row(&final_grid, 2, "Save location", &output);
+    rows.push(attach_row(&final_grid, 2, "Save location", &output));
     root.append(&final_grid);
 
     let footer = GtkBox::new(Orientation::Horizontal, 18);
@@ -111,6 +167,7 @@ pub fn build() -> ScrolledWindow {
     root.append(&footer);
 
     let save_paths = paths.clone();
+    let saved_feedback = feedback.clone();
     apply.connect_clicked(move |_| {
         match collect_and_save(
             &save_paths,
@@ -126,12 +183,12 @@ pub fn build() -> ScrolledWindow {
             &output,
         ) {
             Ok(()) => {
-                feedback.set_text("Saved locally.");
-                feedback.remove_css_class("error");
+                saved_feedback.set_text("Saved locally.");
+                saved_feedback.remove_css_class("error");
             }
             Err(error) => {
-                feedback.set_text(&error);
-                feedback.add_css_class("error");
+                saved_feedback.set_text(&error);
+                saved_feedback.add_css_class("error");
             }
         }
     });
@@ -139,7 +196,14 @@ pub fn build() -> ScrolledWindow {
     let scroll = ScrolledWindow::new();
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     scroll.set_child(Some(&root));
-    scroll
+    SettingsView {
+        page: scroll,
+        rows,
+        grids,
+        footer,
+        feedback,
+        apply,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -213,7 +277,7 @@ fn monitor_model(monitors: &[Monitor]) -> StringList {
         .map(|monitor| {
             format!(
                 "{} · {} × {} · {:.0} Hz",
-                monitor.description, monitor.width, monitor.height, monitor.refresh_rate
+                monitor.name, monitor.width, monitor.height, monitor.refresh_rate
             )
         })
         .collect::<Vec<_>>();
@@ -255,14 +319,25 @@ fn settings_grid() -> Grid {
     grid
 }
 
-fn attach_row(grid: &Grid, row: i32, label_text: &str, control: &impl IsA<gtk::Widget>) {
+fn attach_row(
+    grid: &Grid,
+    row: i32,
+    label_text: &str,
+    control: &impl IsA<gtk::Widget>,
+) -> SettingsRow {
     let label = Label::new(Some(label_text));
     label.add_css_class("row-label");
     label.set_halign(Align::Start);
     label.set_valign(Align::Center);
-    label.set_size_request(170, -1);
+    label.set_size_request(132, -1);
     grid.attach(&label, 0, row, 1, 1);
     grid.attach(control, 1, row, 1, 1);
+    SettingsRow {
+        grid: grid.clone(),
+        label,
+        control: control.clone().upcast(),
+        row,
+    }
 }
 
 fn spin_button(minimum: f64, maximum: f64, step: f64, value: f64) -> SpinButton {

@@ -1,5 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <path fill="#111318" d="M24 8h80c8.8 0 16 7.2 16 16v80c0 8.8-7.2 16-16 16H24c-8.8 0-16-7.2-16-16V24C8 15.2 15.2 8 24 8Z"/>
-  <path fill="#89a9e8" d="M39 34h29c18.8 0 34 12.8 34 30.5 0 12-7.3 22.3-18 27.5l13 2v10H72V86h-4c-12.7 0-23-8.8-23-21s10.3-21 23-21h4v13h-4c-5.6 0-10 3.3-10 8s4.4 8 10 8h2c10.5 0 19-3.7 19-8.5S80.5 47 68 47H39V34Z"/>
+  <defs>
+    <linearGradient id="trace-accent" x1="24" y1="20" x2="108" y2="108" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#72e1d2"/>
+      <stop offset="1" stop-color="#8178ff"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="6" width="116" height="116" rx="27" fill="#0b0f17"/>
+  <path d="M96 42A39 39 0 1 0 101 79" fill="none" stroke="url(#trace-accent)" stroke-width="11" stroke-linecap="round"/>
+  <path d="m90 24 20 19-27 5Z" fill="#8178ff"/>
+  <path d="M35 67h17l8-16 11 29 9-21 7 8h8" fill="none" stroke="#f4f6fb" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
-

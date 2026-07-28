@@ -689,7 +689,9 @@ dependencies = [
 name = "trace-ui"
 version = "0.1.0"
 dependencies = [
+ "gdk-pixbuf",
  "gtk4",
+ "serde_json",
  "trace-core",
 ]
 

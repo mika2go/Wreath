@@ -1,15 +1,19 @@
 mod library;
 mod settings;
+mod theme;
 
+use std::cell::Cell;
 use std::process::ExitCode;
+use std::rc::Rc;
+use std::time::Duration;
 
 use gtk::gdk;
+use gtk::glib::{self, ControlFlow};
 use gtk::prelude::*;
 use gtk::{
-    Align, Application, ApplicationWindow, Box as GtkBox, Button, CssProvider, Label, Orientation,
-    Stack,
+    Align, Application, ApplicationWindow, Box as GtkBox, Button, CssProvider, Image, Label,
+    Orientation, Stack,
 };
-use trace_core::paths::AppPaths;
 
 const APP_ID: &str = "io.github.mika2go.Trace";
 
@@ -22,7 +26,12 @@ fn main() -> ExitCode {
 
 fn install_css() {
     let provider = CssProvider::new();
-    provider.load_from_string(include_str!("style.css"));
+    let stylesheet = format!(
+        "{}\n{}",
+        theme::Palette::discover().css_prefix(),
+        include_str!("style.css")
+    );
+    provider.load_from_string(&stylesheet);
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,
@@ -53,7 +62,8 @@ fn build_ui(application: &Application) {
 
     let brand = GtkBox::new(Orientation::Horizontal, 10);
     brand.add_css_class("brand");
-    let mark = Label::new(Some("◉"));
+    let mark = Image::from_icon_name(APP_ID);
+    mark.set_pixel_size(21);
     mark.add_css_class("brand-mark");
     let brand_name = Label::new(Some("TRACE"));
     brand_name.add_css_class("brand-name");
@@ -61,34 +71,16 @@ fn build_ui(application: &Application) {
     brand.append(&brand_name);
     sidebar.append(&brand);
 
-    let status = GtkBox::new(Orientation::Horizontal, 8);
-    status.add_css_class("capture-status");
-    let daemon_running = AppPaths::discover().socket_file.exists();
-    let status_dot = Label::new(Some("●"));
-    status_dot.add_css_class("status-dot");
-    if !daemon_running {
-        status_dot.add_css_class("inactive");
-    }
-    let status_text = Label::new(Some(if daemon_running {
-        "Instant replay active"
-    } else {
-        "Recorder offline"
-    }));
-    status_text.add_css_class("status-text");
-    status.append(&status_dot);
-    status.append(&status_text);
-    sidebar.append(&status);
-
     let nav_label = Label::new(Some("LIBRARY"));
     nav_label.add_css_class("nav-label");
     nav_label.set_halign(Align::Start);
     sidebar.append(&nav_label);
 
-    let clips_nav = nav_button("Clips", "⌁");
-    clips_nav.add_css_class("active");
-    let settings_nav = nav_button("Settings", "⚙");
-    sidebar.append(&clips_nav);
-    sidebar.append(&settings_nav);
+    let clips_nav = nav_button("Clips", "video-display-symbolic");
+    clips_nav.button.add_css_class("active");
+    let settings_nav = nav_button("Settings", "preferences-system-symbolic");
+    sidebar.append(&clips_nav.button);
+    sidebar.append(&settings_nav.button);
 
     let sidebar_spacer = GtkBox::new(Orientation::Vertical, 0);
     sidebar_spacer.set_vexpand(true);
@@ -99,8 +91,11 @@ fn build_ui(application: &Application) {
     sidebar.append(&privacy);
 
     let content = Stack::new();
+    content.add_css_class("content-area");
     content.set_hexpand(true);
     content.set_vexpand(true);
+    content.set_hhomogeneous(false);
+    content.set_vhomogeneous(false);
     content.set_transition_type(gtk::StackTransitionType::Crossfade);
     content.set_transition_duration(140);
 
@@ -108,22 +103,22 @@ fn build_ui(application: &Application) {
     let settings_page = settings::build();
     content.add_named(&clip_views.library, Some("clips"));
     content.add_named(&clip_views.player, Some("player"));
-    content.add_named(&settings_page, Some("settings"));
+    content.add_named(&settings_page.page, Some("settings"));
     content.set_visible_child_name("clips");
 
     let clips_stack = content.clone();
-    let clips_button = clips_nav.clone();
-    let settings_button = settings_nav.clone();
-    clips_nav.connect_clicked(move |_| {
+    let clips_button = clips_nav.button.clone();
+    let settings_button = settings_nav.button.clone();
+    clips_nav.button.connect_clicked(move |_| {
         clips_stack.set_visible_child_name("clips");
         clips_button.add_css_class("active");
         settings_button.remove_css_class("active");
     });
 
     let settings_stack = content.clone();
-    let clips_button = clips_nav.clone();
-    let settings_button = settings_nav.clone();
-    settings_nav.connect_clicked(move |_| {
+    let clips_button = clips_nav.button.clone();
+    let settings_button = settings_nav.button.clone();
+    settings_nav.button.connect_clicked(move |_| {
         settings_stack.set_visible_child_name("settings");
         settings_button.add_css_class("active");
         clips_button.remove_css_class("active");
@@ -133,19 +128,102 @@ fn build_ui(application: &Application) {
     shell.append(&content);
     window.set_child(Some(&shell));
     window.present();
+    install_responsive_layout(
+        &window,
+        &sidebar,
+        &content,
+        &[&brand_name, &nav_label, &privacy],
+        &[&clips_nav.label, &settings_nav.label],
+        &clip_views,
+        &settings_page,
+    );
 }
 
-fn nav_button(label: &str, icon: &str) -> Button {
+struct NavButton {
+    button: Button,
+    label: Label,
+}
+
+fn nav_button(label: &str, icon: &str) -> NavButton {
     let row = GtkBox::new(Orientation::Horizontal, 12);
-    let icon = Label::new(Some(icon));
+    let icon = Image::from_icon_name(icon);
+    icon.set_pixel_size(18);
     icon.add_css_class("nav-icon");
-    let label = Label::new(Some(label));
-    label.add_css_class("nav-text");
-    label.set_halign(Align::Start);
+    let label_widget = Label::new(Some(label));
+    label_widget.add_css_class("nav-text");
+    label_widget.set_halign(Align::Start);
     row.append(&icon);
-    row.append(&label);
+    row.append(&label_widget);
     let button = Button::new();
     button.add_css_class("nav-button");
+    button.set_tooltip_text(Some(label));
     button.set_child(Some(&row));
-    button
+    NavButton {
+        button,
+        label: label_widget,
+    }
+}
+
+fn install_responsive_layout(
+    window: &ApplicationWindow,
+    sidebar: &GtkBox,
+    content: &Stack,
+    sidebar_details: &[&Label],
+    nav_labels: &[&Label],
+    clip_views: &library::ClipViews,
+    settings_view: &settings::SettingsView,
+) {
+    let window = window.downgrade();
+    let sidebar = sidebar.clone();
+    let content = content.clone();
+    let sidebar_details = sidebar_details
+        .iter()
+        .map(|label| (*label).clone())
+        .collect::<Vec<_>>();
+    let nav_labels = nav_labels
+        .iter()
+        .map(|label| (*label).clone())
+        .collect::<Vec<_>>();
+    let clip_views = clip_views.clone();
+    let settings_view = settings_view.clone();
+    let previous = Rc::new(Cell::new((false, false, false)));
+
+    glib::timeout_add_local(Duration::from_millis(100), move || {
+        let Some(window) = window.upgrade() else {
+            return ControlFlow::Break;
+        };
+        let width = window.width();
+        let compact_sidebar = width < 760;
+        let narrow_content = width < 980;
+        let compact_header = width < 700;
+        let current = (compact_sidebar, narrow_content, compact_header);
+        if previous.get() == current {
+            return ControlFlow::Continue;
+        }
+        previous.set(current);
+
+        sidebar.set_size_request(if compact_sidebar { 68 } else { 194 }, -1);
+        if compact_sidebar {
+            sidebar.add_css_class("compact");
+        } else {
+            sidebar.remove_css_class("compact");
+        }
+        for label in sidebar_details.iter().chain(nav_labels.iter()) {
+            label.set_visible(!compact_sidebar);
+        }
+        set_css_class(&content, "narrow", narrow_content);
+        set_css_class(&content, "very-narrow", compact_header);
+        clip_views.set_compact(compact_header);
+        settings_view.set_compact(compact_header);
+        content.set_hhomogeneous(compact_header);
+        ControlFlow::Continue
+    });
+}
+
+fn set_css_class(widget: &impl IsA<gtk::Widget>, class_name: &str, enabled: bool) {
+    if enabled {
+        widget.add_css_class(class_name);
+    } else {
+        widget.remove_css_class(class_name);
+    }
 }

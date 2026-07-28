@@ -13,10 +13,13 @@ The project has three rules:
 
 Trace is under active development. The current milestone provides:
 
-- a hardware replay adapter for the official Arch `gpu-screen-recorder` package;
+- automatic AMD and NVIDIA hardware replay through Arch's
+  `gpu-screen-recorder` package;
 - Hyprland monitor discovery and native Lua-provider hotkey registration;
 - a local Unix-socket control protocol;
-- a modern, non-resident GTK4 app with a local clip library and player;
+- a responsive, non-resident GTK4 app with a local clip library and player;
+- an offline color palette derived once at startup from the current wallpaper
+  or an existing local Quickshell/Pywal palette;
 - cached thumbnails generated locally with FFmpeg;
 - a desktop entry for app launchers plus a quick “Save clip” action.
 

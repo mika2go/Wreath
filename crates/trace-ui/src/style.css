@@ -1,21 +1,30 @@
 window.trace-window {
-  background: #0b0d12;
+  background: @trace_bg;
   color: #eef0f6;
 }
 
 .sidebar {
   padding: 24px 14px 18px;
-  background: #0e1118;
+  background: @trace_sidebar;
   border-right: 1px solid rgba(255, 255, 255, 0.065);
 }
 
+.sidebar.compact {
+  padding-left: 9px;
+  padding-right: 9px;
+}
+
+.sidebar.compact .brand {
+  padding-left: 0;
+  padding-right: 0;
+}
+
 .brand {
-  padding: 2px 10px 24px;
+  padding: 2px 10px 34px;
 }
 
 .brand-mark {
-  color: #8d78ff;
-  font-size: 18px;
+  color: @trace_accent;
 }
 
 .brand-name {
@@ -23,29 +32,6 @@ window.trace-window {
   font-size: 15px;
   font-weight: 800;
   letter-spacing: 2px;
-}
-
-.capture-status {
-  min-height: 34px;
-  margin: 0 6px 28px;
-  padding: 0 10px;
-  background: rgba(137, 113, 255, 0.08);
-  border-left: 2px solid #8d78ff;
-}
-
-.status-dot {
-  color: #73d2a1;
-  font-size: 8px;
-}
-
-.status-dot.inactive {
-  color: #646b79;
-}
-
-.status-text {
-  color: #b6b9c7;
-  font-size: 11px;
-  font-weight: 600;
 }
 
 .nav-label {
@@ -73,13 +59,12 @@ button.nav-button:hover {
 
 button.nav-button.active {
   color: #f2efff;
-  background: rgba(139, 113, 255, 0.13);
+  background: alpha(@trace_accent, 0.13);
 }
 
 .nav-icon {
   min-width: 20px;
   color: inherit;
-  font-size: 16px;
 }
 
 .nav-text {
@@ -98,7 +83,32 @@ button.nav-button.active {
 .clips-page,
 .player-page,
 .settings-page {
-  background: #0b0d12;
+  background: @trace_bg;
+}
+
+.clips-page {
+  padding: 40px 42px 30px;
+}
+
+.player-page {
+  padding: 34px 42px 30px;
+}
+
+.settings-page {
+  padding: 42px 48px 38px;
+}
+
+.content-area.narrow .clips-page,
+.content-area.narrow .player-page,
+.content-area.narrow .settings-page {
+  padding-left: 24px;
+  padding-right: 24px;
+}
+
+.content-area.very-narrow .clips-page,
+.content-area.very-narrow .player-page,
+.content-area.very-narrow .settings-page {
+  padding: 24px 16px 20px;
 }
 
 .page-title {
@@ -117,14 +127,14 @@ entry.search {
   min-height: 38px;
   padding: 0 14px;
   color: #e9ebf2;
-  background: #11151e;
+  background: @trace_surface;
   border: 1px solid rgba(255, 255, 255, 0.075);
   border-radius: 8px;
   box-shadow: none;
 }
 
 entry.search:focus {
-  border-color: rgba(141, 120, 255, 0.65);
+  border-color: alpha(@trace_accent, 0.65);
 }
 
 button.icon-action,
@@ -141,8 +151,8 @@ button.icon-action:hover,
 button.back-action:hover,
 button.secondary-action:hover {
   color: #f0eff8;
-  border-color: rgba(141, 120, 255, 0.6);
-  background: rgba(141, 120, 255, 0.06);
+  border-color: alpha(@trace_accent, 0.6);
+  background: alpha(@trace_accent, 0.06);
 }
 
 flowboxchild {
@@ -161,13 +171,13 @@ button.clip-card {
 }
 
 button.clip-card:hover .clip-preview {
-  outline: 2px solid rgba(141, 120, 255, 0.75);
+  outline: 2px solid alpha(@trace_accent, 0.75);
   outline-offset: -2px;
 }
 
 .clip-preview {
   min-height: 142px;
-  background: #131722;
+  background: @trace_surface;
   border-radius: 8px;
 }
 
@@ -215,8 +225,8 @@ button.clip-card:hover .clip-preview {
 }
 
 .video-stage {
-  min-height: 480px;
-  background: #050609;
+  min-height: 180px;
+  background: @trace_stage;
   border-radius: 9px;
 }
 
@@ -242,7 +252,7 @@ spinbutton {
   min-height: 38px;
   padding: 0 7px;
   color: #eceef4;
-  background: #10141c;
+  background: @trace_surface;
   border: 1px solid rgba(255, 255, 255, 0.075);
   border-radius: 7px;
   box-shadow: none;
@@ -251,7 +261,7 @@ spinbutton {
 entry:not(.search):focus,
 dropdown:focus,
 spinbutton:focus {
-  border-color: rgba(141, 120, 255, 0.7);
+  border-color: alpha(@trace_accent, 0.7);
   box-shadow: none;
 }
 
@@ -269,7 +279,7 @@ scale trough {
 }
 
 scale highlight {
-  background: #8d78ff;
+  background: @trace_accent;
   border-radius: 2px;
 }
 
@@ -289,22 +299,22 @@ checkbutton {
 checkbutton check {
   min-width: 14px;
   min-height: 14px;
-  background: #10141c;
+  background: @trace_surface;
   border: 1px solid #4d5361;
   border-radius: 3px;
   box-shadow: none;
 }
 
 checkbutton check:checked {
-  color: #0b0d12;
-  background: #8d78ff;
-  border-color: #8d78ff;
+  color: @trace_bg;
+  background: @trace_accent;
+  border-color: @trace_accent;
 }
 
 button.primary-action {
   padding: 0 18px;
   color: #f7f5ff;
-  background: #745cf0;
+  background: @trace_accent;
   border: none;
   border-radius: 7px;
   box-shadow: none;
@@ -312,7 +322,7 @@ button.primary-action {
 }
 
 button.primary-action:hover {
-  background: #826cf5;
+  background: @trace_accent_strong;
 }
 
 .feedback.error {

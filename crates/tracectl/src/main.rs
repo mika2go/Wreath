@@ -108,12 +108,22 @@ fn doctor() -> Result<(), String> {
         engine::ReplaySpec::from_config(&config, monitor).estimated_buffer_megabytes(),
         config.capture.duration_seconds
     );
-    if !engine::recorder_available() {
-        return Err(
-            "gpu-screen-recorder is missing; run `sudo pacman -S gpu-screen-recorder`".into(),
-        );
-    }
-    println!("engine   ok · gpu-screen-recorder");
+    let capabilities = engine::recorder_capabilities().map_err(|error| error.to_string())?;
+    let codecs = ["h264", "hevc", "av1"]
+        .into_iter()
+        .filter(|codec| capabilities.video_codecs.iter().any(|item| item == codec))
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!(
+        "gpu      ok · {} · hardware codecs: {}",
+        capabilities.vendor,
+        if codecs.is_empty() {
+            "automatic"
+        } else {
+            &codecs
+        }
+    );
+    println!("engine   ok · gpu-screen-recorder · AMD/NVIDIA auto detection");
     println!("network  blocked by packaged systemd user service");
     Ok(())
 }
