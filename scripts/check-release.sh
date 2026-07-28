@@ -19,10 +19,19 @@ for binary in target/release/traced target/release/tracectl; do
 done
 
 grep -qx 'IPAddressDeny=any' packaging/traced.service
-grep -qx 'RestrictAddressFamilies=AF_UNIX' packaging/traced.service
-if grep -qx 'PrivateTmp=yes' packaging/traced.service; then
-  echo "PrivateTmp breaks gpu-screen-recorder compositor access and produces black frames" >&2
-  exit 1
-fi
+for incompatible_sandbox in \
+  PrivateTmp \
+  ProtectSystem \
+  ProtectKernelTunables \
+  ProtectKernelModules \
+  ProtectControlGroups \
+  RestrictSUIDSGID \
+  LockPersonality \
+  RestrictAddressFamilies; do
+  if grep -q "^${incompatible_sandbox}=" packaging/traced.service; then
+    echo "${incompatible_sandbox} breaks gpu-screen-recorder KMS capture" >&2
+    exit 1
+  fi
+done
 
 echo "release checks passed"

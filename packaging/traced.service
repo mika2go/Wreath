@@ -15,13 +15,7 @@ TimeoutStopSec=10
 KillMode=mixed
 UMask=0077
 IPAddressDeny=any
-RestrictAddressFamilies=AF_UNIX
-ProtectSystem=strict
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
-RestrictSUIDSGID=yes
-LockPersonality=yes
+# gpu-screen-recorder's capability-based KMS helper needs the host mount namespace.
 LimitNOFILE=256
 
 [Install]
