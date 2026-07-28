@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
   <defs>
-    <linearGradient id="trace-accent" x1="24" y1="20" x2="108" y2="108" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#72e1d2"/>
+    <linearGradient id="trace" x1="24" y1="22" x2="105" y2="106" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#70e2d4"/>
       <stop offset="1" stop-color="#8178ff"/>
     </linearGradient>
   </defs>
-  <rect x="6" y="6" width="116" height="116" rx="27" fill="#0b0f17"/>
-  <path d="M96 42A39 39 0 1 0 101 79" fill="none" stroke="url(#trace-accent)" stroke-width="11" stroke-linecap="round"/>
-  <path d="m90 24 20 19-27 5Z" fill="#8178ff"/>
-  <path d="M35 67h17l8-16 11 29 9-21 7 8h8" fill="none" stroke="#f4f6fb" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="64" cy="64" r="57" fill="#0b1018"/>
+  <path d="M96 42A40 40 0 1 0 101 80" fill="none" stroke="url(#trace)" stroke-width="11" stroke-linecap="round"/>
+  <path d="m91 28 17 16-23 5Z" fill="#8178ff"/>
+  <path d="M42 51h43M64 51v38" fill="none" stroke="#f6f7fb" stroke-width="10" stroke-linecap="round"/>
 </svg>
