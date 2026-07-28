@@ -163,7 +163,7 @@ flowboxchild {
 
 .clip-item {
   min-width: 230px;
-  min-height: 302px;
+  min-height: 202px;
 }
 
 button.clip-open {
@@ -182,7 +182,7 @@ button.clip-open:hover .clip-preview-frame {
 
 .clip-preview-frame,
 .clip-preview {
-  min-height: 230px;
+  min-height: 129px;
   background: @trace_surface;
   border-radius: 12px;
 }

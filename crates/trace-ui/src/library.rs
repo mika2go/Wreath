@@ -278,11 +278,11 @@ fn clip_card(clip: &Clip, state: &Rc<LibraryState>) -> (FlowBoxChild, PreviewWid
     let body = GtkBox::new(Orientation::Vertical, 0);
     let picture = Picture::new();
     picture.add_css_class("clip-preview");
-    picture.set_content_fit(ContentFit::Cover);
+    picture.set_content_fit(ContentFit::Contain);
     picture.set_can_shrink(true);
     picture.set_hexpand(true);
-    picture.set_size_request(250, 250);
-    let preview_frame = AspectFrame::new(0.5, 0.5, 1.0, false);
+    picture.set_size_request(250, 141);
+    let preview_frame = AspectFrame::new(0.5, 0.5, 16.0 / 9.0, false);
     preview_frame.add_css_class("clip-preview-frame");
     preview_frame.set_hexpand(true);
     preview_frame.set_overflow(gtk::Overflow::Hidden);
