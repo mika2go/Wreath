@@ -33,6 +33,36 @@ Trace is under active development. The current milestone provides:
 - `tracectl` — a fast CLI used by Hyprland binds;
 - `trace-ui` — clip library, player, and settings; never resident in the background.
 
+## Measured resource usage
+
+The following is a real local measurement, not a theoretical estimate. It was
+taken on 2026-07-28 with Trace `0.1.0.r27.g67cec71`, a Ryzen 7 7800X3D
+(8 cores / 16 threads), and an AMD Navi 32 GPU using hardware H.264 encoding.
+Trace recorded one 1920 × 1080 monitor at 60 FPS with a fully populated
+30-second replay buffer, quality 75, desktop audio, and a microphone.
+
+| Resource | Recorder running in background | Idle GTK clip library |
+| --- | ---: | ---: |
+| CPU | 5.7% of one thread (0.36% of all 16 threads) | 0.13% of one thread |
+| System memory | 279 MiB average (278.6–280.6 MiB) | 161.5 MiB RSS while open |
+| AMD encoder engine | 9.2% | not separately attributable through Wayland |
+| AMD graphics engine | 0.8% | not separately attributable through Wayland |
+| GPU memory | 50.7 MiB VRAM + 25.2 MiB GTT | not separately attributable |
+| Disk I/O while buffering | 0 B read / 0 B written over 15 seconds | — |
+
+The installed Trace package itself occupies 2.57 MiB. The GTK interface is a
+separate process and exits when its window is closed, so its RSS is not part of
+normal background use. The recorder keeps its encoded replay buffer in memory
+and writes video data to disk only when a clip is saved.
+
+CPU and memory were sampled for 30 seconds from the complete `traced.service`
+cgroup using systemd's `CPUUsageNSec` and `MemoryCurrent`. AMD encoder, graphics,
+VRAM, and GTT figures came directly from the recorder's DRM `fdinfo` counters,
+which avoids confusing Trace usage with unrelated desktop GPU activity. The UI
+was measured separately for 15 seconds on the Clips page with no video playing.
+Results will vary with resolution, frame rate, codec, buffer duration, GPU,
+driver, and enabled audio sources.
+
 ## Local data
 
 Configuration is stored below `$XDG_CONFIG_HOME/trace` and clips default to
