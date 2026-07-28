@@ -3,4 +3,7 @@
 *.tmp
 .idea/
 .vscode/
-
+/packaging/pkg/
+/packaging/src/
+/packaging/trace-git/
+/packaging/*.pkg.tar.*

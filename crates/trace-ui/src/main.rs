@@ -33,6 +33,10 @@ fn install_css() {
 }
 
 fn build_ui(application: &Application) {
+    if let Some(window) = application.active_window() {
+        window.present();
+        return;
+    }
     let window = ApplicationWindow::builder()
         .application(application)
         .title("Trace")
