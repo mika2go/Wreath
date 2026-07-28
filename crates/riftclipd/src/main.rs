@@ -107,16 +107,7 @@ impl Daemon {
 
     fn respond(&mut self, request: Request) -> Response {
         match request {
-            Request::Status => Response::Status {
-                state: self.state,
-                monitor: self.monitor.clone(),
-                buffered_seconds: if self.recorder.is_some() {
-                    self.config.capture.duration_seconds
-                } else {
-                    0
-                },
-                error: self.last_error.clone(),
-            },
+            Request::Status => self.status(),
             Request::Save => self.save_replay(),
             Request::Pause => self.pause_capture(),
             Request::Resume => self.resume_capture(),
@@ -147,6 +138,24 @@ impl Daemon {
                 self.last_error = None;
             }
             Err(error) => self.fail(error.to_string()),
+        }
+    }
+
+    fn status(&mut self) -> Response {
+        if let Some(recorder) = self.recorder.as_mut()
+            && let Err(error) = recorder.is_running()
+        {
+            self.fail(error.to_string());
+        }
+        Response::Status {
+            state: self.state,
+            monitor: self.monitor.clone(),
+            buffered_seconds: if self.recorder.is_some() {
+                self.config.capture.duration_seconds
+            } else {
+                0
+            },
+            error: self.last_error.clone(),
         }
     }
 

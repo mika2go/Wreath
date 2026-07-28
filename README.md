@@ -58,6 +58,7 @@ riftclipctl config hotkey SUPER+SHIFT+R
 riftclipctl config duration 30
 riftclipctl config fps 60
 riftclipctl bind
+riftclipctl doctor
 ```
 
 ## Autostart

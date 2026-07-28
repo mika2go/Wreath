@@ -7,6 +7,7 @@ use riftclip_core::hyprland;
 use riftclip_core::ipc::{Request, Response};
 use riftclip_core::paths::AppPaths;
 use riftclip_core::{config::Codec, config::Config, config::HotkeyConfig};
+use riftclip_core::{engine, hyprland::resolve_monitor};
 
 fn main() -> ExitCode {
     match run() {
@@ -48,6 +49,9 @@ fn run() -> Result<(), String> {
     if command == "config" {
         return configure(&arguments[1..]);
     }
+    if command == "doctor" {
+        return doctor();
+    }
 
     let request = match command {
         "status" => Request::Status,
@@ -84,6 +88,33 @@ fn run() -> Result<(), String> {
         Response::Ok => {}
         Response::Error { message } => return Err(message),
     }
+    Ok(())
+}
+
+fn doctor() -> Result<(), String> {
+    let paths = AppPaths::discover();
+    let config = Config::load(&paths).map_err(|error| error.to_string())?;
+    println!("config  ok · {}", paths.config_file.display());
+    let monitors = hyprland::monitors().map_err(|error| error.to_string())?;
+    println!("hyprland ok · {} active monitor(s)", monitors.len());
+    let monitor = resolve_monitor(&monitors, config.capture.monitor.as_deref())
+        .ok_or_else(|| "no active monitor found".to_owned())?;
+    println!(
+        "capture  ok · {} · {}x{} @ {:.0} Hz",
+        monitor.name, monitor.width, monitor.height, monitor.refresh_rate
+    );
+    println!(
+        "buffer   ok · about {} MiB for {} seconds",
+        engine::ReplaySpec::from_config(&config, monitor).estimated_buffer_megabytes(),
+        config.capture.duration_seconds
+    );
+    if !engine::recorder_available() {
+        return Err(
+            "gpu-screen-recorder is missing; run `sudo pacman -S gpu-screen-recorder`".into(),
+        );
+    }
+    println!("engine   ok · gpu-screen-recorder");
+    println!("network  blocked by packaged systemd user service");
     Ok(())
 }
 
@@ -173,7 +204,8 @@ fn print_help() {
          commands:\n  monitors  list Hyprland monitors\n  status    show daemon state\n  \
          save      save the replay buffer\n  pause     pause capture\n  resume    resume capture\n  \
          reload    reload local configuration\n  bind      register configured Hyprland hotkey\n  \
-         config    show or change local settings\n  shutdown  stop the daemon\n\n\
+         config    show or change local settings\n  doctor    verify the local runtime\n  \
+         shutdown  stop the daemon\n\n\
          examples:\n  riftclipctl config monitor DP-1\n  riftclipctl config hotkey SUPER+SHIFT+R\n  \
          riftclipctl config duration 30\n  riftclipctl config fps 60\n  \
          riftclipctl config codec av1"

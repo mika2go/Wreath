@@ -141,17 +141,17 @@ impl ReplaySpec {
     pub fn target_bitrate_kbps(&self) -> u32 {
         let pixels_per_second =
             u64::from(self.width) * u64::from(self.height) * u64::from(self.frames_per_second);
-        let codec_factor = match self.codec {
-            Codec::Auto | Codec::H264 => 100_u64,
-            Codec::Hevc => 72,
-            Codec::Av1 => 58,
+        let bits_per_pixel_milli = match self.codec {
+            Codec::Auto | Codec::H264 => 160_u64,
+            Codec::Hevc => 115,
+            Codec::Av1 => 90,
         };
-        let quality_factor = 35_u64 + u64::from(self.quality);
+        let quality_factor = 50_u64 + u64::from(self.quality);
         let bitrate = pixels_per_second
-            .saturating_mul(codec_factor)
+            .saturating_mul(bits_per_pixel_milli)
             .saturating_mul(quality_factor)
-            / 1_000_000;
-        u32::try_from(bitrate.clamp(2_500, 120_000)).unwrap_or(120_000)
+            / 125_000_000;
+        u32::try_from(bitrate.clamp(2_500, 80_000)).unwrap_or(80_000)
     }
 
     pub fn estimated_buffer_megabytes(&self) -> u64 {
@@ -168,9 +168,16 @@ pub struct GpuScreenRecorder {
 
 impl GpuScreenRecorder {
     pub fn start(spec: &ReplaySpec) -> Result<Self, EngineError> {
-        fs::create_dir_all(&spec.output_directory)?;
         let executable =
             std::env::var_os("RIFTCLIP_RECORDER").unwrap_or_else(|| "gpu-screen-recorder".into());
+        Self::start_with_executable(spec, executable)
+    }
+
+    fn start_with_executable(
+        spec: &ReplaySpec,
+        executable: impl AsRef<std::ffi::OsStr>,
+    ) -> Result<Self, EngineError> {
+        fs::create_dir_all(&spec.output_directory)?;
         let mut child = Command::new(executable)
             .args(spec.arguments())
             .stdin(Stdio::null())
@@ -305,6 +312,20 @@ mod tests {
         let replay = spec();
         assert!(replay.target_bitrate_kbps() >= 2_500);
         assert!(replay.estimated_buffer_megabytes() > 0);
-        assert!(replay.estimated_buffer_megabytes() < 1_000);
+        assert!(replay.estimated_buffer_megabytes() < 100);
+    }
+
+    #[test]
+    fn recorder_lifecycle_saves_and_stops() {
+        let executable =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/fake-recorder.sh");
+        let mut recorder = GpuScreenRecorder::start_with_executable(&spec(), executable).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(recorder.is_running().unwrap());
+        assert_eq!(
+            recorder.save().unwrap(),
+            PathBuf::from("/tmp/riftclip-test/clip.mp4")
+        );
+        recorder.stop().unwrap();
     }
 }
