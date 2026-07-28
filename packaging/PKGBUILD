@@ -13,6 +13,7 @@ depends=(
   'gst-plugins-good'
   'gtk4'
   'hyprland'
+  'libpulse'
   'xdg-utils'
 )
 makedepends=('cargo' 'git')

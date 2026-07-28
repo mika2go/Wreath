@@ -23,6 +23,8 @@ Trace is under active development. The current milestone provides:
 - event-based palette refresh while the UI is open, without polling or another
   background process;
 - cached thumbnails generated locally with FFmpeg;
+- selectable PipeWire microphones with an isolated 0–200% Trace recording
+  level that never changes the system microphone volume;
 - a desktop entry for app launchers plus a quick “Save clip” action.
 
 ## Processes
@@ -48,7 +50,7 @@ The recorder engine and local playback plug-ins are available from Arch's
 official repositories:
 
 ```bash
-sudo pacman -S gpu-screen-recorder gst-plugins-base gst-plugins-good gst-libav
+sudo pacman -S gpu-screen-recorder gst-plugins-base gst-plugins-good gst-libav libpulse
 ```
 
 Run the settings app during development with:
