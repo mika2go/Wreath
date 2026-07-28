@@ -11,7 +11,7 @@ use gtk::glib::{self, ControlFlow};
 use gtk::pango;
 use gtk::prelude::*;
 use gtk::{
-    Align, Box as GtkBox, Button, ContentFit, Entry, FlowBox, FlowBoxChild, Grid, Label,
+    Align, Box as GtkBox, Button, ContentFit, Entry, FlowBox, FlowBoxChild, Grid, Image, Label,
     Orientation, Picture, ScrolledWindow, SelectionMode, Stack, Video,
 };
 use trace_core::clips::{self, Clip, ClipPreview};
@@ -123,7 +123,7 @@ pub fn build(stack: &Stack) -> ClipViews {
     search.add_css_class("search");
     search.set_placeholder_text(Some("Search clips"));
     search.set_size_request(210, 40);
-    let refresh = Button::with_label("↻");
+    let refresh = Button::from_icon_name("view-refresh-symbolic");
     refresh.add_css_class("icon-action");
     refresh.set_tooltip_text(Some("Refresh clips"));
     refresh.set_size_request(42, 40);
@@ -314,7 +314,8 @@ fn empty_state(directory: &std::path::Path) -> GtkBox {
     empty.add_css_class("empty-state");
     empty.set_vexpand(true);
     empty.set_valign(Align::Center);
-    let icon = Label::new(Some("◫"));
+    let icon = Image::from_icon_name("folder-videos-symbolic");
+    icon.set_pixel_size(38);
     icon.add_css_class("empty-icon");
     let title = Label::new(Some("No clips yet"));
     title.add_css_class("empty-title");
