@@ -26,6 +26,7 @@ pub struct ReplaySpec {
     pub desktop_audio: bool,
     pub microphone_audio: bool,
     pub microphone_device: Option<String>,
+    pub microphone_gain_percent: u16,
     pub output_directory: PathBuf,
 }
 
@@ -81,6 +82,7 @@ impl ReplaySpec {
             desktop_audio: config.audio.desktop,
             microphone_audio: config.audio.microphone,
             microphone_device: config.audio.microphone_device.clone(),
+            microphone_gain_percent: config.audio.microphone_gain_percent,
             output_directory: config.storage.directory.clone(),
         }
     }
@@ -159,6 +161,67 @@ impl ReplaySpec {
 pub struct GpuScreenRecorder {
     child: Child,
     saved_paths: Receiver<PathBuf>,
+    microphone_gain_source: Option<MicrophoneGainSource>,
+}
+
+struct MicrophoneGainSource {
+    module_id: String,
+    name: String,
+}
+
+impl MicrophoneGainSource {
+    fn create(master: &str, gain_percent: u16) -> Result<Self, EngineError> {
+        let name = format!("trace_recording_mic_{}", std::process::id());
+        let output = Command::new("pactl")
+            .args([
+                "load-module",
+                "module-remap-source",
+                &format!("master={master}"),
+                &format!("source_name={name}"),
+                "source_properties=device.description=TraceRecordingMicrophone",
+                "remix=no",
+            ])
+            .stdin(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()?;
+        if !output.status.success() {
+            return Err(EngineError::Signal(format!(
+                "cannot create isolated microphone channel: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let source = Self {
+            module_id: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+            name,
+        };
+        let status = Command::new("pactl")
+            .args([
+                "set-source-volume",
+                source.name.as_str(),
+                &format!("{gain_percent}%"),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        if !status.success() {
+            return Err(EngineError::Signal(
+                "cannot set isolated microphone recording level".into(),
+            ));
+        }
+        Ok(source)
+    }
+}
+
+impl Drop for MicrophoneGainSource {
+    fn drop(&mut self) {
+        let _ = Command::new("pactl")
+            .args(["unload-module", self.module_id.as_str()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,8 +242,25 @@ impl GpuScreenRecorder {
         executable: impl AsRef<std::ffi::OsStr>,
     ) -> Result<Self, EngineError> {
         fs::create_dir_all(&spec.output_directory)?;
+        let microphone_gain_source = if spec.microphone_audio && spec.microphone_gain_percent != 100
+        {
+            let master = spec
+                .microphone_device
+                .as_deref()
+                .unwrap_or("@DEFAULT_SOURCE@");
+            Some(MicrophoneGainSource::create(
+                master,
+                spec.microphone_gain_percent,
+            )?)
+        } else {
+            None
+        };
+        let mut recorder_spec = spec.clone();
+        if let Some(source) = &microphone_gain_source {
+            recorder_spec.microphone_device = Some(source.name.clone());
+        }
         let mut child = Command::new(executable)
-            .args(spec.arguments())
+            .args(recorder_spec.arguments())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -200,7 +280,11 @@ impl GpuScreenRecorder {
                     }
                 }
             })?;
-        Ok(Self { child, saved_paths })
+        Ok(Self {
+            child,
+            saved_paths,
+            microphone_gain_source,
+        })
     }
 
     pub fn process_id(&self) -> u32 {
@@ -226,10 +310,12 @@ impl GpuScreenRecorder {
 
     pub fn stop(&mut self) -> Result<(), EngineError> {
         if self.child.try_wait()?.is_some() {
+            self.microphone_gain_source.take();
             return Ok(());
         }
         send_signal(self.process_id(), "INT")?;
         self.child.wait()?;
+        self.microphone_gain_source.take();
         Ok(())
     }
 }
@@ -316,6 +402,7 @@ mod tests {
             desktop_audio: true,
             microphone_audio: false,
             microphone_device: None,
+            microphone_gain_percent: 100,
             output_directory: PathBuf::from("/tmp/trace-test"),
         }
     }

@@ -49,6 +49,7 @@ pub struct AudioConfig {
     pub desktop: bool,
     pub microphone: bool,
     pub microphone_device: Option<String>,
+    pub microphone_gain_percent: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -180,6 +181,7 @@ impl Default for AudioConfig {
             desktop: true,
             microphone: false,
             microphone_device: None,
+            microphone_gain_percent: 100,
         }
     }
 }
@@ -237,6 +239,11 @@ impl Config {
                 "quality must be between 0 and 100".into(),
             ));
         }
+        if self.audio.microphone_gain_percent > 200 {
+            return Err(ConfigError::Invalid(
+                "microphone recording level must be between 0 and 200 percent".into(),
+            ));
+        }
         self.hotkey.validate()?;
         if self.storage.max_megabytes < 128 {
             return Err(ConfigError::Invalid(
@@ -271,6 +278,13 @@ mod tests {
     fn invalid_duration_is_rejected() {
         let mut config = Config::default();
         config.capture.duration_seconds = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_microphone_recording_level_is_rejected() {
+        let mut config = Config::default();
+        config.audio.microphone_gain_percent = 201;
         assert!(config.validate().is_err());
     }
 
