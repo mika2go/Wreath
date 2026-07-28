@@ -107,6 +107,73 @@ impl Default for HotkeyConfig {
     }
 }
 
+impl fmt::Display for HotkeyConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for modifier in &self.modifiers {
+            write!(formatter, "{modifier}+")?;
+        }
+        formatter.write_str(&self.key)
+    }
+}
+
+impl HotkeyConfig {
+    pub fn parse(value: &str) -> Result<Self, ConfigError> {
+        let parts = value
+            .split('+')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>();
+        let (key, modifiers) = parts
+            .split_last()
+            .ok_or_else(|| ConfigError::Invalid("hotkey cannot be empty".into()))?;
+        let hotkey = Self {
+            modifiers: modifiers
+                .iter()
+                .map(|modifier| modifier.to_ascii_uppercase())
+                .collect(),
+            key: key.to_ascii_uppercase(),
+        };
+        hotkey.validate()?;
+        Ok(hotkey)
+    }
+
+    pub fn hyprland_expression(&self) -> String {
+        self.modifiers
+            .iter()
+            .chain(std::iter::once(&self.key))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" + ")
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        const MODIFIERS: &[&str] = &["SUPER", "SHIFT", "CTRL", "ALT"];
+        if self
+            .modifiers
+            .iter()
+            .any(|modifier| !MODIFIERS.contains(&modifier.as_str()))
+        {
+            return Err(ConfigError::Invalid(
+                "hotkey modifiers must be SUPER, SHIFT, CTRL, or ALT".into(),
+            ));
+        }
+        if self.modifiers.len() > MODIFIERS.len() {
+            return Err(ConfigError::Invalid("too many hotkey modifiers".into()));
+        }
+        if self.key.is_empty()
+            || !self
+                .key
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        {
+            return Err(ConfigError::Invalid(
+                "hotkey must be an alphanumeric XKB key name".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl Default for AudioConfig {
     fn default() -> Self {
         Self {
@@ -166,9 +233,7 @@ impl Config {
                 "quality must be between 0 and 100".into(),
             ));
         }
-        if self.hotkey.key.trim().is_empty() {
-            return Err(ConfigError::Invalid("hotkey cannot be empty".into()));
-        }
+        self.hotkey.validate()?;
         if self.storage.max_megabytes < 128 {
             return Err(ConfigError::Invalid(
                 "storage limit must be at least 128 MiB".into(),
@@ -206,5 +271,17 @@ mod tests {
         let encoded = toml::to_string(&config).unwrap();
         let decoded: Config = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded, config);
+    }
+
+    #[test]
+    fn hotkey_parses_for_hyprland() {
+        let hotkey = HotkeyConfig::parse("super + shift + r").unwrap();
+        assert_eq!(hotkey.to_string(), "SUPER+SHIFT+R");
+        assert_eq!(hotkey.hyprland_expression(), "SUPER + SHIFT + R");
+    }
+
+    #[test]
+    fn hotkey_rejects_code_injection() {
+        assert!(HotkeyConfig::parse("SUPER+R\"); os.execute(\"bad").is_err());
     }
 }

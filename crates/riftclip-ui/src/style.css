@@ -1,0 +1,125 @@
+window.riftclip-window {
+  background: #111318;
+  color: #e7e9ee;
+}
+
+.eyebrow,
+.section-title {
+  color: #747b88;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.title {
+  color: #f5f6f8;
+  font-size: 30px;
+  font-weight: 700;
+}
+
+.subtitle,
+.feedback {
+  color: #8e95a1;
+  font-size: 12px;
+}
+
+.state {
+  color: #79c99e;
+  font-size: 10px;
+  font-weight: 700;
+  padding-top: 7px;
+}
+
+.row-label {
+  color: #a8aeba;
+  font-size: 13px;
+}
+
+separator {
+  min-height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+entry,
+dropdown,
+spinbutton {
+  min-height: 36px;
+  padding: 0 4px;
+  color: #eef0f4;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+entry:focus,
+dropdown:focus,
+spinbutton:focus {
+  border-bottom-color: #89a9e8;
+  box-shadow: none;
+}
+
+dropdown button,
+spinbutton button {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+scale trough {
+  min-height: 2px;
+  background: rgba(255, 255, 255, 0.13);
+  border-radius: 0;
+}
+
+scale highlight {
+  background: #89a9e8;
+  border-radius: 0;
+}
+
+scale slider {
+  min-width: 18px;
+  min-height: 18px;
+  background: #dce5f8;
+  border: none;
+  box-shadow: none;
+}
+
+checkbutton {
+  min-height: 34px;
+  color: #d7dae1;
+}
+
+checkbutton check {
+  min-width: 14px;
+  min-height: 14px;
+  background: transparent;
+  border: 1px solid #5f6673;
+  border-radius: 2px;
+  box-shadow: none;
+}
+
+checkbutton check:checked {
+  color: #111318;
+  background: #89a9e8;
+  border-color: #89a9e8;
+}
+
+button.apply {
+  color: #9bb9ef;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(155, 185, 239, 0.45);
+  border-radius: 0;
+  box-shadow: none;
+  font-weight: 700;
+}
+
+button.apply:hover {
+  color: #f4f7ff;
+  border-bottom-color: #f4f7ff;
+}
+
+.feedback.error {
+  color: #e58b8b;
+}

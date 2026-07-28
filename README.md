@@ -11,9 +11,12 @@ The project has three rules:
 
 ## Status
 
-Riftclip is under active development. The current milestone provides the Rust
-workspace, local configuration model, Hyprland monitor discovery, and local
-Unix-socket protocol.
+Riftclip is under active development. The current milestone provides:
+
+- a hardware replay adapter for the official Arch `gpu-screen-recorder` package;
+- Hyprland monitor discovery and native Lua-provider hotkey registration;
+- a local Unix-socket control protocol;
+- a separate, non-resident GTK4 settings app.
 
 ## Planned processes
 
@@ -34,7 +37,29 @@ cargo build --workspace
 cargo test --workspace
 ```
 
+The recorder engine is a small package from Arch's official repositories:
+
+```bash
+sudo pacman -S gpu-screen-recorder
+```
+
+Run the settings app during development with:
+
+```bash
+cargo run -p riftclip-ui
+```
+
+The same settings are available without opening GTK:
+
+```bash
+riftclipctl monitors
+riftclipctl config monitor DP-1
+riftclipctl config hotkey SUPER+SHIFT+R
+riftclipctl config duration 30
+riftclipctl config fps 60
+riftclipctl bind
+```
+
 ## License
 
 MIT
-

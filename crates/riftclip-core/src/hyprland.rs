@@ -1,8 +1,11 @@
 use std::fmt;
 use std::io;
+use std::path::Path;
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
+
+use crate::config::HotkeyConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +73,40 @@ pub fn resolve_monitor<'a>(
         .or_else(|| monitors.first())
 }
 
+pub fn install_replay_bind(
+    hotkey: &HotkeyConfig,
+    control_executable: &Path,
+) -> Result<(), HyprlandError> {
+    let executable = shell_quote(&control_executable.to_string_lossy());
+    let command = format!("{executable} save");
+    let code = format!(
+        "if riftclip_save_bind then riftclip_save_bind:set_enabled(false) end; \
+         riftclip_save_bind = hl.bind(\"{}\", hl.dsp.exec_cmd(\"{}\"), \
+         {{ description = \"Save Riftclip replay\" }})",
+        lua_escape(&hotkey.hyprland_expression()),
+        lua_escape(&command)
+    );
+    let output = Command::new("hyprctl")
+        .args(["eval", &code])
+        .output()
+        .map_err(HyprlandError::Io)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(HyprlandError::Command(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ))
+    }
+}
+
+fn lua_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +146,11 @@ mod tests {
             monitor("DP-2", "Display B", true),
         ];
         assert_eq!(resolve_monitor(&monitors, None).unwrap().name, "DP-2");
+    }
+
+    #[test]
+    fn escaping_keeps_paths_inside_lua_and_shell_strings() {
+        assert_eq!(lua_escape("a\"b"), "a\\\"b");
+        assert_eq!(shell_quote("a'b"), "'a'\\''b'");
     }
 }
