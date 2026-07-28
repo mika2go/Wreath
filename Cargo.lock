@@ -482,40 +482,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "riftclip-core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "toml 0.9.12+spec-1.1.0",
-]
-
-[[package]]
-name = "riftclip-ui"
-version = "0.1.0"
-dependencies = [
- "gtk4",
- "riftclip-core",
-]
-
-[[package]]
-name = "riftclipctl"
-version = "0.1.0"
-dependencies = [
- "riftclip-core",
- "serde_json",
- "toml 0.9.12+spec-1.1.0",
-]
-
-[[package]]
-name = "riftclipd"
-version = "0.1.0"
-dependencies = [
- "riftclip-core",
- "serde_json",
-]
-
-[[package]]
 name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -709,6 +675,40 @@ name = "toml_writer"
 version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
+
+[[package]]
+name = "trace-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "trace-ui"
+version = "0.1.0"
+dependencies = [
+ "gtk4",
+ "trace-core",
+]
+
+[[package]]
+name = "tracectl"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "toml 0.9.12+spec-1.1.0",
+ "trace-core",
+]
+
+[[package]]
+name = "traced"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "trace-core",
+]
 
 [[package]]
 name = "unicode-ident"

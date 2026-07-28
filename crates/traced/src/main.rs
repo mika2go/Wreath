@@ -4,11 +4,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::ExitCode;
 
-use riftclip_core::config::Config;
-use riftclip_core::engine::{GpuScreenRecorder, ReplaySpec};
-use riftclip_core::hyprland;
-use riftclip_core::ipc::{DaemonState, Request, Response};
-use riftclip_core::paths::AppPaths;
+use trace_core::config::Config;
+use trace_core::engine::{GpuScreenRecorder, ReplaySpec};
+use trace_core::hyprland;
+use trace_core::ipc::{DaemonState, Request, Response};
+use trace_core::paths::AppPaths;
 
 struct Daemon {
     paths: AppPaths,
@@ -23,7 +23,7 @@ struct Daemon {
 
 fn main() -> ExitCode {
     if let Err(error) = run() {
-        eprintln!("riftclipd: {error}");
+        eprintln!("traced: {error}");
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
@@ -66,16 +66,16 @@ fn run() -> Result<(), String> {
         shutdown: false,
     };
     daemon.start_capture();
-    eprintln!("riftclipd: ready on {}", daemon.paths.socket_file.display());
+    eprintln!("traced: ready on {}", daemon.paths.socket_file.display());
 
     for connection in listener.incoming() {
         match connection {
             Ok(stream) => {
                 if let Err(error) = daemon.handle(stream) {
-                    eprintln!("riftclipd: {error}");
+                    eprintln!("traced: {error}");
                 }
             }
-            Err(error) => eprintln!("riftclipd: socket error: {error}"),
+            Err(error) => eprintln!("traced: socket error: {error}"),
         }
         if daemon.shutdown {
             break;
@@ -128,7 +128,7 @@ impl Daemon {
         match GpuScreenRecorder::start(spec) {
             Ok(recorder) => {
                 eprintln!(
-                    "riftclipd: recording {} at {} fps (estimated buffer {} MiB)",
+                    "traced: recording {} at {} fps (estimated buffer {} MiB)",
                     spec.monitor,
                     spec.frames_per_second,
                     spec.estimated_buffer_megabytes()
@@ -182,7 +182,7 @@ impl Daemon {
         if let Some(mut recorder) = self.recorder.take()
             && let Err(error) = recorder.stop()
         {
-            eprintln!("riftclipd: {error}");
+            eprintln!("traced: {error}");
         }
     }
 
@@ -244,7 +244,7 @@ impl Daemon {
     }
 
     fn fail(&mut self, message: String) {
-        eprintln!("riftclipd: {message}");
+        eprintln!("traced: {message}");
         self.recorder = None;
         self.state = DaemonState::Error;
         self.last_error = Some(message);

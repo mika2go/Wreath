@@ -1,14 +1,14 @@
-pkgname=riftclip-git
+pkgname=trace-git
 pkgver=0.1.0.r0.g0000000
 pkgrel=1
 pkgdesc="Lightweight local-first instant replay recorder for Hyprland"
 arch=('x86_64')
-url="https://github.com/mika2go/riftclip"
+url="https://github.com/mika2go/trace"
 license=('MIT')
 depends=('gpu-screen-recorder' 'gtk4' 'hyprland')
 makedepends=('cargo' 'git')
-provides=('riftclip')
-conflicts=('riftclip')
+provides=('trace')
+conflicts=('trace')
 source=("$pkgname::git+$url.git")
 b2sums=('SKIP')
 
@@ -31,16 +31,16 @@ check() {
 
 package() {
   cd "$pkgname"
-  install -Dm755 target/release/riftclipd "$pkgdir/usr/bin/riftclipd"
-  install -Dm755 target/release/riftclipctl "$pkgdir/usr/bin/riftclipctl"
-  install -Dm755 target/release/riftclip-ui "$pkgdir/usr/bin/riftclip-ui"
+  install -Dm755 target/release/traced "$pkgdir/usr/bin/traced"
+  install -Dm755 target/release/tracectl "$pkgdir/usr/bin/tracectl"
+  install -Dm755 target/release/trace-ui "$pkgdir/usr/bin/trace-ui"
 
-  install -Dm644 packaging/riftclipd.service \
-    "$pkgdir/usr/lib/systemd/user/riftclipd.service"
-  install -Dm644 packaging/io.github.mika2go.Riftclip.desktop \
-    "$pkgdir/usr/share/applications/io.github.mika2go.Riftclip.desktop"
-  install -Dm644 packaging/io.github.mika2go.Riftclip.svg \
-    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.mika2go.Riftclip.svg"
+  install -Dm644 packaging/traced.service \
+    "$pkgdir/usr/lib/systemd/user/traced.service"
+  install -Dm644 packaging/io.github.mika2go.Trace.desktop \
+    "$pkgdir/usr/share/applications/io.github.mika2go.Trace.desktop"
+  install -Dm644 packaging/io.github.mika2go.Trace.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.mika2go.Trace.svg"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

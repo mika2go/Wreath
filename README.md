@@ -1,6 +1,6 @@
-# Riftclip
+# Trace
 
-Riftclip is a local-first instant replay recorder for Arch Linux and Hyprland.
+Trace is a local-first instant replay recorder for Arch Linux and Hyprland.
 It keeps a short encoded rolling buffer and saves it only when you ask.
 
 The project has three rules:
@@ -11,7 +11,7 @@ The project has three rules:
 
 ## Status
 
-Riftclip is under active development. The current milestone provides:
+Trace is under active development. The current milestone provides:
 
 - a hardware replay adapter for the official Arch `gpu-screen-recorder` package;
 - Hyprland monitor discovery and native Lua-provider hotkey registration;
@@ -20,15 +20,15 @@ Riftclip is under active development. The current milestone provides:
 
 ## Planned processes
 
-- `riftclipd` — the small recorder daemon;
-- `riftclipctl` — a fast CLI used by Hyprland binds;
-- `riftclip-ui` — settings only, never resident in the background.
+- `traced` — the small recorder daemon;
+- `tracectl` — a fast CLI used by Hyprland binds;
+- `trace-ui` — settings only, never resident in the background.
 
 ## Local data
 
-Configuration is stored below `$XDG_CONFIG_HOME/riftclip` and clips default to
-`$HOME/Videos/Riftclip`. Runtime control uses a Unix socket below
-`$XDG_RUNTIME_DIR`. Riftclip does not contain a network client.
+Configuration is stored below `$XDG_CONFIG_HOME/trace` and clips default to
+`$HOME/Videos/Trace`. Runtime control uses a Unix socket below
+`$XDG_RUNTIME_DIR`. Trace does not contain a network client.
 
 ## Build
 
@@ -46,19 +46,19 @@ sudo pacman -S gpu-screen-recorder
 Run the settings app during development with:
 
 ```bash
-cargo run -p riftclip-ui
+cargo run -p trace-ui
 ```
 
 The same settings are available without opening GTK:
 
 ```bash
-riftclipctl monitors
-riftclipctl config monitor DP-1
-riftclipctl config hotkey SUPER+SHIFT+R
-riftclipctl config duration 30
-riftclipctl config fps 60
-riftclipctl bind
-riftclipctl doctor
+tracectl monitors
+tracectl config monitor DP-1
+tracectl config hotkey SUPER+SHIFT+R
+tracectl config duration 30
+tracectl config fps 60
+tracectl bind
+tracectl doctor
 ```
 
 ## Autostart
@@ -66,11 +66,11 @@ riftclipctl doctor
 After installing the package, enable the optional local user service:
 
 ```bash
-systemctl --user enable --now riftclipd.service
+systemctl --user enable --now traced.service
 ```
 
 The service denies IP networking and allows only local Unix sockets needed for
-Hyprland, PipeWire, audio, and Riftclip control.
+Hyprland, PipeWire, audio, and Trace control.
 
 Release builds can be audited locally:
 

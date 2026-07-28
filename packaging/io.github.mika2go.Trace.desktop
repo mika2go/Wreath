@@ -1,11 +1,12 @@
 [Desktop Entry]
 Type=Application
-Name=Riftclip
+Name=Trace
 GenericName=Instant Replay Settings
 Comment=Configure local Hyprland instant replay
-Exec=riftclip-ui
-Icon=io.github.mika2go.Riftclip
+Exec=trace-ui
+Icon=io.github.mika2go.Trace
 Terminal=false
 Categories=AudioVideo;Recorder;
 Keywords=replay;recording;clip;hyprland;
 StartupNotify=true
+StartupWMClass=io.github.mika2go.Trace

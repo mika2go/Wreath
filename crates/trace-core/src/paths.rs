@@ -4,6 +4,7 @@ use std::path::PathBuf;
 pub struct AppPaths {
     pub config_dir: PathBuf,
     pub config_file: PathBuf,
+    pub legacy_config_file: PathBuf,
     pub socket_file: PathBuf,
 }
 
@@ -19,13 +20,14 @@ impl AppPaths {
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
-                std::env::temp_dir().join(format!("riftclip-{user}"))
+                std::env::temp_dir().join(format!("trace-{user}"))
             });
-        let config_dir = config_root.join("riftclip");
+        let config_dir = config_root.join("trace");
         Self {
             config_file: config_dir.join("config.toml"),
+            legacy_config_file: config_root.join("riftclip").join("config.toml"),
             config_dir,
-            socket_file: runtime_root.join("riftclip.sock"),
+            socket_file: runtime_root.join("trace.sock"),
         }
     }
 }

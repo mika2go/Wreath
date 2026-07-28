@@ -169,7 +169,7 @@ pub struct GpuScreenRecorder {
 impl GpuScreenRecorder {
     pub fn start(spec: &ReplaySpec) -> Result<Self, EngineError> {
         let executable =
-            std::env::var_os("RIFTCLIP_RECORDER").unwrap_or_else(|| "gpu-screen-recorder".into());
+            std::env::var_os("TRACE_RECORDER").unwrap_or_else(|| "gpu-screen-recorder".into());
         Self::start_with_executable(spec, executable)
     }
 
@@ -190,7 +190,7 @@ impl GpuScreenRecorder {
             .ok_or_else(|| EngineError::Io(io::Error::other("recorder stdout was not captured")))?;
         let (saved_sender, saved_paths) = mpsc::channel();
         thread::Builder::new()
-            .name("riftclip-save-reader".into())
+            .name("trace-save-reader".into())
             .spawn(move || {
                 for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                     let trimmed = line.trim();
@@ -280,7 +280,7 @@ mod tests {
             desktop_audio: true,
             microphone_audio: false,
             microphone_device: None,
-            output_directory: PathBuf::from("/tmp/riftclip-test"),
+            output_directory: PathBuf::from("/tmp/trace-test"),
         }
     }
 
@@ -324,7 +324,7 @@ mod tests {
         assert!(recorder.is_running().unwrap());
         assert_eq!(
             recorder.save().unwrap(),
-            PathBuf::from("/tmp/riftclip-test/clip.mp4")
+            PathBuf::from("/tmp/trace-test/clip.mp4")
         );
         recorder.stop().unwrap();
     }

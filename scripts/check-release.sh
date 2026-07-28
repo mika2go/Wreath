@@ -6,7 +6,7 @@ cd "$workspace_dir"
 
 cargo build --locked --release --workspace
 
-for binary in target/release/riftclipd target/release/riftclipctl; do
+for binary in target/release/traced target/release/tracectl; do
   if readelf -d "$binary" | grep -Eiq 'NEEDED.*(curl|ssl|crypto|gtk|gdk|webkit)'; then
     echo "$binary links a forbidden network or UI library" >&2
     exit 1
@@ -18,7 +18,7 @@ for binary in target/release/riftclipd target/release/riftclipctl; do
   fi
 done
 
-grep -qx 'IPAddressDeny=any' packaging/riftclipd.service
-grep -qx 'RestrictAddressFamilies=AF_UNIX' packaging/riftclipd.service
+grep -qx 'IPAddressDeny=any' packaging/traced.service
+grep -qx 'RestrictAddressFamilies=AF_UNIX' packaging/traced.service
 
 echo "release checks passed"

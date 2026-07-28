@@ -8,11 +8,11 @@ use gtk::{
     CssProvider, DropDown, Entry, Grid, Label, Orientation, Scale, ScrolledWindow, Separator,
     SpinButton, StringList,
 };
-use riftclip_core::config::{Codec, Config, HotkeyConfig};
-use riftclip_core::hyprland::{self, Monitor};
-use riftclip_core::paths::AppPaths;
+use trace_core::config::{Codec, Config, HotkeyConfig};
+use trace_core::hyprland::{self, Monitor};
+use trace_core::paths::AppPaths;
 
-const APP_ID: &str = "io.github.mika2go.Riftclip";
+const APP_ID: &str = "io.github.mika2go.Trace";
 
 fn main() -> ExitCode {
     let application = Application::builder().application_id(APP_ID).build();
@@ -40,12 +40,12 @@ fn build_ui(application: &Application) {
 
     let window = ApplicationWindow::builder()
         .application(application)
-        .title("Riftclip")
+        .title("Trace")
         .default_width(680)
         .default_height(720)
         .resizable(true)
         .build();
-    window.add_css_class("riftclip-window");
+    window.add_css_class("trace-window");
 
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.set_margin_top(34);
@@ -60,7 +60,7 @@ fn build_ui(application: &Application) {
     let eyebrow = Label::new(Some("INSTANT REPLAY"));
     eyebrow.add_css_class("eyebrow");
     eyebrow.set_halign(Align::Start);
-    let title = Label::new(Some("Riftclip"));
+    let title = Label::new(Some("Trace"));
     title.add_css_class("title");
     title.set_halign(Align::Start);
     let subtitle = Label::new(Some("Local capture. Nothing leaves this machine."));
@@ -248,9 +248,9 @@ fn sibling_control_executable() -> PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf))
-        .map(|directory| directory.join("riftclipctl"))
+        .map(|directory| directory.join("tracectl"))
         .filter(|path| path.exists())
-        .unwrap_or_else(|| PathBuf::from("riftclipctl"))
+        .unwrap_or_else(|| PathBuf::from("tracectl"))
 }
 
 fn monitor_model(monitors: &[Monitor]) -> StringList {

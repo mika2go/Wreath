@@ -190,7 +190,7 @@ impl Default for StorageConfig {
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir)
             .join("Videos")
-            .join("Riftclip");
+            .join("Trace");
         Self {
             directory,
             max_megabytes: 10_240,
@@ -200,10 +200,14 @@ impl Default for StorageConfig {
 
 impl Config {
     pub fn load(paths: &AppPaths) -> Result<Self, ConfigError> {
-        if !paths.config_file.exists() {
+        let source = if paths.config_file.exists() {
+            &paths.config_file
+        } else if paths.legacy_config_file.exists() {
+            &paths.legacy_config_file
+        } else {
             return Ok(Self::default());
-        }
-        let text = fs::read_to_string(&paths.config_file)?;
+        };
+        let text = fs::read_to_string(source)?;
         let config: Self = toml::from_str(&text).map_err(ConfigError::Parse)?;
         config.validate()?;
         Ok(config)

@@ -80,9 +80,9 @@ pub fn install_replay_bind(
     let executable = shell_quote(&control_executable.to_string_lossy());
     let command = format!("{executable} save");
     let code = format!(
-        "if riftclip_save_bind then riftclip_save_bind:set_enabled(false) end; \
-         riftclip_save_bind = hl.bind(\"{}\", hl.dsp.exec_cmd(\"{}\"), \
-         {{ description = \"Save Riftclip replay\" }})",
+        "if trace_save_bind then trace_save_bind:set_enabled(false) end; \
+         trace_save_bind = hl.bind(\"{}\", hl.dsp.exec_cmd(\"{}\"), \
+         {{ description = \"Save Trace replay\" }})",
         lua_escape(&hotkey.hyprland_expression()),
         lua_escape(&command)
     );

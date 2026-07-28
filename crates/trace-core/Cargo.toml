@@ -1,5 +1,5 @@
 [package]
-name = "riftclip-core"
+name = "trace-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,22 +1,22 @@
 # Architecture
 
-Riftclip keeps the resident path intentionally small.
+Trace keeps the resident path intentionally small.
 
 ```text
 Hyprland bind
     │
     ▼
-riftclipctl ── Unix socket ──► riftclipd ── signals ──► gpu-screen-recorder
+tracectl ── Unix socket ──► traced ── signals ──► gpu-screen-recorder
                                       │
                                       └──────────────► local clip directory
 
-riftclip-ui ── writes local config ──► ~/.config/riftclip/config.toml
+trace-ui ── writes local config ──► ~/.config/trace/config.toml
      │
      └── exits after settings are closed
 ```
 
-`riftclipd` links only the Rust standard library, Serde, and the configuration
-parser. It does not link GTK. `riftclip-ui` is a separate executable, so none
+`traced` links only the Rust standard library, Serde, and the configuration
+parser. It does not link GTK. `trace-ui` is a separate executable, so none
 of its UI dependencies are mapped into the daemon.
 
 Hyprland supplies monitor metadata and owns the save hotkey. The recorder
