@@ -26,12 +26,7 @@ fn main() -> ExitCode {
 
 fn install_css() {
     let provider = CssProvider::new();
-    let stylesheet = format!(
-        "{}\n{}",
-        theme::Palette::discover().css_prefix(),
-        include_str!("style.css")
-    );
-    provider.load_from_string(&stylesheet);
+    load_css(&provider);
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,
@@ -39,6 +34,17 @@ fn install_css() {
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
     }
+    let provider = provider.clone();
+    theme::watch_palette_changes(move || load_css(&provider));
+}
+
+fn load_css(provider: &CssProvider) {
+    let stylesheet = format!(
+        "{}\n{}",
+        theme::Palette::discover().css_prefix(),
+        include_str!("style.css")
+    );
+    provider.load_from_string(&stylesheet);
 }
 
 fn build_ui(application: &Application) {
@@ -62,7 +68,7 @@ fn build_ui(application: &Application) {
 
     let brand = GtkBox::new(Orientation::Horizontal, 10);
     brand.add_css_class("brand");
-    let mark = Image::from_icon_name(APP_ID);
+    let mark = Image::from_icon_name("io.github.mika2go.Trace-symbolic");
     mark.set_pixel_size(21);
     mark.add_css_class("brand-mark");
     let brand_name = Label::new(Some("TRACE"));

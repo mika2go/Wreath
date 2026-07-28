@@ -5,7 +5,7 @@ window.trace-window {
 
 .sidebar {
   padding: 24px 14px 18px;
-  background: @trace_sidebar;
+  background: transparent;
   border-right: 1px solid rgba(255, 255, 255, 0.065);
 }
 
@@ -24,7 +24,7 @@ window.trace-window {
 }
 
 .brand-mark {
-  color: @trace_accent;
+  color: #f6f7fb;
 }
 
 .brand-name {
@@ -83,7 +83,7 @@ button.nav-button.active {
 .clips-page,
 .player-page,
 .settings-page {
-  background: @trace_bg;
+  background: transparent;
 }
 
 .clips-page {
@@ -306,7 +306,7 @@ checkbutton check {
 }
 
 checkbutton check:checked {
-  color: @trace_bg;
+  color: #101318;
   background: @trace_accent;
   border-color: @trace_accent;
 }

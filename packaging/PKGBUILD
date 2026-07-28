@@ -57,6 +57,8 @@ package() {
     "$pkgdir/usr/share/metainfo/io.github.mika2go.Trace.metainfo.xml"
   install -Dm644 packaging/io.github.mika2go.Trace.svg \
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.mika2go.Trace.svg"
+  install -Dm644 packaging/io.github.mika2go.Trace-symbolic.svg \
+    "$pkgdir/usr/share/icons/hicolor/symbolic/apps/io.github.mika2go.Trace-symbolic.svg"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

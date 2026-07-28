@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <defs>
-    <linearGradient id="trace" x1="24" y1="22" x2="105" y2="106" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#70e2d4"/>
-      <stop offset="1" stop-color="#8178ff"/>
-    </linearGradient>
-  </defs>
-  <circle cx="64" cy="64" r="57" fill="#0b1018"/>
-  <path d="M96 42A40 40 0 1 0 101 80" fill="none" stroke="url(#trace)" stroke-width="11" stroke-linecap="round"/>
-  <path d="m91 28 17 16-23 5Z" fill="#8178ff"/>
-  <path d="M42 51h43M64 51v38" fill="none" stroke="#f6f7fb" stroke-width="10" stroke-linecap="round"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <g stroke="#111318" stroke-width="17">
+      <path d="M42 25H25v17M86 25h17v17M42 103H25V86M86 103h17V86"/>
+      <path d="M51 45v38M77 45v38"/>
+    </g>
+    <g stroke="#f7f7f7" stroke-width="10">
+      <path d="M42 25H25v17M86 25h17v17M42 103H25V86M86 103h17V86"/>
+      <path d="M51 45v38M77 45v38"/>
+    </g>
+  </g>
 </svg>

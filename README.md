@@ -18,8 +18,10 @@ Trace is under active development. The current milestone provides:
 - Hyprland monitor discovery and native Lua-provider hotkey registration;
 - a local Unix-socket control protocol;
 - a responsive, non-resident GTK4 app with a local clip library and player;
-- an offline color palette derived once at startup from the current wallpaper
-  or an existing local Quickshell/Pywal palette;
+- one 80%-opaque Hyprland-blurred surface whose colors are derived locally
+  from the current wallpaper or an existing Quickshell/Pywal palette;
+- event-based palette refresh while the UI is open, without polling or another
+  background process;
 - cached thumbnails generated locally with FFmpeg;
 - a desktop entry for app launchers plus a quick “Save clip” action.
 

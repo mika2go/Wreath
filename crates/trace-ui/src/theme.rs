@@ -1,8 +1,14 @@
+use std::cell::Cell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::rc::Rc;
+use std::time::Duration;
 
 use gdk_pixbuf::Pixbuf;
+use gtk::gio;
+use gtk::glib;
+use gtk::prelude::*;
 use serde_json::Value;
 
 const FALLBACK_ACCENT: Rgb = Rgb::new(137, 113, 255);
@@ -48,6 +54,13 @@ impl Rgb {
     fn hex(self) -> String {
         format!("#{:02x}{:02x}{:02x}", self.red, self.green, self.blue)
     }
+
+    fn rgba(self, opacity: f32) -> String {
+        format!(
+            "rgba({}, {}, {}, {:.2})",
+            self.red, self.green, self.blue, opacity
+        )
+    }
 }
 
 pub struct Palette {
@@ -73,24 +86,55 @@ impl Palette {
 
     pub fn css_prefix(&self) -> String {
         let background = Rgb::new(7, 9, 13).mix(self.dominant, 0.18);
-        let sidebar = Rgb::new(10, 13, 19).mix(self.dominant, 0.22);
         let surface = Rgb::new(15, 19, 27).mix(self.dominant, 0.24);
         let stage = Rgb::new(3, 4, 7).mix(self.dominant, 0.10);
         let accent_strong = self.accent.mix(Rgb::new(255, 255, 255), 0.08);
         format!(
             "@define-color trace_bg {};\n\
-             @define-color trace_sidebar {};\n\
              @define-color trace_surface {};\n\
              @define-color trace_stage {};\n\
              @define-color trace_accent {};\n\
              @define-color trace_accent_strong {};\n",
-            background.hex(),
-            sidebar.hex(),
-            surface.hex(),
-            stage.hex(),
+            background.rgba(0.80),
+            surface.rgba(0.84),
+            stage.rgba(0.88),
             self.accent.hex(),
             accent_strong.hex(),
         )
+    }
+}
+
+pub fn watch_palette_changes(callback: impl Fn() + 'static) {
+    let callback: Rc<dyn Fn()> = Rc::new(callback);
+    let pending = Rc::new(Cell::new(false));
+    for path in [
+        cache_home().join("quickshell/wallpaper-engine-current"),
+        cache_home().join("quickshell/wallpaper-colors.json"),
+        cache_home().join("wal/colors.json"),
+    ] {
+        let file = gio::File::for_path(path);
+        let Ok(monitor) = file.monitor_file(
+            gio::FileMonitorFlags::WATCH_MOVES,
+            None::<&gio::Cancellable>,
+        ) else {
+            continue;
+        };
+        let monitor = Rc::new(monitor);
+        let keepalive = monitor.clone();
+        let callback = callback.clone();
+        let pending = pending.clone();
+        monitor.connect_changed(move |_, _, _, _| {
+            let _ = &keepalive;
+            if pending.replace(true) {
+                return;
+            }
+            let pending = pending.clone();
+            let callback = callback.clone();
+            glib::timeout_add_local_once(Duration::from_millis(120), move || {
+                pending.set(false);
+                callback();
+            });
+        });
     }
 }
 
@@ -262,5 +306,17 @@ mod tests {
             Rgb::new(0, 0, 0).mix(Rgb::new(100, 50, 200), 0.5).hex(),
             "#321964"
         );
+        assert_eq!(Rgb::new(17, 23, 34).rgba(0.8), "rgba(17, 23, 34, 0.80)");
+    }
+
+    #[test]
+    fn palette_uses_an_eighty_percent_main_surface() {
+        let stylesheet = Palette {
+            accent: FALLBACK_ACCENT,
+            dominant: FALLBACK_DOMINANT,
+        }
+        .css_prefix();
+        assert!(stylesheet.contains("@define-color trace_bg rgba("));
+        assert!(stylesheet.contains(", 0.80);"));
     }
 }
