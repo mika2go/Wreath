@@ -157,6 +157,7 @@ fn collect_and_save(
     output: &Entry,
 ) -> Result<(), String> {
     let mut config = Config::load(paths).unwrap_or_default();
+    let previous_hotkey = config.hotkey.clone();
     let selected = usize::try_from(monitor_dropdown.selected()).unwrap_or(usize::MAX);
     let monitor = monitors
         .get(selected)
@@ -186,7 +187,8 @@ fn collect_and_save(
     config.save(paths).map_err(|error| error.to_string())?;
 
     let control = sibling_control_executable();
-    hyprland::install_replay_bind(&config.hotkey, &control).map_err(|error| error.to_string())?;
+    hyprland::replace_replay_bind(Some(&previous_hotkey), &config.hotkey, &control)
+        .map_err(|error| error.to_string())?;
     let _ = Command::new(control)
         .arg("reload")
         .stdin(Stdio::null())

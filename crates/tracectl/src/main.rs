@@ -121,6 +121,7 @@ fn doctor() -> Result<(), String> {
 fn configure(arguments: &[String]) -> Result<(), String> {
     let paths = AppPaths::discover();
     let mut config = Config::load(&paths).map_err(|error| error.to_string())?;
+    let previous_hotkey = config.hotkey.clone();
     let Some(setting) = arguments.first().map(String::as_str) else {
         let encoded = toml::to_string_pretty(&config).map_err(|error| error.to_string())?;
         print!("{encoded}");
@@ -169,7 +170,7 @@ fn configure(arguments: &[String]) -> Result<(), String> {
     config.save(&paths).map_err(|error| error.to_string())?;
     if setting == "hotkey" {
         let executable = env::current_exe().map_err(|error| error.to_string())?;
-        hyprland::install_replay_bind(&config.hotkey, &executable)
+        hyprland::replace_replay_bind(Some(&previous_hotkey), &config.hotkey, &executable)
             .map_err(|error| error.to_string())?;
     }
     let _ = send(&paths, &Request::Reload);
