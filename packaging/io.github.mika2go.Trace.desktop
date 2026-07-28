@@ -1,12 +1,18 @@
 [Desktop Entry]
 Type=Application
 Name=Trace
-GenericName=Instant Replay Settings
-Comment=Configure local Hyprland instant replay
+GenericName=Game Clip Recorder
+Comment=Capture and watch local instant replays
 Exec=trace-ui
+TryExec=trace-ui
 Icon=io.github.mika2go.Trace
 Terminal=false
 Categories=AudioVideo;Recorder;
-Keywords=replay;recording;clip;hyprland;
+Keywords=trace;replay;recording;clip;video;hyprland;
 StartupNotify=true
 StartupWMClass=io.github.mika2go.Trace
+Actions=SaveClip;
+
+[Desktop Action SaveClip]
+Name=Save replay now
+Exec=tracectl save
