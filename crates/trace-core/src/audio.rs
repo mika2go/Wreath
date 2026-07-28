@@ -1,0 +1,102 @@
+use std::io;
+use std::process::{Command, Stdio};
+
+use serde::Deserialize;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Microphone {
+    pub name: String,
+    pub label: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct PulseSource {
+    name: String,
+    description: String,
+    #[serde(default)]
+    monitor_source: String,
+}
+
+pub fn microphones() -> io::Result<Vec<Microphone>> {
+    let output = Command::new("pactl")
+        .args(["-f", "json", "list", "sources"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other("pactl could not list microphones"));
+    }
+    let default = Command::new("pactl")
+        .arg("get-default-source")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
+    parse_sources(&output.stdout, default.as_deref())
+}
+
+fn parse_sources(bytes: &[u8], default: Option<&str>) -> io::Result<Vec<Microphone>> {
+    let sources: Vec<PulseSource> = serde_json::from_slice(bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let mut microphones = sources
+        .into_iter()
+        .filter(|source| source.monitor_source.is_empty() && !source.name.ends_with(".monitor"))
+        .map(|source| {
+            let is_default = default == Some(source.name.as_str());
+            Microphone {
+                name: source.name,
+                label: if is_default {
+                    format!("{} · Default", source.description)
+                } else {
+                    source.description
+                },
+                is_default,
+            }
+        })
+        .collect::<Vec<_>>();
+    microphones.sort_by(|left, right| {
+        right
+            .is_default
+            .cmp(&left.is_default)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    Ok(microphones)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_physical_microphones_and_excludes_monitor_sources() {
+        let sources = br#"[
+          {
+            "name": "alsa_output.card.monitor",
+            "description": "Monitor of Speakers",
+            "monitor_source": "alsa_output.card"
+          },
+          {
+            "name": "alsa_input.usb-shure",
+            "description": "Shure MV6 Mono",
+            "monitor_source": ""
+          },
+          {
+            "name": "alsa_input.onboard",
+            "description": "Onboard Microphone"
+          }
+        ]"#;
+        let microphones = parse_sources(sources, Some("alsa_input.usb-shure")).unwrap();
+        assert_eq!(microphones.len(), 2);
+        assert_eq!(microphones[0].name, "alsa_input.usb-shure");
+        assert_eq!(microphones[0].label, "Shure MV6 Mono · Default");
+        assert!(microphones[0].is_default);
+        assert!(
+            !microphones
+                .iter()
+                .any(|device| device.name.ends_with(".monitor"))
+        );
+    }
+}

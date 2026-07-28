@@ -6,6 +6,7 @@ use gtk::{
     Adjustment, Align, Box as GtkBox, Button, CheckButton, DropDown, Entry, Grid, Label,
     Orientation, Scale, ScrolledWindow, Separator, SpinButton, StringList,
 };
+use trace_core::audio::{self, Microphone};
 use trace_core::config::{Codec, Config, HotkeyConfig};
 use trace_core::hyprland::{self, Monitor};
 use trace_core::paths::AppPaths;
@@ -67,6 +68,7 @@ pub fn build() -> SettingsView {
     let paths = AppPaths::discover();
     let config = Config::load(&paths).unwrap_or_default();
     let monitors = hyprland::monitors().unwrap_or_default();
+    let microphones = audio::microphones().unwrap_or_default();
 
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.add_css_class("settings-page");
@@ -147,10 +149,27 @@ pub fn build() -> SettingsView {
     let microphone = CheckButton::with_label("Microphone");
     microphone.set_active(config.audio.microphone);
     rows.push(attach_row(&final_grid, 1, "", &microphone));
+    let microphone_model = microphone_model(&microphones);
+    let microphone_dropdown = DropDown::new(Some(microphone_model), None::<gtk::Expression>);
+    microphone_dropdown.set_hexpand(true);
+    microphone_dropdown.set_selected(selected_microphone_index(&microphones, &config));
+    microphone_dropdown.set_sensitive(config.audio.microphone && !microphones.is_empty());
+    microphone_dropdown.set_tooltip_text(Some("PipeWire microphone used in new clips"));
+    rows.push(attach_row(
+        &final_grid,
+        2,
+        "Input device",
+        &microphone_dropdown,
+    ));
+    let microphone_toggle_dropdown = microphone_dropdown.clone();
+    let microphones_available = !microphones.is_empty();
+    microphone.connect_toggled(move |toggle| {
+        microphone_toggle_dropdown.set_sensitive(toggle.is_active() && microphones_available);
+    });
     let output = Entry::new();
     output.set_text(&config.storage.directory.to_string_lossy());
     output.set_hexpand(true);
-    rows.push(attach_row(&final_grid, 2, "Save location", &output));
+    rows.push(attach_row(&final_grid, 3, "Save location", &output));
     root.append(&final_grid);
 
     let footer = GtkBox::new(Orientation::Horizontal, 18);
@@ -180,6 +199,8 @@ pub fn build() -> SettingsView {
             &hotkey,
             &desktop_audio,
             &microphone,
+            &microphones,
+            &microphone_dropdown,
             &output,
         ) {
             Ok(()) => {
@@ -218,6 +239,8 @@ fn collect_and_save(
     hotkey: &Entry,
     desktop_audio: &CheckButton,
     microphone: &CheckButton,
+    microphones: &[Microphone],
+    microphone_dropdown: &DropDown,
     output: &Entry,
 ) -> Result<(), String> {
     let mut config = Config::load(paths).unwrap_or_default();
@@ -243,6 +266,13 @@ fn collect_and_save(
         HotkeyConfig::parse(hotkey.text().as_str()).map_err(|error| error.to_string())?;
     config.audio.desktop = desktop_audio.is_active();
     config.audio.microphone = microphone.is_active();
+    let microphone_index = usize::try_from(microphone_dropdown.selected()).unwrap_or(usize::MAX);
+    config.audio.microphone_device = microphones
+        .get(microphone_index)
+        .map(|microphone| microphone.name.clone());
+    if config.audio.microphone && config.audio.microphone_device.is_none() {
+        return Err("Select an available microphone.".into());
+    }
     let output_path = PathBuf::from(output.text().as_str());
     if !output_path.is_absolute() {
         return Err("Save location must be an absolute local path.".into());
@@ -292,6 +322,33 @@ fn selected_monitor_index(monitors: &[Monitor], config: &Config) -> u32 {
                 || config.capture.monitor.as_deref() == Some(monitor.name.as_str())
         })
         .or_else(|| monitors.iter().position(|monitor| monitor.focused))
+        .and_then(|index| u32::try_from(index).ok())
+        .unwrap_or(gtk::INVALID_LIST_POSITION)
+}
+
+fn microphone_model(microphones: &[Microphone]) -> StringList {
+    if microphones.is_empty() {
+        return StringList::new(&["No microphones found"]);
+    }
+    let labels = microphones
+        .iter()
+        .map(|microphone| microphone.label.as_str())
+        .collect::<Vec<_>>();
+    StringList::new(&labels)
+}
+
+fn selected_microphone_index(microphones: &[Microphone], config: &Config) -> u32 {
+    microphones
+        .iter()
+        .position(|microphone| {
+            config.audio.microphone_device.as_deref() == Some(microphone.name.as_str())
+        })
+        .or_else(|| {
+            microphones
+                .iter()
+                .position(|microphone| microphone.is_default)
+        })
+        .or((!microphones.is_empty()).then_some(0))
         .and_then(|index| u32::try_from(index).ok())
         .unwrap_or(gtk::INVALID_LIST_POSITION)
 }

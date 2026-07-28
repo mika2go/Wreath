@@ -118,22 +118,17 @@ impl ReplaySpec {
             Codec::Hevc => arguments.extend(["-k".into(), "hevc".into()]),
             Codec::Av1 => arguments.extend(["-k".into(), "av1".into()]),
         }
-        if self.desktop_audio {
-            arguments.extend([
-                "-a".into(),
-                "default_output".into(),
-                "-ac".into(),
-                "aac".into(),
-            ]);
-        }
-        if self.microphone_audio {
-            arguments.extend([
-                "-a".into(),
-                self.microphone_device
-                    .as_deref()
-                    .unwrap_or("default_input")
-                    .into(),
-            ]);
+        let microphone = self
+            .microphone_audio
+            .then(|| self.microphone_device.as_deref().unwrap_or("default_input"));
+        let audio_source = match (self.desktop_audio, microphone) {
+            (true, Some(microphone)) => Some(format!("default_output|{microphone}")),
+            (true, None) => Some("default_output".into()),
+            (false, Some(microphone)) => Some(microphone.into()),
+            (false, None) => None,
+        };
+        if let Some(audio_source) = audio_source {
+            arguments.extend(["-a".into(), audio_source.into(), "-ac".into(), "aac".into()]);
         }
         arguments
     }
@@ -346,6 +341,30 @@ mod tests {
                 .any(|pair| pair == ["-fallback-cpu-encoding", "no"])
         );
         assert!(arguments.windows(2).any(|pair| pair == ["-cursor", "yes"]));
+    }
+
+    #[test]
+    fn command_mixes_selected_microphone_with_desktop_audio() {
+        let mut replay = spec();
+        replay.microphone_audio = true;
+        replay.microphone_device = Some("alsa_input.usb-shure".into());
+        let arguments = replay
+            .arguments()
+            .into_iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["-a", "default_output|alsa_input.usb-shure"])
+        );
+        assert_eq!(
+            arguments
+                .iter()
+                .filter(|argument| argument.as_str() == "-a")
+                .count(),
+            1
+        );
     }
 
     #[test]

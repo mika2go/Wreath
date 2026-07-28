@@ -1,3 +1,4 @@
+pub mod audio;
 pub mod clips;
 pub mod config;
 pub mod engine;
