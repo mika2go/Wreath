@@ -8,7 +8,7 @@ use gtk::glib;
 use gtk::prelude::*;
 use gtk::{
     Adjustment, Align, Box as GtkBox, Button, CheckButton, DropDown, Entry, Grid, Label,
-    Orientation, Scale, ScrolledWindow, Separator, SpinButton, StringList,
+    Orientation, Scale, ScrolledWindow, SpinButton, Stack, StringList,
 };
 use trace_core::audio::{self, Microphone};
 use trace_core::config::{Codec, Config, HotkeyConfig};
@@ -23,6 +23,7 @@ pub struct SettingsView {
     footer: GtkBox,
     feedback: Label,
     apply: Button,
+    panels: Vec<GtkBox>,
 }
 
 #[derive(Clone)]
@@ -65,6 +66,10 @@ impl SettingsView {
             .set_halign(if compact { Align::Fill } else { Align::End });
         self.apply
             .set_size_request(if compact { -1 } else { 132 }, 42);
+        for panel in &self.panels {
+            panel.set_size_request(if compact { -1 } else { 640 }, -1);
+            panel.set_hexpand(compact);
+        }
     }
 }
 
@@ -90,9 +95,75 @@ pub fn build() -> SettingsView {
     root.append(&title);
     root.append(&subtitle);
 
+    let tabs = GtkBox::new(Orientation::Horizontal, 4);
+    tabs.add_css_class("settings-tabs");
+    tabs.set_halign(Align::Start);
+    tabs.set_margin_bottom(28);
+    let settings_stack = Stack::new();
+    settings_stack.add_css_class("settings-stack");
+    settings_stack.set_hhomogeneous(false);
+    settings_stack.set_vhomogeneous(false);
+    settings_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+    settings_stack.set_transition_duration(120);
+
+    let display_page = settings_panel("Display", "Choose the Hyprland output Trace records.");
+    let quality_page = settings_panel("Quality", "Balance detail, file size and encoder load.");
+    let audio_page = settings_panel(
+        "Audio",
+        "Mix desktop sound and your microphone into each clip.",
+    );
+    let controls_page = settings_panel(
+        "Controls",
+        "Set the shortcut used to save the replay buffer.",
+    );
+    let storage_page = settings_panel(
+        "Storage",
+        "Choose where clips and collection folders are kept.",
+    );
+    let panels = vec![
+        display_page.clone(),
+        quality_page.clone(),
+        audio_page.clone(),
+        controls_page.clone(),
+        storage_page.clone(),
+    ];
+    settings_stack.add_named(&display_page, Some("display"));
+    settings_stack.add_named(&quality_page, Some("quality"));
+    settings_stack.add_named(&audio_page, Some("audio"));
+    settings_stack.add_named(&controls_page, Some("controls"));
+    settings_stack.add_named(&storage_page, Some("storage"));
+    let tab_buttons = [
+        settings_tab("Display", "display"),
+        settings_tab("Quality", "quality"),
+        settings_tab("Audio", "audio"),
+        settings_tab("Controls", "controls"),
+        settings_tab("Storage", "storage"),
+    ];
+    tab_buttons[0].0.add_css_class("active");
+    for (button, _) in &tab_buttons {
+        tabs.append(button);
+    }
+    for (button, page_name) in &tab_buttons {
+        let stack = settings_stack.clone();
+        let buttons = tab_buttons
+            .iter()
+            .map(|(button, _)| button.clone())
+            .collect::<Vec<_>>();
+        let page_name = *page_name;
+        let active = button.clone();
+        button.connect_clicked(move |_| {
+            stack.set_visible_child_name(page_name);
+            for button in &buttons {
+                button.remove_css_class("active");
+            }
+            active.add_css_class("active");
+        });
+    }
+    root.append(&tabs);
+    root.append(&settings_stack);
+
     let mut rows = Vec::new();
     let mut grids = Vec::new();
-    root.append(&section_title("DISPLAY"));
     let display_grid = settings_grid();
     grids.push(display_grid.clone());
     let monitor_model = monitor_model(&monitors);
@@ -100,10 +171,8 @@ pub fn build() -> SettingsView {
     monitor_dropdown.set_hexpand(true);
     monitor_dropdown.set_selected(selected_monitor_index(&monitors, &config));
     rows.push(attach_row(&display_grid, 0, "Monitor", &monitor_dropdown));
-    root.append(&display_grid);
+    display_page.append(&display_grid);
 
-    root.append(&section_separator());
-    root.append(&section_title("CAPTURE"));
     let capture_grid = settings_grid();
     grids.push(capture_grid.clone());
     let duration = spin_button(5.0, 600.0, 5.0, f64::from(config.capture.duration_seconds));
@@ -130,10 +199,8 @@ pub fn build() -> SettingsView {
     quality.set_draw_value(false);
     quality.set_hexpand(true);
     rows.push(attach_row(&capture_grid, 3, "Quality", &quality));
-    root.append(&capture_grid);
+    quality_page.append(&capture_grid);
 
-    root.append(&section_separator());
-    root.append(&section_title("CONTROL"));
     let control_grid = settings_grid();
     grids.push(control_grid.clone());
     let hotkey = Entry::new();
@@ -141,10 +208,8 @@ pub fn build() -> SettingsView {
     hotkey.set_placeholder_text(Some("SUPER+SHIFT+R"));
     hotkey.set_hexpand(true);
     rows.push(attach_row(&control_grid, 0, "Save replay", &hotkey));
-    root.append(&control_grid);
+    controls_page.append(&control_grid);
 
-    root.append(&section_separator());
-    root.append(&section_title("AUDIO"));
     let audio_grid = settings_grid();
     grids.push(audio_grid.clone());
     let desktop_audio = CheckButton::with_label("Desktop audio");
@@ -199,17 +264,15 @@ pub fn build() -> SettingsView {
         microphone_toggle_dropdown.set_sensitive(toggle.is_active() && microphones_available);
         microphone_toggle_gain.set_sensitive(toggle.is_active());
     });
-    root.append(&audio_grid);
+    audio_page.append(&audio_grid);
 
-    root.append(&section_separator());
-    root.append(&section_title("STORAGE"));
     let storage_grid = settings_grid();
     grids.push(storage_grid.clone());
     let output = Entry::new();
     output.set_text(&config.storage.directory.to_string_lossy());
     output.set_hexpand(true);
     rows.push(attach_row(&storage_grid, 0, "Save location", &output));
-    root.append(&storage_grid);
+    storage_page.append(&storage_grid);
 
     let footer = GtkBox::new(Orientation::Horizontal, 18);
     footer.set_margin_top(32);
@@ -292,6 +355,7 @@ pub fn build() -> SettingsView {
         footer,
         feedback,
         apply,
+        panels,
     }
 }
 
@@ -423,19 +487,28 @@ fn selected_microphone_index(microphones: &[Microphone], config: &Config) -> u32
         .unwrap_or(gtk::INVALID_LIST_POSITION)
 }
 
-fn section_title(text: &str) -> Label {
-    let label = Label::new(Some(text));
-    label.add_css_class("section-title");
-    label.set_halign(Align::Start);
-    label.set_margin_bottom(8);
-    label
+fn settings_panel(title: &str, description: &str) -> GtkBox {
+    let panel = GtkBox::new(Orientation::Vertical, 0);
+    panel.add_css_class("settings-panel");
+    panel.set_halign(Align::Start);
+    panel.set_size_request(640, -1);
+    let title = Label::new(Some(title));
+    title.add_css_class("settings-panel-title");
+    title.set_halign(Align::Start);
+    let description = Label::new(Some(description));
+    description.add_css_class("settings-panel-description");
+    description.set_halign(Align::Start);
+    description.set_wrap(true);
+    description.set_margin_bottom(22);
+    panel.append(&title);
+    panel.append(&description);
+    panel
 }
 
-fn section_separator() -> Separator {
-    let separator = Separator::new(Orientation::Horizontal);
-    separator.set_margin_top(22);
-    separator.set_margin_bottom(20);
-    separator
+fn settings_tab(label: &str, page: &'static str) -> (Button, &'static str) {
+    let button = Button::with_label(label);
+    button.add_css_class("settings-tab");
+    (button, page)
 }
 
 fn settings_grid() -> Grid {

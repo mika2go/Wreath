@@ -93,9 +93,7 @@ pub fn rename(clip: &Clip, name: &str, thumbnail_directory: &Path) -> io::Result
         .extension()
         .and_then(|value| value.to_str())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "clip has no extension"))?;
-    let destination = clip
-        .path
-        .with_file_name(format!("{name}.{extension}"));
+    let destination = clip.path.with_file_name(format!("{name}.{extension}"));
     move_clip(clip, &destination, thumbnail_directory)
 }
 

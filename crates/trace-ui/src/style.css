@@ -4,8 +4,8 @@ window.trace-window {
 }
 
 .sidebar {
-  padding: 24px 14px 18px;
-  background: transparent;
+  padding: 14px 8px;
+  background: rgba(8, 10, 15, 0.34);
   border-right: 1px solid rgba(255, 255, 255, 0.065);
 }
 
@@ -20,7 +20,8 @@ window.trace-window {
 }
 
 .brand {
-  padding: 2px 10px 34px;
+  min-height: 38px;
+  padding: 0 0 18px;
 }
 
 .brand-mark {
@@ -42,13 +43,14 @@ window.trace-window {
 }
 
 button.nav-button {
-  min-height: 42px;
-  margin: 2px 0;
-  padding: 0 12px;
+  min-width: 38px;
+  min-height: 38px;
+  margin: 3px 4px;
+  padding: 0;
   color: #8e93a3;
   background: transparent;
   border: none;
-  border-radius: 7px;
+  border-radius: 8px;
   box-shadow: none;
 }
 
@@ -59,7 +61,8 @@ button.nav-button:hover {
 
 button.nav-button.active {
   color: #f2efff;
-  background: alpha(@trace_accent, 0.13);
+  background: alpha(@trace_accent, 0.16);
+  box-shadow: inset 2px 0 alpha(@trace_accent, 0.9);
 }
 
 .nav-icon {
@@ -81,12 +84,17 @@ button.nav-button.active {
 }
 
 .clips-page,
+.collections-page,
 .player-page,
 .settings-page {
   background: transparent;
 }
 
 .clips-page {
+  padding: 40px 42px 30px;
+}
+
+.collections-page {
   padding: 40px 42px 30px;
 }
 
@@ -99,6 +107,7 @@ button.nav-button.active {
 }
 
 .content-area.narrow .clips-page,
+.content-area.narrow .collections-page,
 .content-area.narrow .player-page,
 .content-area.narrow .settings-page {
   padding-left: 24px;
@@ -106,6 +115,7 @@ button.nav-button.active {
 }
 
 .content-area.very-narrow .clips-page,
+.content-area.very-narrow .collections-page,
 .content-area.very-narrow .player-page,
 .content-area.very-narrow .settings-page {
   padding: 24px 16px 20px;
@@ -124,20 +134,28 @@ button.nav-button.active {
 }
 
 entry.search {
-  min-height: 38px;
-  padding: 0 14px;
+  min-height: 32px;
+  padding: 0 4px;
   color: #e9ebf2;
-  background: @trace_surface;
-  border: 1px solid rgba(255, 255, 255, 0.075);
-  border-radius: 8px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0;
   box-shadow: none;
 }
 
 entry.search:focus {
-  border-color: alpha(@trace_accent, 0.65);
+  border-bottom-color: alpha(@trace_accent, 0.85);
 }
 
-button.icon-action,
+button.icon-action {
+  color: #a6aaba;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  box-shadow: none;
+}
+
 button.back-action,
 button.secondary-action {
   color: #a6aaba;
@@ -151,8 +169,11 @@ button.icon-action:hover,
 button.back-action:hover,
 button.secondary-action:hover {
   color: #f0eff8;
-  border-color: alpha(@trace_accent, 0.6);
   background: alpha(@trace_accent, 0.06);
+}
+
+button.icon-action:hover {
+  border: none;
 }
 
 flowboxchild {
@@ -187,7 +208,8 @@ button.clip-open:hover .clip-preview-frame {
   border-radius: 12px;
 }
 
-button.clip-delete {
+button.clip-delete,
+button.clip-rename {
   min-width: 34px;
   min-height: 34px;
   padding: 0;
@@ -200,6 +222,79 @@ button.clip-delete {
 button.clip-delete:hover {
   color: #ff9b9b;
   background: transparent;
+}
+
+button.clip-rename:hover {
+  color: #d8d0ff;
+  background: transparent;
+}
+
+.collection-folders flowboxchild {
+  min-width: 142px;
+}
+
+button.collection-button {
+  min-width: 128px;
+  min-height: 46px;
+  padding: 3px 2px;
+  color: #8d93a2;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+button.collection-button:hover,
+button.collection-button.active {
+  color: #edeafc;
+  background: transparent;
+}
+
+button.collection-button.active {
+  box-shadow: inset 0 -2px alpha(@trace_accent, 0.82);
+}
+
+button.collection-button:drop(active) {
+  color: #f7f5ff;
+  background: alpha(@trace_accent, 0.18);
+  outline: 2px solid alpha(@trace_accent, 0.72);
+  outline-offset: -2px;
+}
+
+.collection-name {
+  color: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.collection-count {
+  color: #606675;
+  font-size: 9px;
+}
+
+.collection-clip-title,
+.settings-panel-title {
+  color: #e3e5ec;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.collection-empty {
+  color: #626877;
+}
+
+popover.compact-popover contents {
+  padding: 0;
+  color: #e9ebf2;
+  background: @trace_surface;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 11px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
+}
+
+.compact-popover-content {
+  min-width: 250px;
+  padding: 15px;
 }
 
 popover.delete-confirmation contents {
@@ -318,6 +413,37 @@ button.danger-action:hover {
   font-weight: 800;
 }
 
+.settings-tabs {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.065);
+}
+
+button.settings-tab {
+  min-height: 34px;
+  padding: 0 10px;
+  color: #747a89;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+button.settings-tab:hover {
+  color: #cfd2dc;
+  background: transparent;
+}
+
+button.settings-tab.active {
+  color: #f0ecff;
+  box-shadow: inset 0 -2px @trace_accent;
+}
+
+.settings-panel-description {
+  color: #686e7d;
+  font-size: 11px;
+}
+
 .row-label {
   color: #a6aab7;
   font-size: 12px;
@@ -338,19 +464,20 @@ separator {
 entry:not(.search),
 dropdown,
 spinbutton {
-  min-height: 38px;
-  padding: 0 7px;
+  min-height: 36px;
+  padding: 0 4px;
   color: #eceef4;
-  background: @trace_surface;
-  border: 1px solid rgba(255, 255, 255, 0.075);
-  border-radius: 7px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 0;
   box-shadow: none;
 }
 
 entry:not(.search):focus,
 dropdown:focus,
 spinbutton:focus {
-  border-color: alpha(@trace_accent, 0.7);
+  border-bottom-color: alpha(@trace_accent, 0.8);
   box-shadow: none;
 }
 
