@@ -16,7 +16,6 @@ KillMode=mixed
 UMask=0077
 IPAddressDeny=any
 RestrictAddressFamilies=AF_UNIX
-PrivateTmp=yes
 ProtectSystem=strict
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
@@ -27,4 +26,3 @@ LimitNOFILE=256
 
 [Install]
 WantedBy=graphical-session.target
-

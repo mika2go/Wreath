@@ -20,5 +20,9 @@ done
 
 grep -qx 'IPAddressDeny=any' packaging/traced.service
 grep -qx 'RestrictAddressFamilies=AF_UNIX' packaging/traced.service
+if grep -qx 'PrivateTmp=yes' packaging/traced.service; then
+  echo "PrivateTmp breaks gpu-screen-recorder compositor access and produces black frames" >&2
+  exit 1
+fi
 
 echo "release checks passed"
