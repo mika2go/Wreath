@@ -20,6 +20,7 @@ pub enum Response {
         state: DaemonState,
         monitor: Option<String>,
         buffered_seconds: u16,
+        error: Option<String>,
     },
     Saved {
         path: PathBuf,

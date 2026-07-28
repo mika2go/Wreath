@@ -55,12 +55,16 @@ fn run() -> Result<(), String> {
             state,
             monitor,
             buffered_seconds,
+            error,
         } => {
             println!(
                 "{state:?}: monitor={}, buffer={}s",
                 monitor.as_deref().unwrap_or("none"),
                 buffered_seconds
             );
+            if let Some(error) = error {
+                println!("error: {error}");
+            }
         }
         Response::Saved { path } => println!("{}", path.display()),
         Response::Ok => {}

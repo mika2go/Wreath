@@ -5,6 +5,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::ExitCode;
 
 use riftclip_core::config::Config;
+use riftclip_core::engine::{GpuScreenRecorder, ReplaySpec};
 use riftclip_core::hyprland;
 use riftclip_core::ipc::{DaemonState, Request, Response};
 use riftclip_core::paths::AppPaths;
@@ -14,6 +15,9 @@ struct Daemon {
     config: Config,
     state: DaemonState,
     monitor: Option<String>,
+    replay: Option<ReplaySpec>,
+    recorder: Option<GpuScreenRecorder>,
+    last_error: Option<String>,
     shutdown: bool,
 }
 
@@ -32,8 +36,14 @@ fn run() -> Result<(), String> {
         config.save(&paths).map_err(|error| error.to_string())?;
     }
     let monitors = hyprland::monitors().map_err(|error| error.to_string())?;
-    let monitor = hyprland::resolve_monitor(&monitors, config.capture.monitor.as_deref())
+    let selected_monitor =
+        hyprland::resolve_monitor(&monitors, config.capture.monitor.as_deref()).cloned();
+    let monitor = selected_monitor
+        .as_ref()
         .map(|monitor| monitor.name.clone());
+    let replay = selected_monitor
+        .as_ref()
+        .map(|monitor| ReplaySpec::from_config(&config, monitor));
 
     if let Some(parent) = paths.socket_file.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -50,13 +60,13 @@ fn run() -> Result<(), String> {
         config,
         state: DaemonState::Starting,
         monitor,
+        replay,
+        recorder: None,
+        last_error: None,
         shutdown: false,
     };
-    daemon.state = DaemonState::Paused;
-    eprintln!(
-        "riftclipd: ready on {} (capture backend follows in milestone 2)",
-        daemon.paths.socket_file.display()
-    );
+    daemon.start_capture();
+    eprintln!("riftclipd: ready on {}", daemon.paths.socket_file.display());
 
     for connection in listener.incoming() {
         match connection {
@@ -100,32 +110,134 @@ impl Daemon {
             Request::Status => Response::Status {
                 state: self.state,
                 monitor: self.monitor.clone(),
-                buffered_seconds: 0,
-            },
-            Request::Save => Response::Error {
-                message: "capture backend is not active yet".into(),
-            },
-            Request::Pause => {
-                self.state = DaemonState::Paused;
-                Response::Ok
-            }
-            Request::Resume => {
-                self.state = DaemonState::Recording;
-                Response::Ok
-            }
-            Request::Reload => match Config::load(&self.paths) {
-                Ok(config) => {
-                    self.config = config;
-                    Response::Ok
-                }
-                Err(error) => Response::Error {
-                    message: error.to_string(),
+                buffered_seconds: if self.recorder.is_some() {
+                    self.config.capture.duration_seconds
+                } else {
+                    0
                 },
+                error: self.last_error.clone(),
             },
+            Request::Save => self.save_replay(),
+            Request::Pause => self.pause_capture(),
+            Request::Resume => self.resume_capture(),
+            Request::Reload => self.reload(),
             Request::Shutdown => {
+                self.stop_capture();
                 self.shutdown = true;
                 Response::Ok
             }
         }
+    }
+
+    fn start_capture(&mut self) {
+        let Some(spec) = self.replay.as_ref() else {
+            self.fail("no active Hyprland monitor found".into());
+            return;
+        };
+        match GpuScreenRecorder::start(spec) {
+            Ok(recorder) => {
+                eprintln!(
+                    "riftclipd: recording {} at {} fps (estimated buffer {} MiB)",
+                    spec.monitor,
+                    spec.frames_per_second,
+                    spec.estimated_buffer_megabytes()
+                );
+                self.recorder = Some(recorder);
+                self.state = DaemonState::Recording;
+                self.last_error = None;
+            }
+            Err(error) => self.fail(error.to_string()),
+        }
+    }
+
+    fn save_replay(&mut self) -> Response {
+        let Some(recorder) = self.recorder.as_mut() else {
+            return Response::Error {
+                message: self
+                    .last_error
+                    .clone()
+                    .unwrap_or_else(|| "recorder is not running".into()),
+            };
+        };
+        match recorder.save() {
+            Ok(path) => Response::Saved { path },
+            Err(error) => {
+                let message = error.to_string();
+                self.fail(message.clone());
+                Response::Error { message }
+            }
+        }
+    }
+
+    fn stop_capture(&mut self) {
+        if let Some(mut recorder) = self.recorder.take()
+            && let Err(error) = recorder.stop()
+        {
+            eprintln!("riftclipd: {error}");
+        }
+    }
+
+    fn pause_capture(&mut self) -> Response {
+        self.stop_capture();
+        self.state = DaemonState::Paused;
+        self.last_error = None;
+        Response::Ok
+    }
+
+    fn resume_capture(&mut self) -> Response {
+        if self.recorder.is_some() {
+            return Response::Ok;
+        }
+        self.start_capture();
+        match self.last_error.clone() {
+            Some(message) => Response::Error { message },
+            None => Response::Ok,
+        }
+    }
+
+    fn reload(&mut self) -> Response {
+        let was_recording = self.recorder.is_some();
+        self.stop_capture();
+        let config = match Config::load(&self.paths) {
+            Ok(config) => config,
+            Err(error) => {
+                self.fail(error.to_string());
+                return Response::Error {
+                    message: error.to_string(),
+                };
+            }
+        };
+        let monitors = match hyprland::monitors() {
+            Ok(monitors) => monitors,
+            Err(error) => {
+                self.fail(error.to_string());
+                return Response::Error {
+                    message: error.to_string(),
+                };
+            }
+        };
+        let selected =
+            hyprland::resolve_monitor(&monitors, config.capture.monitor.as_deref()).cloned();
+        self.monitor = selected.as_ref().map(|monitor| monitor.name.clone());
+        self.replay = selected
+            .as_ref()
+            .map(|monitor| ReplaySpec::from_config(&config, monitor));
+        self.config = config;
+        if was_recording {
+            self.start_capture();
+        } else {
+            self.state = DaemonState::Paused;
+        }
+        match self.last_error.clone() {
+            Some(message) => Response::Error { message },
+            None => Response::Ok,
+        }
+    }
+
+    fn fail(&mut self, message: String) {
+        eprintln!("riftclipd: {message}");
+        self.recorder = None;
+        self.state = DaemonState::Error;
+        self.last_error = Some(message);
     }
 }
