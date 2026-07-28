@@ -60,6 +60,26 @@ riftclipctl config fps 60
 riftclipctl bind
 ```
 
+## Autostart
+
+After installing the package, enable the optional local user service:
+
+```bash
+systemctl --user enable --now riftclipd.service
+```
+
+The service denies IP networking and allows only local Unix sockets needed for
+Hyprland, PipeWire, audio, and Riftclip control.
+
+Release builds can be audited locally:
+
+```bash
+./scripts/check-release.sh
+```
+
+See [the architecture document](docs/architecture.md) for the resident process
+layout and privacy boundaries.
+
 ## License
 
 MIT

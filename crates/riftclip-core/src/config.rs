@@ -188,7 +188,7 @@ impl Default for StorageConfig {
     fn default() -> Self {
         let directory = std::env::var_os("HOME")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
+            .unwrap_or_else(std::env::temp_dir)
             .join("Videos")
             .join("Riftclip");
         Self {
@@ -237,6 +237,11 @@ impl Config {
         if self.storage.max_megabytes < 128 {
             return Err(ConfigError::Invalid(
                 "storage limit must be at least 128 MiB".into(),
+            ));
+        }
+        if !self.storage.directory.is_absolute() {
+            return Err(ConfigError::Invalid(
+                "storage directory must be an absolute local path".into(),
             ));
         }
         Ok(())

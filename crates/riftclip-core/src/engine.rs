@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
@@ -22,6 +22,7 @@ pub struct ReplaySpec {
     pub duration_seconds: u16,
     pub codec: Codec,
     pub quality: u8,
+    pub cursor: bool,
     pub desktop_audio: bool,
     pub microphone_audio: bool,
     pub microphone_device: Option<String>,
@@ -76,6 +77,7 @@ impl ReplaySpec {
             duration_seconds: config.capture.duration_seconds,
             codec: config.capture.codec,
             quality: config.capture.quality,
+            cursor: config.capture.cursor,
             desktop_audio: config.audio.desktop,
             microphone_audio: config.audio.microphone,
             microphone_device: config.audio.microphone_device.clone(),
@@ -99,6 +101,14 @@ impl ReplaySpec {
             self.target_bitrate_kbps().to_string().into(),
             "-df".into(),
             "no".into(),
+            "-fm".into(),
+            "vfr".into(),
+            "-tune".into(),
+            "performance".into(),
+            "-fallback-cpu-encoding".into(),
+            "no".into(),
+            "-cursor".into(),
+            if self.cursor { "yes" } else { "no" }.into(),
             "-o".into(),
             self.output_directory.as_os_str().to_owned(),
         ];
@@ -109,7 +119,12 @@ impl ReplaySpec {
             Codec::Av1 => arguments.extend(["-k".into(), "av1".into()]),
         }
         if self.desktop_audio {
-            arguments.extend(["-a".into(), "default_output".into()]);
+            arguments.extend([
+                "-a".into(),
+                "default_output".into(),
+                "-ac".into(),
+                "aac".into(),
+            ]);
         }
         if self.microphone_audio {
             arguments.extend([
@@ -241,10 +256,6 @@ pub fn recorder_available() -> bool {
         .is_ok_and(|status| status.success())
 }
 
-pub fn is_local_output(path: &Path) -> bool {
-    !path.as_os_str().is_empty()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,6 +269,7 @@ mod tests {
             duration_seconds: 30,
             codec: Codec::H264,
             quality: 75,
+            cursor: true,
             desktop_audio: true,
             microphone_audio: false,
             microphone_device: None,
@@ -280,6 +292,12 @@ mod tests {
                 .windows(2)
                 .any(|pair| pair == ["-a", "default_output"])
         );
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["-fallback-cpu-encoding", "no"])
+        );
+        assert!(arguments.windows(2).any(|pair| pair == ["-cursor", "yes"]));
     }
 
     #[test]

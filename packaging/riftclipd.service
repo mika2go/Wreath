@@ -1,0 +1,30 @@
+[Unit]
+Description=Riftclip instant replay daemon
+Documentation=https://github.com/mika2go/riftclip
+After=graphical-session.target pipewire.service
+PartOf=graphical-session.target
+ConditionEnvironment=HYPRLAND_INSTANCE_SIGNATURE
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/riftclipd
+ExecStartPost=/usr/bin/riftclipctl bind
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+KillMode=mixed
+UMask=0077
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+LimitNOFILE=256
+
+[Install]
+WantedBy=graphical-session.target
+
