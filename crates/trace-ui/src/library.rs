@@ -467,6 +467,9 @@ fn collection_button(
     labels.append(&detail);
     row.append(&icon);
     row.append(&labels);
+    if path.is_some() {
+        row.set_margin_end(30);
+    }
     let button = Button::new();
     button.add_css_class("collection-button");
     if *state.selected_collection.borrow() == path {
@@ -482,9 +485,10 @@ fn collection_button(
         refresh_all(&selected_state);
     });
 
-    if let Some(collection_path) = path {
+    if let Some(collection_path) = path.as_ref() {
         let target = DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
         let drop_state = state.clone();
+        let collection_path = collection_path.clone();
         target.connect_drop(move |_, value, _, _| {
             let Ok(source) = value.get::<String>() else {
                 return false;
@@ -523,8 +527,99 @@ fn collection_button(
     }
 
     let child = FlowBoxChild::new();
-    child.set_child(Some(&button));
+    if let Some(collection_path) = path {
+        let overlay = Overlay::new();
+        overlay.set_child(Some(&button));
+        let more = Button::from_icon_name("view-more-symbolic");
+        more.add_css_class("collection-more");
+        more.set_tooltip_text(Some("Collection actions"));
+        more.set_halign(Align::End);
+        more.set_valign(Align::Center);
+        more.set_margin_end(2);
+        more.set_size_request(30, 30);
+        let collection_name = name.to_owned();
+        let collection_state = state.clone();
+        more.connect_clicked(move |button| {
+            confirm_delete_collection(
+                button,
+                &collection_name,
+                &collection_path,
+                &collection_state,
+            )
+        });
+        overlay.add_overlay(&more);
+        child.set_child(Some(&overlay));
+    } else {
+        child.set_child(Some(&button));
+    }
     child
+}
+
+fn confirm_delete_collection(
+    button: &Button,
+    name: &str,
+    path: &std::path::Path,
+    state: &Rc<LibraryState>,
+) {
+    let popover = Popover::new();
+    popover.add_css_class("delete-confirmation");
+    popover.set_position(PositionType::Bottom);
+    popover.set_parent(button);
+    let content = GtkBox::new(Orientation::Vertical, 5);
+    content.add_css_class("delete-confirmation-content");
+    let title = Label::new(Some("Delete collection?"));
+    title.add_css_class("delete-confirmation-title");
+    title.set_halign(Align::Start);
+    let detail = Label::new(Some(name));
+    detail.add_css_class("delete-confirmation-detail");
+    detail.set_halign(Align::Start);
+    let warning = Label::new(Some("Its clips move back to Library. Nothing is deleted."));
+    warning.add_css_class("delete-confirmation-warning");
+    warning.set_halign(Align::Start);
+    let actions = GtkBox::new(Orientation::Horizontal, 8);
+    actions.set_halign(Align::End);
+    actions.set_margin_top(9);
+    let cancel = Button::with_label("Cancel");
+    cancel.add_css_class("popover-action");
+    let confirm = Button::with_label("Delete");
+    confirm.add_css_class("danger-action");
+    actions.append(&cancel);
+    actions.append(&confirm);
+    content.append(&title);
+    content.append(&detail);
+    content.append(&warning);
+    content.append(&actions);
+    popover.set_child(Some(&content));
+    popover.connect_closed(|popover| popover.unparent());
+    let cancelled = popover.clone();
+    cancel.connect_clicked(move |_| cancelled.popdown());
+    let confirmed = popover.clone();
+    let removed_path = path.to_path_buf();
+    let remove_state = state.clone();
+    confirm.connect_clicked(move |_| {
+        match clips::delete_collection(
+            &remove_state.directory,
+            &removed_path,
+            &remove_state.thumbnail_directory,
+        ) {
+            Ok(()) => {
+                if remove_state.selected_collection.borrow().as_ref() == Some(&removed_path) {
+                    remove_state.selected_collection.replace(None);
+                }
+                confirmed.popdown();
+                remove_state.count.remove_css_class("error");
+                refresh_all(&remove_state);
+            }
+            Err(error) => {
+                remove_state
+                    .count
+                    .set_text(&format!("Could not delete collection: {error}"));
+                remove_state.count.add_css_class("error");
+                confirmed.popdown();
+            }
+        }
+    });
+    popover.popup();
 }
 
 fn show_create_collection(button: &Button, state: &Rc<LibraryState>) {
@@ -630,25 +725,15 @@ fn clip_card(clip: &Clip, state: &Rc<LibraryState>) -> (FlowBoxChild, PreviewWid
     open.set_child(Some(&body));
     item.set_child(Some(&open));
 
-    let rename = Button::from_icon_name("document-edit-symbolic");
-    rename.add_css_class("clip-rename");
-    rename.set_tooltip_text(Some("Rename clip"));
-    rename.set_halign(Align::End);
-    rename.set_valign(Align::Start);
-    rename.set_margin_top(7);
-    rename.set_margin_end(41);
-    rename.set_size_request(34, 34);
-    item.add_overlay(&rename);
-
-    let delete = Button::from_icon_name("user-trash-symbolic");
-    delete.add_css_class("clip-delete");
-    delete.set_tooltip_text(Some("Delete clip"));
-    delete.set_halign(Align::End);
-    delete.set_valign(Align::Start);
-    delete.set_margin_top(7);
-    delete.set_margin_end(7);
-    delete.set_size_request(34, 34);
-    item.add_overlay(&delete);
+    let more = Button::from_icon_name("view-more-symbolic");
+    more.add_css_class("clip-more");
+    more.set_tooltip_text(Some("Clip actions"));
+    more.set_halign(Align::End);
+    more.set_valign(Align::Start);
+    more.set_margin_top(7);
+    more.set_margin_end(7);
+    more.set_size_request(34, 34);
+    item.add_overlay(&more);
 
     let selected = clip.clone();
     let player = state.player.clone();
@@ -657,12 +742,9 @@ fn clip_card(clip: &Clip, state: &Rc<LibraryState>) -> (FlowBoxChild, PreviewWid
         show_player(&player, &selected);
         stack.set_visible_child_name("player");
     });
-    let deleted = clip.clone();
-    let delete_state = state.clone();
-    delete.connect_clicked(move |button| confirm_delete(button, &deleted, &delete_state));
-    let renamed = clip.clone();
-    let rename_state = state.clone();
-    rename.connect_clicked(move |button| show_rename(button, &renamed, &rename_state));
+    let selected = clip.clone();
+    let menu_state = state.clone();
+    more.connect_clicked(move |button| show_clip_menu(button, &selected, &menu_state));
 
     let drag = DragSource::new();
     drag.set_actions(gdk::DragAction::MOVE);
@@ -675,6 +757,113 @@ fn clip_card(clip: &Clip, state: &Rc<LibraryState>) -> (FlowBoxChild, PreviewWid
     let child = FlowBoxChild::new();
     child.set_child(Some(&item));
     (child, PreviewWidgets { picture, duration })
+}
+
+fn show_clip_menu(button: &Button, clip: &Clip, state: &Rc<LibraryState>) {
+    let popover = Popover::new();
+    popover.add_css_class("clip-menu");
+    popover.set_position(PositionType::Bottom);
+    popover.set_parent(button);
+    let content = GtkBox::new(Orientation::Vertical, 2);
+    content.add_css_class("clip-menu-content");
+
+    let rename = menu_action("Rename", "document-edit-symbolic");
+    content.append(&rename);
+    let move_label = Label::new(Some("MOVE TO"));
+    move_label.add_css_class("menu-section-label");
+    move_label.set_halign(Align::Start);
+    content.append(&move_label);
+    let library = menu_action("Library", "video-display-symbolic");
+    content.append(&library);
+    let collections = clips::collections(&state.directory).unwrap_or_default();
+    for collection in collections {
+        let action = menu_action(&collection.name, "folder-symbolic");
+        let moved = popover.clone();
+        let moved_clip = clip.clone();
+        let move_state = state.clone();
+        let destination = collection.path;
+        action.connect_clicked(move |_| {
+            match clips::move_to_collection(
+                &moved_clip,
+                &move_state.directory,
+                &destination,
+                &move_state.thumbnail_directory,
+            ) {
+                Ok(_) => {
+                    moved.popdown();
+                    move_state.count.remove_css_class("error");
+                    refresh_all(&move_state);
+                }
+                Err(error) => {
+                    move_state
+                        .count
+                        .set_text(&format!("Could not move clip: {error}"));
+                    move_state.count.add_css_class("error");
+                }
+            }
+        });
+        content.append(&action);
+    }
+    let delete = menu_action("Delete clip", "user-trash-symbolic");
+    delete.add_css_class("danger-menu-action");
+    delete.set_margin_top(5);
+    content.append(&delete);
+    popover.set_child(Some(&content));
+    popover.connect_closed(|popover| popover.unparent());
+
+    let renamed_menu = popover.clone();
+    let rename_anchor = button.clone();
+    let renamed_clip = clip.clone();
+    let rename_state = state.clone();
+    rename.connect_clicked(move |_| {
+        renamed_menu.popdown();
+        show_rename(&rename_anchor, &renamed_clip, &rename_state);
+    });
+    let library_menu = popover.clone();
+    let library_clip = clip.clone();
+    let library_state = state.clone();
+    library.connect_clicked(move |_| {
+        match clips::move_to_library(
+            &library_clip,
+            &library_state.directory,
+            &library_state.thumbnail_directory,
+        ) {
+            Ok(_) => {
+                library_menu.popdown();
+                library_state.count.remove_css_class("error");
+                refresh_all(&library_state);
+            }
+            Err(error) => {
+                library_state
+                    .count
+                    .set_text(&format!("Could not move clip: {error}"));
+                library_state.count.add_css_class("error");
+            }
+        }
+    });
+    let deleted_menu = popover.clone();
+    let delete_anchor = button.clone();
+    let deleted_clip = clip.clone();
+    let delete_state = state.clone();
+    delete.connect_clicked(move |_| {
+        deleted_menu.popdown();
+        confirm_delete(&delete_anchor, &deleted_clip, &delete_state);
+    });
+    popover.popup();
+}
+
+fn menu_action(label: &str, icon_name: &str) -> Button {
+    let row = GtkBox::new(Orientation::Horizontal, 10);
+    let icon = Image::from_icon_name(icon_name);
+    icon.set_pixel_size(16);
+    let label = Label::new(Some(label));
+    label.set_halign(Align::Start);
+    row.append(&icon);
+    row.append(&label);
+    let button = Button::new();
+    button.add_css_class("menu-action");
+    button.set_child(Some(&row));
+    button
 }
 
 fn show_rename(button: &Button, clip: &Clip, state: &Rc<LibraryState>) {

@@ -118,6 +118,82 @@ pub fn move_to_collection(
     move_clip(clip, &collection.join(file_name), thumbnail_directory)
 }
 
+pub fn move_to_library(
+    clip: &Clip,
+    directory: &Path,
+    thumbnail_directory: &Path,
+) -> io::Result<PathBuf> {
+    let root = directory.canonicalize()?;
+    let file_name = clip
+        .path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid clip path"))?;
+    move_clip(clip, &root.join(file_name), thumbnail_directory)
+}
+
+pub fn delete_collection(
+    directory: &Path,
+    collection: &Path,
+    thumbnail_directory: &Path,
+) -> io::Result<()> {
+    let root = directory.canonicalize()?;
+    let collection = collection.canonicalize()?;
+    if collection.parent() != Some(root.as_path()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "collection must be a direct child of the clip directory",
+        ));
+    }
+    for clip in scan(&collection)? {
+        let file_name = clip
+            .path
+            .file_name()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid clip path"))?;
+        let destination = unique_destination(&root, file_name);
+        move_clip(&clip, &destination, thumbnail_directory)?;
+    }
+    remove_empty_tree(&collection)
+}
+
+fn unique_destination(directory: &Path, file_name: &std::ffi::OsStr) -> PathBuf {
+    let original = directory.join(file_name);
+    if !original.exists() {
+        return original;
+    }
+    let path = Path::new(file_name);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("clip");
+    let extension = path.extension().and_then(|value| value.to_str());
+    for suffix in 2..=9_999 {
+        let name = match extension {
+            Some(extension) => format!("{stem} ({suffix}).{extension}"),
+            None => format!("{stem} ({suffix})"),
+        };
+        let candidate = directory.join(name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    directory.join(format!("clip-{}", std::process::id()))
+}
+
+fn remove_empty_tree(directory: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            remove_empty_tree(&entry.path())?;
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::DirectoryNotEmpty,
+                "the collection contains an unknown file and was kept",
+            ));
+        }
+    }
+    fs::remove_dir(directory)
+}
+
 fn move_clip(clip: &Clip, destination: &Path, thumbnail_directory: &Path) -> io::Result<PathBuf> {
     if destination == clip.path {
         return Ok(destination.to_path_buf());
@@ -391,6 +467,24 @@ mod tests {
         assert_eq!(renamed, root.join("New moment.webm"));
         assert!(renamed.exists());
         assert!(rename(&scan(&root).unwrap()[0], "../escape", &thumbnails).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn moves_clips_back_and_deletes_empty_collection() {
+        let root = test_root("delete-collection");
+        let thumbnails = root.join("thumbnails");
+        let clips_directory = root.join("clips");
+        fs::create_dir_all(&clips_directory).unwrap();
+        let collection = create_collection(&clips_directory, "Keepers").unwrap();
+        fs::write(clips_directory.join("moment.mkv"), b"existing").unwrap();
+        let path = collection.join("moment.mkv");
+        fs::write(&path, b"clip").unwrap();
+
+        delete_collection(&clips_directory, &collection, &thumbnails).unwrap();
+        assert!(clips_directory.join("moment.mkv").exists());
+        assert!(clips_directory.join("moment (2).mkv").exists());
+        assert!(!collection.exists());
         fs::remove_dir_all(root).unwrap();
     }
 

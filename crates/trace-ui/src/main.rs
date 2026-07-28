@@ -1,3 +1,4 @@
+mod home;
 mod library;
 mod settings;
 mod theme;
@@ -11,7 +12,8 @@ use gtk::gdk;
 use gtk::glib::{self, ControlFlow};
 use gtk::prelude::*;
 use gtk::{
-    Application, ApplicationWindow, Box as GtkBox, Button, CssProvider, Image, Orientation, Stack,
+    Align, Application, ApplicationWindow, Box as GtkBox, Button, CssProvider, Image, Orientation,
+    Stack,
 };
 
 const APP_ID: &str = "io.github.mika2go.Trace";
@@ -67,16 +69,19 @@ fn build_ui(application: &Application) {
 
     let brand = GtkBox::new(Orientation::Horizontal, 0);
     brand.add_css_class("brand");
+    brand.set_halign(Align::Center);
     let mark = Image::from_icon_name("io.github.mika2go.Trace-symbolic");
     mark.set_pixel_size(24);
     mark.add_css_class("brand-mark");
     brand.append(&mark);
     sidebar.append(&brand);
 
+    let home_nav = nav_button("Home", "user-home-symbolic");
+    home_nav.add_css_class("active");
     let library_nav = nav_button("Library", "video-display-symbolic");
-    library_nav.add_css_class("active");
     let collections_nav = nav_button("Collections", "folder-symbolic");
     let settings_nav = nav_button("Settings", "preferences-system-symbolic");
+    sidebar.append(&home_nav);
     sidebar.append(&library_nav);
     sidebar.append(&collections_nav);
     sidebar.append(&settings_nav);
@@ -94,15 +99,31 @@ fn build_ui(application: &Application) {
     content.set_transition_type(gtk::StackTransitionType::Crossfade);
     content.set_transition_duration(140);
 
+    let home_view = home::build();
     let clip_views = library::build(&content);
     let settings_page = settings::build();
+    content.add_named(&home_view.page, Some("home"));
     content.add_named(&clip_views.library, Some("library"));
     content.add_named(&clip_views.collections, Some("collections"));
     content.add_named(&clip_views.player, Some("player"));
     content.add_named(&settings_page.page, Some("settings"));
-    content.set_visible_child_name("library");
+    content.set_visible_child_name("home");
+
+    let home_stack = content.clone();
+    let home_button = home_nav.clone();
+    let library_button = library_nav.clone();
+    let collections_button = collections_nav.clone();
+    let settings_button = settings_nav.clone();
+    home_nav.connect_clicked(move |_| {
+        home_stack.set_visible_child_name("home");
+        set_active_nav(
+            &home_button,
+            &[&library_button, &collections_button, &settings_button],
+        );
+    });
 
     let library_stack = content.clone();
+    let home_button = home_nav.clone();
     let library_button = library_nav.clone();
     let collections_button = collections_nav.clone();
     let settings_button = settings_nav.clone();
@@ -111,11 +132,13 @@ fn build_ui(application: &Application) {
         library_views.refresh();
         library_stack.set_visible_child_name("library");
         library_button.add_css_class("active");
+        home_button.remove_css_class("active");
         collections_button.remove_css_class("active");
         settings_button.remove_css_class("active");
     });
 
     let collections_stack = content.clone();
+    let home_button = home_nav.clone();
     let library_button = library_nav.clone();
     let collections_button = collections_nav.clone();
     let settings_button = settings_nav.clone();
@@ -124,26 +147,66 @@ fn build_ui(application: &Application) {
         collection_views.refresh();
         collections_stack.set_visible_child_name("collections");
         collections_button.add_css_class("active");
+        home_button.remove_css_class("active");
         library_button.remove_css_class("active");
         settings_button.remove_css_class("active");
     });
 
     let settings_stack = content.clone();
+    let home_button = home_nav.clone();
     let library_button = library_nav.clone();
     let collections_button = collections_nav.clone();
     let settings_button = settings_nav.clone();
     settings_nav.connect_clicked(move |_| {
         settings_stack.set_visible_child_name("settings");
         settings_button.add_css_class("active");
+        home_button.remove_css_class("active");
         library_button.remove_css_class("active");
         collections_button.remove_css_class("active");
+    });
+
+    let quick_library_stack = content.clone();
+    let quick_home = home_nav.clone();
+    let quick_library = library_nav.clone();
+    let quick_collections = collections_nav.clone();
+    let quick_settings = settings_nav.clone();
+    let quick_library_views = clip_views.clone();
+    home_view.open_library.connect_clicked(move |_| {
+        quick_library_views.refresh();
+        quick_library_stack.set_visible_child_name("library");
+        set_active_nav(
+            &quick_library,
+            &[&quick_home, &quick_collections, &quick_settings],
+        );
+    });
+
+    let quick_collections_stack = content.clone();
+    let quick_home = home_nav.clone();
+    let quick_library = library_nav.clone();
+    let quick_collections = collections_nav.clone();
+    let quick_settings = settings_nav.clone();
+    let quick_collection_views = clip_views.clone();
+    home_view.open_collections.connect_clicked(move |_| {
+        quick_collection_views.refresh();
+        quick_collections_stack.set_visible_child_name("collections");
+        set_active_nav(
+            &quick_collections,
+            &[&quick_home, &quick_library, &quick_settings],
+        );
     });
 
     shell.append(&sidebar);
     shell.append(&content);
     window.set_child(Some(&shell));
     window.present();
-    install_responsive_layout(&window, &sidebar, &content, &clip_views, &settings_page);
+    install_responsive_layout(
+        &window,
+        &sidebar,
+        &content,
+        &home_view,
+        &clip_views,
+        &settings_page,
+    );
 }
 
 fn nav_button(label: &str, icon: &str) -> Button {
@@ -152,21 +215,31 @@ fn nav_button(label: &str, icon: &str) -> Button {
     icon.add_css_class("nav-icon");
     let button = Button::new();
     button.add_css_class("nav-button");
+    button.set_halign(Align::Center);
     button.set_tooltip_text(Some(label));
     button.set_child(Some(&icon));
     button
+}
+
+fn set_active_nav(active: &Button, inactive: &[&Button]) {
+    active.add_css_class("active");
+    for button in inactive {
+        button.remove_css_class("active");
+    }
 }
 
 fn install_responsive_layout(
     window: &ApplicationWindow,
     sidebar: &GtkBox,
     content: &Stack,
+    home_view: &home::HomeView,
     clip_views: &library::ClipViews,
     settings_view: &settings::SettingsView,
 ) {
     let window = window.downgrade();
     let sidebar = sidebar.clone();
     let content = content.clone();
+    let home_view = home_view.clone();
     let clip_views = clip_views.clone();
     let settings_view = settings_view.clone();
     let previous = Rc::new(Cell::new((false, false, false, 0_u32)));
@@ -201,6 +274,7 @@ fn install_responsive_layout(
         set_css_class(&content, "narrow", narrow_content);
         set_css_class(&content, "very-narrow", compact_header);
         clip_views.set_layout(compact_header, clip_columns);
+        home_view.set_compact(compact_header);
         settings_view.set_compact(compact_header);
         content.set_hhomogeneous(compact_header);
         ControlFlow::Continue

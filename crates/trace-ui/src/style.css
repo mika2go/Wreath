@@ -85,6 +85,7 @@ button.nav-button.active {
 
 .clips-page,
 .collections-page,
+.home-page,
 .player-page,
 .settings-page {
   background: transparent;
@@ -92,6 +93,10 @@ button.nav-button.active {
 
 .clips-page {
   padding: 40px 42px 30px;
+}
+
+.home-page {
+  padding: 56px 48px 38px;
 }
 
 .collections-page {
@@ -108,6 +113,7 @@ button.nav-button.active {
 
 .content-area.narrow .clips-page,
 .content-area.narrow .collections-page,
+.content-area.narrow .home-page,
 .content-area.narrow .player-page,
 .content-area.narrow .settings-page {
   padding-left: 24px;
@@ -116,6 +122,7 @@ button.nav-button.active {
 
 .content-area.very-narrow .clips-page,
 .content-area.very-narrow .collections-page,
+.content-area.very-narrow .home-page,
 .content-area.very-narrow .player-page,
 .content-area.very-narrow .settings-page {
   padding: 24px 16px 20px;
@@ -160,7 +167,7 @@ button.back-action,
 button.secondary-action {
   color: #a6aaba;
   background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  border: none;
   border-radius: 7px;
   box-shadow: none;
 }
@@ -208,8 +215,8 @@ button.clip-open:hover .clip-preview-frame {
   border-radius: 12px;
 }
 
-button.clip-delete,
-button.clip-rename {
+button.clip-more,
+button.collection-more {
   min-width: 34px;
   min-height: 34px;
   padding: 0;
@@ -219,14 +226,15 @@ button.clip-rename {
   box-shadow: none;
 }
 
-button.clip-delete:hover {
-  color: #ff9b9b;
+button.clip-more:hover,
+button.collection-more:hover {
+  color: #f0ecff;
   background: transparent;
 }
 
-button.clip-rename:hover {
-  color: #d8d0ff;
-  background: transparent;
+button.collection-more {
+  min-width: 30px;
+  min-height: 30px;
 }
 
 .collection-folders flowboxchild {
@@ -297,6 +305,88 @@ popover.compact-popover contents {
   padding: 15px;
 }
 
+popover.clip-menu contents {
+  padding: 0;
+  color: #e9ebf2;
+  background: @trace_surface;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 11px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
+}
+
+.clip-menu-content {
+  min-width: 186px;
+  padding: 7px;
+}
+
+button.menu-action {
+  min-height: 34px;
+  padding: 0 9px;
+  color: #b6bac6;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  box-shadow: none;
+  font-size: 11px;
+}
+
+button.menu-action:hover {
+  color: #f0f1f6;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+button.menu-action.danger-menu-action {
+  color: #d88689;
+}
+
+.menu-section-label {
+  margin: 9px 9px 3px;
+  color: #5f6573;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.home-greeting {
+  color: #f3f4f8;
+  font-size: 31px;
+  font-weight: 750;
+}
+
+.home-stats {
+  margin-top: 46px;
+  margin-bottom: 48px;
+}
+
+.home-stat-value {
+  color: #e7e9f0;
+  font-size: 24px;
+  font-weight: 720;
+  font-feature-settings: "tnum";
+}
+
+.home-stat-label {
+  color: #606675;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+button.home-action {
+  min-height: 42px;
+  padding: 0 15px;
+  color: #d6d8e1;
+  background: rgba(255, 255, 255, 0.045);
+  border: none;
+  border-radius: 9px;
+  box-shadow: 0 7px 22px rgba(0, 0, 0, 0.14);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+button.home-action:hover {
+  color: #f6f3ff;
+  background: alpha(@trace_accent, 0.13);
+}
+
 popover.delete-confirmation contents {
   padding: 0;
   color: #e9ebf2;
@@ -340,12 +430,12 @@ button.danger-action {
 button.popover-action {
   color: #aeb2bf;
   background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  border: none;
 }
 
 button.popover-action:hover {
   color: #eef0f5;
-  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 button.danger-action {
