@@ -1,11 +1,34 @@
 window.trace-window {
-  background: @trace_bg;
+  background: #0f0f11;
   color: #eef0f6;
+}
+
+selection {
+  color: #0f0f11;
+  background: #f2f3f7;
+}
+
+tooltip {
+  padding: 6px 10px;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
+}
+
+tooltip.background {
+  color: #d9dce5;
+  background: @trace_surface;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+tooltip label {
+  color: inherit;
+  font-size: 10px;
+  font-weight: 650;
 }
 
 .sidebar {
   padding: 14px 8px;
-  background: rgba(8, 10, 15, 0.34);
+  background: #0d0d0f;
   border-right: 1px solid rgba(255, 255, 255, 0.065);
 }
 
@@ -60,9 +83,8 @@ button.nav-button:hover {
 }
 
 button.nav-button.active {
-  color: #f2efff;
-  background: alpha(@trace_accent, 0.16);
-  box-shadow: inset 2px 0 alpha(@trace_accent, 0.9);
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.16);
 }
 
 .nav-icon {
@@ -152,7 +174,18 @@ entry.search {
 }
 
 entry.search:focus {
-  border-bottom-color: alpha(@trace_accent, 0.85);
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.38);
+  outline: none;
+  box-shadow: none;
+}
+
+entry.search:focus-visible,
+entry.search:focus-within {
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.38);
+  outline: none;
+  box-shadow: none;
 }
 
 button.icon-action {
@@ -175,8 +208,8 @@ button.secondary-action {
 button.icon-action:hover,
 button.back-action:hover,
 button.secondary-action:hover {
-  color: #f0eff8;
-  background: alpha(@trace_accent, 0.06);
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.06);
 }
 
 button.icon-action:hover {
@@ -204,7 +237,7 @@ button.clip-open {
 }
 
 button.clip-open:hover .clip-preview-frame {
-  outline: 2px solid alpha(@trace_accent, 0.75);
+  outline: 2px solid rgba(255, 255, 255, 0.75);
   outline-offset: -2px;
 }
 
@@ -228,7 +261,7 @@ button.collection-more {
 
 button.clip-more:hover,
 button.collection-more:hover {
-  color: #f0ecff;
+  color: #ffffff;
   background: transparent;
 }
 
@@ -254,18 +287,14 @@ button.collection-button {
 
 button.collection-button:hover,
 button.collection-button.active {
-  color: #edeafc;
+  color: #ffffff;
   background: transparent;
 }
 
-button.collection-button.active {
-  box-shadow: inset 0 -2px alpha(@trace_accent, 0.82);
-}
-
 button.collection-button:drop(active) {
-  color: #f7f5ff;
-  background: alpha(@trace_accent, 0.18);
-  outline: 2px solid alpha(@trace_accent, 0.72);
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.18);
+  outline: 2px solid rgba(255, 255, 255, 0.72);
   outline-offset: -2px;
 }
 
@@ -383,8 +412,8 @@ button.home-action {
 }
 
 button.home-action:hover {
-  color: #f6f3ff;
-  background: alpha(@trace_accent, 0.13);
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.13);
 }
 
 popover.delete-confirmation contents {
@@ -470,8 +499,20 @@ button.danger-action:hover {
 }
 
 .empty-icon {
-  color: #4d5260;
-  font-size: 38px;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.empty-kicker {
+  color: #686e7d;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+
+.empty-hero-title {
+  color: #e9eaf0;
+  font-size: 21px;
+  font-weight: 720;
 }
 
 .empty-title {
@@ -481,8 +522,31 @@ button.danger-action:hover {
 }
 
 .empty-detail {
-  color: #686e7d;
+  color: #777d8b;
   font-size: 11px;
+}
+
+.empty-steps {
+  padding-top: 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.empty-step-number {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 9px;
+  font-weight: 800;
+  font-feature-settings: "tnum";
+}
+
+.empty-step-title {
+  color: #d9dbe3;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.empty-step-detail {
+  color: #656b79;
+  font-size: 10px;
 }
 
 .player-title {
@@ -525,8 +589,33 @@ button.settings-tab:hover {
 }
 
 button.settings-tab.active {
-  color: #f0ecff;
-  box-shadow: inset 0 -2px @trace_accent;
+  color: #ffffff;
+}
+
+button.settings-save-action {
+  min-height: 42px;
+  padding: 0 4px;
+  color: #76d9a3;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  outline: none;
+  box-shadow: none;
+  font-weight: 700;
+}
+
+button.settings-save-action:hover,
+button.settings-save-action:focus-visible {
+  color: #9be9bd;
+  background: transparent;
+  outline: none;
+  box-shadow: none;
+}
+
+button.settings-save-action.saved,
+button.settings-save-action.saved:hover {
+  color: #76d9a3;
+  background: transparent;
 }
 
 .settings-panel-description {
@@ -567,8 +656,15 @@ spinbutton {
 entry:not(.search):focus,
 dropdown:focus,
 spinbutton:focus {
-  border-bottom-color: alpha(@trace_accent, 0.8);
+  border-bottom-color: rgba(255, 255, 255, 0.8);
+  outline: none;
   box-shadow: none;
+}
+
+entry.recording:not(.search),
+entry.recording:not(.search):focus {
+  color: #ffffff;
+  border-bottom-color: rgba(255, 255, 255, 0.95);
 }
 
 dropdown button,
@@ -585,14 +681,14 @@ scale trough {
 }
 
 scale highlight {
-  background: @trace_accent;
+  background: #f2f3f7;
   border-radius: 2px;
 }
 
 scale slider {
   min-width: 18px;
   min-height: 18px;
-  background: #d9d2ff;
+  background: #f2f3f7;
   border: none;
   box-shadow: none;
 }
@@ -613,14 +709,14 @@ checkbutton check {
 
 checkbutton check:checked {
   color: #101318;
-  background: @trace_accent;
-  border-color: @trace_accent;
+  background: #f2f3f7;
+  border-color: #f2f3f7;
 }
 
 button.primary-action {
   padding: 0 18px;
-  color: #f7f5ff;
-  background: @trace_accent;
+  color: #0f0f11;
+  background: #f2f3f7;
   border: none;
   border-radius: 7px;
   box-shadow: none;
@@ -628,7 +724,7 @@ button.primary-action {
 }
 
 button.primary-action:hover {
-  background: @trace_accent_strong;
+  background: #ffffff;
 }
 
 .feedback.success {

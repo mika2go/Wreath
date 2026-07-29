@@ -30,6 +30,7 @@ pub struct ClipViews {
     refresh: Button,
     flow: FlowBox,
     collection_flow: FlowBox,
+    empty_steps: GtkBox,
 }
 
 impl ClipViews {
@@ -54,6 +55,12 @@ impl ClipViews {
         self.flow.set_max_children_per_line(columns);
         self.collection_flow.set_min_children_per_line(columns);
         self.collection_flow.set_max_children_per_line(columns);
+        self.empty_steps.set_orientation(if compact {
+            Orientation::Vertical
+        } else {
+            Orientation::Horizontal
+        });
+        self.empty_steps.set_spacing(if compact { 22 } else { 42 });
     }
 
     pub fn refresh(&self) {
@@ -79,7 +86,12 @@ struct LibraryState {
     directory: PathBuf,
     thumbnail_directory: PathBuf,
     flow: FlowBox,
+    scroll: ScrolledWindow,
     empty: GtkBox,
+    empty_kicker: Label,
+    empty_title: Label,
+    empty_detail: Label,
+    empty_steps: GtkBox,
     count: Label,
     search: Entry,
     preview_widgets: RefCell<HashMap<PathBuf, Vec<PreviewWidgets>>>,
@@ -170,7 +182,8 @@ pub fn build(stack: &Stack) -> ClipViews {
     scroll.set_child(Some(&flow));
     page.append(&scroll);
 
-    let empty = empty_state(&config.storage.directory);
+    let (empty, empty_kicker, empty_title, empty_detail, empty_steps) =
+        empty_state(&config.storage.directory, &config.hotkey.to_string());
     empty.set_visible(false);
     page.append(&empty);
 
@@ -188,7 +201,12 @@ pub fn build(stack: &Stack) -> ClipViews {
         directory: config.storage.directory.clone(),
         thumbnail_directory: paths.thumbnail_dir.clone(),
         flow,
+        scroll,
         empty,
+        empty_kicker,
+        empty_title,
+        empty_detail,
+        empty_steps: empty_steps.clone(),
         count,
         search,
         preview_widgets: RefCell::new(HashMap::new()),
@@ -261,6 +279,7 @@ pub fn build(stack: &Stack) -> ClipViews {
         refresh,
         flow: state.flow.clone(),
         collection_flow,
+        empty_steps,
     }
 }
 
@@ -373,8 +392,29 @@ fn render_clips(state: &Rc<LibraryState>) {
         .filter(|clip| query.is_empty() || clip.title.to_ascii_lowercase().contains(&query))
         .cloned()
         .collect::<Vec<_>>();
-    state.empty.set_visible(clips.is_empty());
-    state.flow.set_visible(!clips.is_empty());
+    let empty = clips.is_empty();
+    if empty {
+        if state.clips.borrow().is_empty() {
+            state.empty_kicker.set_text("READY WHEN YOU ARE");
+            state
+                .empty_title
+                .set_text("Your first replay is one shortcut away");
+            state.empty_detail.set_text(
+                "Trace keeps the latest moments ready in memory. Save one and it appears here immediately.",
+            );
+            state.empty_steps.set_visible(true);
+        } else {
+            state.empty_kicker.set_text("NOTHING FOUND");
+            state.empty_title.set_text("No clips match this search");
+            state
+                .empty_detail
+                .set_text("Try a shorter title or clear the search.");
+            state.empty_steps.set_visible(false);
+        }
+    }
+    state.empty.set_visible(empty);
+    state.scroll.set_visible(!empty);
+    state.flow.set_visible(!empty);
     for (index, clip) in clips.into_iter().take(200).enumerate() {
         let (child, widgets) = clip_card(&clip, state);
         state
@@ -985,29 +1025,90 @@ fn confirm_delete(button: &Button, clip: &Clip, state: &Rc<LibraryState>) {
     popover.popup();
 }
 
-fn empty_state(directory: &std::path::Path) -> GtkBox {
-    let empty = GtkBox::new(Orientation::Vertical, 8);
+fn empty_state(directory: &std::path::Path, hotkey: &str) -> (GtkBox, Label, Label, Label, GtkBox) {
+    let empty = GtkBox::new(Orientation::Vertical, 0);
     empty.add_css_class("empty-state");
-    empty.set_vexpand(true);
-    empty.set_valign(Align::Center);
+    empty.set_hexpand(true);
+    empty.set_valign(Align::Start);
+    empty.set_margin_top(42);
+    empty.set_margin_bottom(30);
+
+    let lead = GtkBox::new(Orientation::Horizontal, 18);
+    lead.set_halign(Align::Start);
     let icon = Image::from_icon_name("folder-videos-symbolic");
-    icon.set_pixel_size(38);
+    icon.set_pixel_size(30);
     icon.add_css_class("empty-icon");
-    let title = Label::new(Some("No clips yet"));
-    title.add_css_class("empty-title");
-    let detail = Label::new(Some(&format!(
-        "Press your Trace hotkey to save a moment.\nClips appear from {}",
-        directory.display()
-    )));
+    icon.set_valign(Align::Start);
+    icon.set_margin_top(4);
+
+    let copy = GtkBox::new(Orientation::Vertical, 4);
+    let kicker = Label::new(Some("READY WHEN YOU ARE"));
+    kicker.add_css_class("empty-kicker");
+    kicker.set_halign(Align::Start);
+    let title = Label::new(Some("Your first replay is one shortcut away"));
+    title.add_css_class("empty-hero-title");
+    title.set_halign(Align::Start);
+    let detail = Label::new(Some(
+        "Trace keeps the latest moments ready in memory. Save one and it appears here immediately.",
+    ));
     detail.add_css_class("empty-detail");
-    detail.set_justify(gtk::Justification::Center);
+    detail.set_halign(Align::Start);
+    detail.set_justify(gtk::Justification::Left);
     detail.set_wrap(true);
     detail.set_wrap_mode(pango::WrapMode::WordChar);
-    detail.set_max_width_chars(44);
-    empty.append(&icon);
-    empty.append(&title);
-    empty.append(&detail);
-    empty
+    detail.set_max_width_chars(66);
+    copy.append(&kicker);
+    copy.append(&title);
+    copy.append(&detail);
+    lead.append(&icon);
+    lead.append(&copy);
+    empty.append(&lead);
+
+    let steps = GtkBox::new(Orientation::Horizontal, 42);
+    steps.add_css_class("empty-steps");
+    steps.set_hexpand(true);
+    steps.set_margin_top(34);
+    steps.append(&empty_step(
+        "01",
+        "Keep playing",
+        "The replay buffer rolls quietly in the background.",
+    ));
+    steps.append(&empty_step(
+        "02",
+        "Save the moment",
+        &format!("Press {hotkey}. The clip is already encoded."),
+    ));
+    steps.append(&empty_step(
+        "03",
+        "Find it here",
+        &format!("New clips land in {}.", directory.display()),
+    ));
+    empty.append(&steps);
+
+    (empty, kicker, title, detail, steps)
+}
+
+fn empty_step(number: &str, title: &str, detail: &str) -> GtkBox {
+    let step = GtkBox::new(Orientation::Vertical, 4);
+    step.add_css_class("empty-step");
+    step.set_hexpand(true);
+    let number = Label::new(Some(number));
+    number.add_css_class("empty-step-number");
+    number.set_halign(Align::Start);
+    let title = Label::new(Some(title));
+    title.add_css_class("empty-step-title");
+    title.set_halign(Align::Start);
+    let detail = Label::new(Some(detail));
+    detail.add_css_class("empty-step-detail");
+    detail.set_halign(Align::Start);
+    detail.set_justify(gtk::Justification::Left);
+    detail.set_wrap(true);
+    detail.set_wrap_mode(pango::WrapMode::WordChar);
+    detail.set_max_width_chars(34);
+    step.append(&number);
+    step.append(&title);
+    step.append(&detail);
+    step
 }
 
 fn build_player(stack: &Stack) -> (GtkBox, Rc<PlayerState>) {

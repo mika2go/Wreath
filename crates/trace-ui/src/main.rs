@@ -56,8 +56,8 @@ fn build_ui(application: &Application) {
     let window = ApplicationWindow::builder()
         .application(application)
         .title("Trace")
-        .default_width(1180)
-        .default_height(760)
+        .default_width(1120)
+        .default_height(700)
         .resizable(true)
         .build();
     window.add_css_class("trace-window");

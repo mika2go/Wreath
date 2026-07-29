@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::rc::Rc;
@@ -7,8 +7,9 @@ use std::time::Duration;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::{
-    Adjustment, Align, Box as GtkBox, Button, CheckButton, DropDown, Entry, Grid, Label,
-    Orientation, Scale, ScrolledWindow, SpinButton, Stack, StringList,
+    Adjustment, Align, Box as GtkBox, Button, CheckButton, DropDown, Entry, EventControllerFocus,
+    EventControllerKey, GestureClick, Grid, Image, Label, Orientation, Scale, ScrolledWindow,
+    SpinButton, Stack, StringList,
 };
 use trace_core::audio::{self, Microphone};
 use trace_core::config::{Codec, Config, HotkeyConfig};
@@ -32,6 +33,266 @@ struct SettingsRow {
     label: Label,
     control: gtk::Widget,
     row: i32,
+}
+
+#[derive(Clone)]
+struct HotkeyCapture {
+    entry: Entry,
+    confirmed: Rc<RefCell<HotkeyConfig>>,
+    awaiting_confirmation: Rc<Cell<bool>>,
+}
+
+impl HotkeyCapture {
+    fn new(hotkey: &HotkeyConfig) -> Self {
+        let entry = Entry::new();
+        entry.set_text(&hotkey.to_string());
+        entry.set_editable(false);
+        entry.set_hexpand(true);
+        entry.set_tooltip_text(Some(
+            "Click, press the new shortcut, then press Enter to confirm",
+        ));
+
+        let confirmed = Rc::new(RefCell::new(hotkey.clone()));
+        let pending = Rc::new(RefCell::new(None::<HotkeyConfig>));
+        let recording = Rc::new(Cell::new(false));
+        let awaiting_confirmation = Rc::new(Cell::new(false));
+
+        let focus_controller = EventControllerFocus::new();
+        let focus_entry = entry.clone();
+        let enter_pending = pending.clone();
+        let enter_recording = recording.clone();
+        let enter_awaiting = awaiting_confirmation.clone();
+        focus_controller.connect_enter(move |_| {
+            begin_hotkey_capture(
+                &focus_entry,
+                &enter_pending,
+                &enter_recording,
+                &enter_awaiting,
+            );
+        });
+
+        let leave_entry = entry.clone();
+        let focus_pending = pending.clone();
+        let focus_recording = recording.clone();
+        focus_controller.connect_leave(move |_| {
+            restore_system_shortcuts(&leave_entry);
+            if focus_recording.replace(false) {
+                leave_entry.remove_css_class("recording");
+                if focus_pending.borrow().is_none() {
+                    leave_entry.set_text("No shortcut captured · click to try again");
+                }
+            }
+        });
+        entry.add_controller(focus_controller);
+
+        let click_controller = GestureClick::new();
+        let click_entry = entry.clone();
+        let click_pending = pending.clone();
+        let click_recording = recording.clone();
+        let click_awaiting = awaiting_confirmation.clone();
+        click_controller.connect_pressed(move |_, _, _, _| {
+            begin_hotkey_capture(
+                &click_entry,
+                &click_pending,
+                &click_recording,
+                &click_awaiting,
+            );
+        });
+        entry.add_controller(click_controller);
+
+        let controller = EventControllerKey::new();
+        let key_entry = entry.clone();
+        let key_confirmed = confirmed.clone();
+        let key_pending = pending.clone();
+        let key_recording = recording.clone();
+        let key_awaiting = awaiting_confirmation.clone();
+        controller.connect_key_pressed(move |_, key, _, modifiers| {
+            if !key_recording.get() {
+                return glib::Propagation::Proceed;
+            }
+
+            if is_confirm_key(key) {
+                if let Some(hotkey) = key_pending.borrow_mut().take() {
+                    key_entry.set_text(&hotkey.to_string());
+                    *key_confirmed.borrow_mut() = hotkey;
+                    key_recording.set(false);
+                    key_awaiting.set(false);
+                    key_entry.remove_css_class("recording");
+                    key_entry.set_tooltip_text(Some(
+                        "Shortcut confirmed. Click to record a different shortcut",
+                    ));
+                    clear_hotkey_focus(&key_entry);
+                } else {
+                    key_entry.set_text("Press a shortcut first · Enter confirms");
+                }
+                return glib::Propagation::Stop;
+            }
+
+            if key == gtk::gdk::Key::Escape {
+                key_pending.borrow_mut().take();
+                key_entry.set_text(&key_confirmed.borrow().to_string());
+                key_recording.set(false);
+                key_awaiting.set(false);
+                key_entry.remove_css_class("recording");
+                clear_hotkey_focus(&key_entry);
+                return glib::Propagation::Stop;
+            }
+
+            let modifier_names = hotkey_modifiers(key, modifiers);
+            if is_modifier_key(key) {
+                let preview = if modifier_names.is_empty() {
+                    "Press shortcut · Enter confirms".to_owned()
+                } else {
+                    format!("{}+…", modifier_names.join("+"))
+                };
+                key_entry.set_text(&preview);
+                return glib::Propagation::Stop;
+            }
+
+            match hotkey_from_key(key, modifiers) {
+                Ok(hotkey) => {
+                    key_entry.set_text(&format!("{hotkey} · Enter confirms"));
+                    *key_pending.borrow_mut() = Some(hotkey);
+                }
+                Err(_) => {
+                    key_pending.borrow_mut().take();
+                    key_entry.set_text("Unsupported key · try another shortcut");
+                }
+            }
+            glib::Propagation::Stop
+        });
+        entry.add_controller(controller);
+
+        Self {
+            entry,
+            confirmed,
+            awaiting_confirmation,
+        }
+    }
+
+    fn value(&self) -> Result<HotkeyConfig, String> {
+        if self.awaiting_confirmation.get() {
+            return Err("Confirm the recorded shortcut with Enter before saving.".into());
+        }
+        Ok(self.confirmed.borrow().clone())
+    }
+}
+
+fn begin_hotkey_capture(
+    entry: &Entry,
+    pending: &RefCell<Option<HotkeyConfig>>,
+    recording: &Cell<bool>,
+    awaiting_confirmation: &Cell<bool>,
+) {
+    recording.set(true);
+    awaiting_confirmation.set(true);
+    inhibit_system_shortcuts(entry);
+    if let Some(hotkey) = pending.borrow().as_ref() {
+        entry.set_text(&format!("{hotkey} · Enter confirms"));
+    } else {
+        entry.set_text("Press shortcut · Enter confirms");
+    }
+    entry.add_css_class("recording");
+    entry.set_tooltip_text(Some("Press all shortcut keys together, then press Enter"));
+}
+
+fn clear_hotkey_focus(entry: &Entry) {
+    restore_system_shortcuts(entry);
+    if let Some(window) = entry
+        .root()
+        .and_then(|root| root.downcast::<gtk::Window>().ok())
+    {
+        gtk::prelude::GtkWindowExt::set_focus(&window, None::<&gtk::Widget>);
+    }
+}
+
+fn inhibit_system_shortcuts(entry: &Entry) {
+    if let Some(toplevel) = hotkey_toplevel(entry) {
+        toplevel.inhibit_system_shortcuts(None::<gtk::gdk::Event>);
+    }
+}
+
+fn restore_system_shortcuts(entry: &Entry) {
+    if let Some(toplevel) = hotkey_toplevel(entry) {
+        toplevel.restore_system_shortcuts();
+    }
+}
+
+fn hotkey_toplevel(entry: &Entry) -> Option<gtk::gdk::Toplevel> {
+    entry
+        .native()
+        .and_then(|native| native.surface())
+        .and_then(|surface| surface.downcast::<gtk::gdk::Toplevel>().ok())
+}
+
+fn is_confirm_key(key: gtk::gdk::Key) -> bool {
+    matches!(
+        key,
+        gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::ISO_Enter
+    )
+}
+
+fn is_modifier_key(key: gtk::gdk::Key) -> bool {
+    matches!(
+        key,
+        gtk::gdk::Key::Super_L
+            | gtk::gdk::Key::Super_R
+            | gtk::gdk::Key::Shift_L
+            | gtk::gdk::Key::Shift_R
+            | gtk::gdk::Key::Control_L
+            | gtk::gdk::Key::Control_R
+            | gtk::gdk::Key::Alt_L
+            | gtk::gdk::Key::Alt_R
+            | gtk::gdk::Key::Meta_L
+            | gtk::gdk::Key::Meta_R
+    )
+}
+
+fn hotkey_modifiers(key: gtk::gdk::Key, modifiers: gtk::gdk::ModifierType) -> Vec<&'static str> {
+    let super_pressed = modifiers.intersects(
+        gtk::gdk::ModifierType::SUPER_MASK
+            | gtk::gdk::ModifierType::HYPER_MASK
+            | gtk::gdk::ModifierType::META_MASK,
+    ) || matches!(
+        key,
+        gtk::gdk::Key::Super_L
+            | gtk::gdk::Key::Super_R
+            | gtk::gdk::Key::Meta_L
+            | gtk::gdk::Key::Meta_R
+    );
+    let shift_pressed = modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+        || matches!(key, gtk::gdk::Key::Shift_L | gtk::gdk::Key::Shift_R);
+    let control_pressed = modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+        || matches!(key, gtk::gdk::Key::Control_L | gtk::gdk::Key::Control_R);
+    let alt_pressed = modifiers.contains(gtk::gdk::ModifierType::ALT_MASK)
+        || matches!(key, gtk::gdk::Key::Alt_L | gtk::gdk::Key::Alt_R);
+
+    [
+        (super_pressed, "SUPER"),
+        (shift_pressed, "SHIFT"),
+        (control_pressed, "CTRL"),
+        (alt_pressed, "ALT"),
+    ]
+    .into_iter()
+    .filter_map(|(pressed, name)| pressed.then_some(name))
+    .collect()
+}
+
+fn hotkey_from_key(
+    key: gtk::gdk::Key,
+    modifiers: gtk::gdk::ModifierType,
+) -> Result<HotkeyConfig, String> {
+    let key_name = key
+        .to_upper()
+        .name()
+        .ok_or_else(|| "key has no XKB name".to_owned())?;
+    let expression = hotkey_modifiers(key, modifiers)
+        .iter()
+        .copied()
+        .chain(std::iter::once(key_name.as_str()))
+        .collect::<Vec<_>>()
+        .join("+");
+    HotkeyConfig::parse(&expression).map_err(|error| error.to_string())
 }
 
 impl SettingsView {
@@ -65,7 +326,7 @@ impl SettingsView {
         self.apply
             .set_halign(if compact { Align::Fill } else { Align::End });
         self.apply
-            .set_size_request(if compact { -1 } else { 132 }, 42);
+            .set_size_request(if compact { -1 } else { 92 }, 42);
         for panel in &self.panels {
             panel.set_size_request(if compact { -1 } else { 640 }, -1);
             panel.set_hexpand(compact);
@@ -203,11 +464,8 @@ pub fn build() -> SettingsView {
 
     let control_grid = settings_grid();
     grids.push(control_grid.clone());
-    let hotkey = Entry::new();
-    hotkey.set_text(&config.hotkey.to_string());
-    hotkey.set_placeholder_text(Some("SUPER+SHIFT+R"));
-    hotkey.set_hexpand(true);
-    rows.push(attach_row(&control_grid, 0, "Save replay", &hotkey));
+    let hotkey = HotkeyCapture::new(&config.hotkey);
+    rows.push(attach_row(&control_grid, 0, "Save replay", &hotkey.entry));
     controls_page.append(&control_grid);
 
     let audio_grid = settings_grid();
@@ -280,9 +538,16 @@ pub fn build() -> SettingsView {
     feedback.add_css_class("feedback");
     feedback.set_halign(Align::Start);
     feedback.set_hexpand(true);
-    let apply = Button::with_label("Save changes");
-    apply.add_css_class("primary-action");
-    apply.set_size_request(132, 42);
+    let apply_content = GtkBox::new(Orientation::Horizontal, 8);
+    let apply_icon = Image::from_icon_name("document-save-symbolic");
+    apply_icon.set_pixel_size(17);
+    let apply_label = Label::new(Some("Save"));
+    apply_content.append(&apply_icon);
+    apply_content.append(&apply_label);
+    let apply = Button::new();
+    apply.add_css_class("settings-save-action");
+    apply.set_child(Some(&apply_content));
+    apply.set_size_request(92, 42);
     footer.append(&feedback);
     footer.append(&apply);
     root.append(&footer);
@@ -290,6 +555,8 @@ pub fn build() -> SettingsView {
     let save_paths = paths.clone();
     let saved_feedback = feedback.clone();
     let saved_apply = apply.clone();
+    let saved_apply_icon = apply_icon.clone();
+    let saved_apply_label = apply_label.clone();
     let save_generation = Rc::new(Cell::new(0_u64));
     apply.connect_clicked(move |_| {
         let generation = save_generation.get().wrapping_add(1);
@@ -314,14 +581,18 @@ pub fn build() -> SettingsView {
                 saved_feedback.set_text("✓ Changes saved locally. Recorder updated.");
                 saved_feedback.remove_css_class("error");
                 saved_feedback.add_css_class("success");
-                saved_apply.set_label("✓ Saved");
+                saved_apply_icon.set_icon_name(Some("emblem-ok-symbolic"));
+                saved_apply_label.set_text("Saved");
                 saved_apply.add_css_class("saved");
 
                 let reset_apply = saved_apply.clone();
+                let reset_apply_icon = saved_apply_icon.clone();
+                let reset_apply_label = saved_apply_label.clone();
                 let reset_generation = save_generation.clone();
                 glib::timeout_add_local_once(Duration::from_millis(2200), move || {
                     if reset_generation.get() == generation {
-                        reset_apply.set_label("Save changes");
+                        reset_apply_icon.set_icon_name(Some("document-save-symbolic"));
+                        reset_apply_label.set_text("Save");
                         reset_apply.remove_css_class("saved");
                     }
                 });
@@ -339,7 +610,8 @@ pub fn build() -> SettingsView {
                 saved_feedback.set_text(&error);
                 saved_feedback.remove_css_class("success");
                 saved_feedback.add_css_class("error");
-                saved_apply.set_label("Save changes");
+                saved_apply_icon.set_icon_name(Some("document-save-symbolic"));
+                saved_apply_label.set_text("Save");
                 saved_apply.remove_css_class("saved");
             }
         }
@@ -368,7 +640,7 @@ fn collect_and_save(
     fps: &SpinButton,
     codec: &DropDown,
     quality: &Scale,
-    hotkey: &Entry,
+    hotkey: &HotkeyCapture,
     desktop_audio: &CheckButton,
     microphone: &CheckButton,
     microphones: &[Microphone],
@@ -395,8 +667,7 @@ fn collect_and_save(
         _ => return Err("Select a codec.".into()),
     };
     config.capture.quality = quality.value().round().clamp(0.0, 100.0) as u8;
-    config.hotkey =
-        HotkeyConfig::parse(hotkey.text().as_str()).map_err(|error| error.to_string())?;
+    config.hotkey = hotkey.value()?;
     config.audio.desktop = desktop_audio.is_active();
     config.audio.microphone = microphone.is_active();
     let microphone_index = usize::try_from(microphone_dropdown.selected()).unwrap_or(usize::MAX);
@@ -545,4 +816,34 @@ fn spin_button(minimum: f64, maximum: f64, step: f64, value: f64) -> SpinButton 
     let spin = SpinButton::new(Some(&adjustment), step, 0);
     spin.set_hexpand(true);
     spin
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn turns_pressed_keys_into_a_hotkey() {
+        let modifiers = gtk::gdk::ModifierType::SUPER_MASK | gtk::gdk::ModifierType::SHIFT_MASK;
+        let hotkey = hotkey_from_key(gtk::gdk::Key::r, modifiers).unwrap();
+
+        assert_eq!(hotkey.to_string(), "SUPER+SHIFT+R");
+    }
+
+    #[test]
+    fn includes_the_modifier_currently_being_pressed() {
+        assert_eq!(
+            hotkey_modifiers(
+                gtk::gdk::Key::Control_L,
+                gtk::gdk::ModifierType::NO_MODIFIER_MASK
+            ),
+            vec!["CTRL"]
+        );
+    }
+
+    #[test]
+    fn enter_is_reserved_for_confirmation() {
+        assert!(is_confirm_key(gtk::gdk::Key::Return));
+        assert!(is_confirm_key(gtk::gdk::Key::KP_Enter));
+    }
 }
