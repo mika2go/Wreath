@@ -3,12 +3,12 @@ Description=Trace instant replay daemon
 Documentation=https://github.com/mika2go/trace
 After=graphical-session.target pipewire.service
 PartOf=graphical-session.target
-ConditionEnvironment=HYPRLAND_INSTANCE_SIGNATURE
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/traced
-ExecStartPost=/usr/bin/tracectl bind
+# Hyprland is configured automatically. Other desktops receive manual shortcut guidance.
+ExecStartPost=-/usr/bin/tracectl bind
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=10

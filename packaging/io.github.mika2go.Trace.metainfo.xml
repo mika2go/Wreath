@@ -2,13 +2,13 @@
 <component type="desktop-application">
   <id>io.github.mika2go.Trace</id>
   <name>Trace</name>
-  <summary>Local instant replay recorder for Hyprland</summary>
+  <summary>Local instant replay recorder for Linux desktops</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <description>
     <p>
       Trace records a short, hardware-encoded rolling buffer and saves a local
-      video only when you press your configured Hyprland shortcut.
+      video only when you press your configured desktop shortcut.
     </p>
     <p>
       Clips, settings, thumbnails, and playback stay on this machine. Trace

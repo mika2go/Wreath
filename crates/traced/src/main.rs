@@ -5,8 +5,8 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::ExitCode;
 
 use trace_core::config::Config;
+use trace_core::display;
 use trace_core::engine::{GpuScreenRecorder, ReplaySpec};
-use trace_core::hyprland;
 use trace_core::ipc::{DaemonState, Request, Response};
 use trace_core::paths::AppPaths;
 
@@ -35,9 +35,9 @@ fn run() -> Result<(), String> {
     if !paths.config_file.exists() {
         config.save(&paths).map_err(|error| error.to_string())?;
     }
-    let monitors = hyprland::monitors().map_err(|error| error.to_string())?;
+    let monitors = display::monitors().map_err(|error| error.to_string())?;
     let selected_monitor =
-        hyprland::resolve_monitor(&monitors, config.capture.monitor.as_deref()).cloned();
+        display::resolve_monitor(&monitors, config.capture.monitor.as_deref()).cloned();
     let monitor = selected_monitor
         .as_ref()
         .map(|monitor| monitor.name.clone());
@@ -216,7 +216,7 @@ impl Daemon {
                 };
             }
         };
-        let monitors = match hyprland::monitors() {
+        let monitors = match display::monitors() {
             Ok(monitors) => monitors,
             Err(error) => {
                 self.fail(error.to_string());
@@ -226,7 +226,7 @@ impl Daemon {
             }
         };
         let selected =
-            hyprland::resolve_monitor(&monitors, config.capture.monitor.as_deref()).cloned();
+            display::resolve_monitor(&monitors, config.capture.monitor.as_deref()).cloned();
         self.monitor = selected.as_ref().map(|monitor| monitor.name.clone());
         self.replay = selected
             .as_ref()

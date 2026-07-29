@@ -13,8 +13,9 @@ use gtk::{
 };
 use trace_core::audio::{self, Microphone};
 use trace_core::config::{Codec, Config, HotkeyConfig};
-use trace_core::hyprland::{self, Monitor};
+use trace_core::display::{self, Monitor};
 use trace_core::paths::AppPaths;
+use trace_core::shortcuts;
 
 #[derive(Clone)]
 pub struct SettingsView {
@@ -337,7 +338,7 @@ impl SettingsView {
 pub fn build() -> SettingsView {
     let paths = AppPaths::discover();
     let config = Config::load(&paths).unwrap_or_default();
-    let monitors = hyprland::monitors().unwrap_or_default();
+    let monitors = display::monitors().unwrap_or_default();
     let microphones = audio::microphones().unwrap_or_default();
 
     let root = GtkBox::new(Orientation::Vertical, 0);
@@ -367,16 +368,27 @@ pub fn build() -> SettingsView {
     settings_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
     settings_stack.set_transition_duration(120);
 
-    let display_page = settings_panel("Display", "Choose the Hyprland output Trace records.");
+    let display_page = settings_panel(
+        "Display",
+        "Choose the display or desktop portal Trace records.",
+    );
     let quality_page = settings_panel("Quality", "Balance detail, file size and encoder load.");
     let audio_page = settings_panel(
         "Audio",
         "Mix desktop sound and your microphone into each clip.",
     );
-    let controls_page = settings_panel(
-        "Controls",
-        "Set the shortcut used to save the replay buffer.",
-    );
+    let controls_description = match shortcuts::backend() {
+        shortcuts::ShortcutBackend::Hyprland => {
+            "Set the shortcut used to save the replay buffer. Hyprland updates immediately."
+        }
+        shortcuts::ShortcutBackend::Plasma => {
+            "Record the shortcut here, then assign tracectl save in Plasma System Settings."
+        }
+        shortcuts::ShortcutBackend::Manual(_) => {
+            "Record the shortcut here, then assign tracectl save in your desktop settings."
+        }
+    };
+    let controls_page = settings_panel("Controls", controls_description);
     let storage_page = settings_panel(
         "Storage",
         "Choose where clips and collection folders are kept.",
@@ -686,7 +698,7 @@ fn collect_and_save(
     config.save(paths).map_err(|error| error.to_string())?;
 
     let control = sibling_control_executable();
-    hyprland::replace_replay_bind(Some(&previous_hotkey), &config.hotkey, &control)
+    shortcuts::replace(Some(&previous_hotkey), &config.hotkey, &control)
         .map_err(|error| error.to_string())?;
     let _ = Command::new(control)
         .arg("reload")
@@ -710,10 +722,14 @@ fn monitor_model(monitors: &[Monitor]) -> StringList {
     let labels = monitors
         .iter()
         .map(|monitor| {
-            format!(
-                "{} · {} × {} · {:.0} Hz",
-                monitor.name, monitor.width, monitor.height, monitor.refresh_rate
-            )
+            if monitor.uses_portal() {
+                "Desktop portal · choose a screen securely".to_owned()
+            } else {
+                format!(
+                    "{} · {} × {} · {:.0} Hz",
+                    monitor.name, monitor.width, monitor.height, monitor.refresh_rate
+                )
+            }
         })
         .collect::<Vec<_>>();
     StringList::new(&labels.iter().map(String::as_str).collect::<Vec<&str>>())

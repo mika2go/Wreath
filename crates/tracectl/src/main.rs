@@ -5,15 +5,16 @@ use std::path::Path;
 use std::process::Stdio;
 use std::process::{Command, ExitCode};
 
-use trace_core::hyprland;
+use trace_core::display;
+use trace_core::engine;
 use trace_core::ipc::{Request, Response};
 use trace_core::paths::AppPaths;
+use trace_core::shortcuts::{self, ShortcutInstall};
 use trace_core::{config::Codec, config::Config, config::HotkeyConfig};
-use trace_core::{engine, hyprland::resolve_monitor};
 
 const SOUND_SAMPLE_RATE: usize = 48_000;
 const SOUND_DURATION_SECONDS: f32 = 0.48;
-const SOUND_PLAYBACK_VOLUME: &str = "0.14";
+const SOUND_PLAYBACK_VOLUME: &str = "9175";
 
 fn main() -> ExitCode {
     match run() {
@@ -29,7 +30,7 @@ fn run() -> Result<(), String> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     let command = arguments.first().map(String::as_str).unwrap_or("status");
     if command == "monitors" {
-        for monitor in hyprland::monitors().map_err(|error| error.to_string())? {
+        for monitor in display::monitors().map_err(|error| error.to_string())? {
             let focused = if monitor.focused { " [focused]" } else { "" };
             println!(
                 "{} — {} ({}x{} @ {:.0} Hz){}",
@@ -47,9 +48,15 @@ fn run() -> Result<(), String> {
         let paths = AppPaths::discover();
         let config = Config::load(&paths).map_err(|error| error.to_string())?;
         let executable = env::current_exe().map_err(|error| error.to_string())?;
-        hyprland::install_replay_bind(&config.hotkey, &executable)
-            .map_err(|error| error.to_string())?;
-        println!("bound {} in Hyprland", config.hotkey);
+        match shortcuts::install(&config.hotkey, &executable).map_err(|error| error.to_string())? {
+            ShortcutInstall::Installed => println!("bound {} in Hyprland", config.hotkey),
+            ShortcutInstall::Manual { backend, command } => {
+                println!(
+                    "shortcut requires {backend}; assign {} to `{command}`",
+                    config.hotkey
+                );
+            }
+        }
         return Ok(());
     }
     if command == "config" {
@@ -138,15 +145,14 @@ fn spawn_quiet(program: &str, arguments: &[&str]) {
 }
 
 fn play_clip_saved_sound() {
-    let Ok(mut player) = Command::new("pw-play")
+    let Ok(mut player) = Command::new("paplay")
         .args([
             "--raw",
-            "--format=s16",
+            "--format=s16le",
             "--rate=48000",
             "--channels=1",
             "--volume",
             SOUND_PLAYBACK_VOLUME,
-            "-",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -190,9 +196,9 @@ fn doctor() -> Result<(), String> {
     let paths = AppPaths::discover();
     let config = Config::load(&paths).map_err(|error| error.to_string())?;
     println!("config  ok · {}", paths.config_file.display());
-    let monitors = hyprland::monitors().map_err(|error| error.to_string())?;
-    println!("hyprland ok · {} active monitor(s)", monitors.len());
-    let monitor = resolve_monitor(&monitors, config.capture.monitor.as_deref())
+    let monitors = display::monitors().map_err(|error| error.to_string())?;
+    println!("display  ok · {} capture target(s)", monitors.len());
+    let monitor = display::resolve_monitor(&monitors, config.capture.monitor.as_deref())
         .ok_or_else(|| "no active monitor found".to_owned())?;
     println!(
         "capture  ok · {} · {}x{} @ {:.0} Hz",
@@ -218,9 +224,31 @@ fn doctor() -> Result<(), String> {
             &codecs
         }
     );
-    println!("engine   ok · gpu-screen-recorder · AMD/NVIDIA auto detection");
+    println!("engine   ok · gpu-screen-recorder · AMD/Intel/NVIDIA detection");
+    let missing_feedback = ["notify-send", "paplay", "pactl"]
+        .into_iter()
+        .filter(|command| !command_available(command))
+        .collect::<Vec<_>>();
+    if !missing_feedback.is_empty() {
+        return Err(format!(
+            "missing desktop feedback command(s): {}; install libnotify and libpulse",
+            missing_feedback.join(", ")
+        ));
+    }
+    println!("feedback ok · notification and quiet confirmation sound");
+    println!("shortcut    · {}", shortcuts::backend());
     println!("network  blocked by packaged systemd user service");
     Ok(())
+}
+
+fn command_available(command: &str) -> bool {
+    env::var_os("PATH")
+        .map(|path| {
+            env::split_paths(&path)
+                .map(|directory| directory.join(command))
+                .any(|candidate| candidate.is_file())
+        })
+        .unwrap_or(false)
 }
 
 fn configure(arguments: &[String]) -> Result<(), String> {
@@ -237,7 +265,7 @@ fn configure(arguments: &[String]) -> Result<(), String> {
         .ok_or_else(|| format!("missing value for `{setting}`"))?;
     match setting {
         "monitor" => {
-            let monitors = hyprland::monitors().map_err(|error| error.to_string())?;
+            let monitors = display::monitors().map_err(|error| error.to_string())?;
             let monitor = monitors
                 .iter()
                 .find(|monitor| monitor.name == *value || monitor.description == *value)
@@ -275,7 +303,7 @@ fn configure(arguments: &[String]) -> Result<(), String> {
     config.save(&paths).map_err(|error| error.to_string())?;
     if setting == "hotkey" {
         let executable = env::current_exe().map_err(|error| error.to_string())?;
-        hyprland::replace_replay_bind(Some(&previous_hotkey), &config.hotkey, &executable)
+        shortcuts::replace(Some(&previous_hotkey), &config.hotkey, &executable)
             .map_err(|error| error.to_string())?;
     }
     let _ = send(&paths, &Request::Reload);
@@ -345,9 +373,9 @@ fn start_daemon() -> Result<(), String> {
 fn print_help() {
     println!(
         "tracectl <command>\n\n\
-         commands:\n  monitors  list Hyprland monitors\n  status    show daemon state\n  \
+         commands:\n  monitors  list available capture targets\n  status    show daemon state\n  \
          save      save the replay buffer\n  pause     pause capture\n  resume    resume capture\n  \
-         reload    reload local configuration\n  bind      register configured Hyprland hotkey\n  \
+         reload    reload local configuration\n  bind      register or explain the desktop hotkey\n  \
          sound     preview the clip confirmation sound\n  \
          config    show or change local settings\n  doctor    verify the local runtime\n  \
          shutdown  stop the daemon\n\n\

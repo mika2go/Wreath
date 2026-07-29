@@ -1,7 +1,7 @@
 pkgname=trace-git
 pkgver=0.1.0.r0.g0000000
 pkgrel=1
-pkgdesc="Lightweight local-first instant replay recorder for Hyprland"
+pkgdesc="Lightweight local-first instant replay recorder for Linux desktops"
 arch=('x86_64')
 url="https://github.com/mika2go/trace"
 license=('MIT')
@@ -12,13 +12,19 @@ depends=(
   'gst-plugins-base'
   'gst-plugins-good'
   'gtk4'
-  'hyprland'
+  'libnotify'
   'libpulse'
   'xdg-utils'
 )
 makedepends=('cargo' 'git')
+optdepends=(
+  'hyprland: automatic native replay shortcut and focused-monitor detection'
+  'xdg-desktop-portal-hyprland: portal capture fallback on Hyprland'
+  'xdg-desktop-portal-kde: portal capture fallback on KDE Plasma'
+)
 provides=('trace')
 conflicts=('trace')
+install=trace.install
 source=("$pkgname::git+$url.git")
 b2sums=('SKIP')
 
@@ -62,4 +68,5 @@ package() {
     "$pkgdir/usr/share/icons/hicolor/symbolic/apps/io.github.mika2go.Trace-symbolic.svg"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 docs/install.md "$pkgdir/usr/share/doc/$pkgname/install.md"
 }

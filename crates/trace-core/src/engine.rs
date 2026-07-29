@@ -9,7 +9,8 @@ use std::thread;
 use std::time::Duration;
 
 use crate::config::{Codec, Config};
-use crate::hyprland::Monitor;
+use crate::display::Monitor;
+use crate::paths::AppPaths;
 
 const SAVE_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -28,6 +29,7 @@ pub struct ReplaySpec {
     pub microphone_device: Option<String>,
     pub microphone_gain_percent: u16,
     pub output_directory: PathBuf,
+    pub portal_session_token_file: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -44,7 +46,8 @@ impl fmt::Display for EngineError {
         match self {
             Self::Io(error) if error.kind() == io::ErrorKind::NotFound => write!(
                 formatter,
-                "gpu-screen-recorder is not installed; on Arch run `sudo pacman -S gpu-screen-recorder`"
+                "gpu-screen-recorder is not installed; on Arch or CachyOS run \
+                 `sudo pacman -S gpu-screen-recorder`"
             ),
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Exited(code) => write!(
@@ -84,6 +87,9 @@ impl ReplaySpec {
             microphone_device: config.audio.microphone_device.clone(),
             microphone_gain_percent: config.audio.microphone_gain_percent,
             output_directory: config.storage.directory.clone(),
+            portal_session_token_file: monitor
+                .uses_portal()
+                .then(|| AppPaths::discover().cache_dir.join("portal-session-token")),
         }
     }
 
@@ -131,6 +137,14 @@ impl ReplaySpec {
         };
         if let Some(audio_source) = audio_source {
             arguments.extend(["-a".into(), audio_source.into(), "-ac".into(), "aac".into()]);
+        }
+        if let Some(token_file) = &self.portal_session_token_file {
+            arguments.extend([
+                "-restore-portal-session".into(),
+                "yes".into(),
+                "-portal-session-token-filepath".into(),
+                token_file.as_os_str().to_owned(),
+            ]);
         }
         arguments
     }
@@ -279,6 +293,13 @@ impl GpuScreenRecorder {
         executable: impl AsRef<std::ffi::OsStr>,
     ) -> Result<Self, EngineError> {
         fs::create_dir_all(&spec.output_directory)?;
+        if let Some(parent) = spec
+            .portal_session_token_file
+            .as_ref()
+            .and_then(|path| path.parent())
+        {
+            fs::create_dir_all(parent)?;
+        }
         let microphone_gain_source = if spec.microphone_audio {
             let master = spec
                 .microphone_device
@@ -440,6 +461,7 @@ mod tests {
             microphone_device: None,
             microphone_gain_percent: 100,
             output_directory: PathBuf::from("/tmp/trace-test"),
+            portal_session_token_file: None,
         }
     }
 
@@ -487,6 +509,29 @@ mod tests {
                 .filter(|argument| argument.as_str() == "-a")
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn portal_capture_restores_the_users_session_choice() {
+        let mut replay = spec();
+        replay.monitor = "portal".into();
+        replay.portal_session_token_file = Some(PathBuf::from("/tmp/trace-portal-token"));
+        let arguments = replay
+            .arguments()
+            .into_iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["-restore-portal-session", "yes"])
+        );
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["-portal-session-token-filepath", "/tmp/trace-portal-token"])
         );
     }
 
