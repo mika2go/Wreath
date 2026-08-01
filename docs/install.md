@@ -59,7 +59,7 @@ The included `PKGBUILD` creates `trace-git` without requiring Hyprland:
 ```bash
 cd packaging
 makepkg -si
-systemctl --user enable --now traced.service
+systemctl --user reenable --now traced.service
 ```
 
 The package works unchanged on CachyOS because CachyOS is Arch-based and uses
@@ -153,7 +153,7 @@ that expose application actions.
 Start or restart the recorder:
 
 ```bash
-systemctl --user enable --now traced.service
+systemctl --user reenable --now traced.service
 tracectl doctor
 tracectl monitors
 ```

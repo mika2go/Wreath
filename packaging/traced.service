@@ -1,8 +1,8 @@
 [Unit]
 Description=Trace instant replay daemon
 Documentation=https://github.com/mika2go/trace
-After=graphical-session.target pipewire.service
-PartOf=graphical-session.target
+After=pipewire.service pipewire-pulse.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -19,4 +19,4 @@ IPAddressDeny=any
 LimitNOFILE=256
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target

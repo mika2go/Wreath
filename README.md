@@ -105,6 +105,10 @@ systemctl --user status traced.service
 systemctl --user restart traced.service
 ```
 
+The service is attached to the user manager's `default.target`. It keeps
+running independently of desktop-specific graphical-session targets and
+restarts both the daemon and a failed recorder process automatically.
+
 ## Performance
 
 The replay is already encoded when it is saved. Pressing the shortcut sends a

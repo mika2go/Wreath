@@ -2,17 +2,20 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, BufReader};
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::config::{Codec, Config};
 use crate::display::Monitor;
 use crate::paths::AppPaths;
 
 const SAVE_TIMEOUT: Duration = Duration::from_secs(15);
+const STOP_TIMEOUT: Duration = Duration::from_secs(3);
+const STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplaySpec {
@@ -318,6 +321,7 @@ impl GpuScreenRecorder {
         }
         let mut child = Command::new(executable)
             .args(recorder_spec.arguments())
+            .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -367,11 +371,22 @@ impl GpuScreenRecorder {
 
     pub fn stop(&mut self) -> Result<(), EngineError> {
         if self.child.try_wait()?.is_some() {
+            let _ = send_signal_to_group(self.process_id(), "KILL");
             self.microphone_gain_source.take();
             return Ok(());
         }
-        send_signal(self.process_id(), "INT")?;
-        self.child.wait()?;
+        let _ = send_signal_to_group(self.process_id(), "INT");
+        let deadline = Instant::now() + STOP_TIMEOUT;
+        while self.child.try_wait()?.is_none() {
+            if Instant::now() >= deadline {
+                if send_signal_to_group(self.process_id(), "KILL").is_err() {
+                    self.child.kill()?;
+                }
+                self.child.wait()?;
+                break;
+            }
+            thread::sleep(STOP_POLL_INTERVAL);
+        }
         self.microphone_gain_source.take();
         Ok(())
     }
@@ -393,6 +408,23 @@ fn send_signal(process_id: u32, signal: &str) -> Result<(), EngineError> {
     } else {
         Err(EngineError::Signal(format!(
             "signal {signal} for process {process_id} failed"
+        )))
+    }
+}
+
+fn send_signal_to_group(process_id: u32, signal: &str) -> Result<(), EngineError> {
+    let process_group = format!("-{process_id}");
+    let status = Command::new("kill")
+        .args(["-s", signal, "--", &process_group])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(EngineError::Io)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(EngineError::Signal(format!(
+            "signal {signal} for process group {process_id} failed"
         )))
     }
 }

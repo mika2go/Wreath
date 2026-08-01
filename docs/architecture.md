@@ -31,5 +31,10 @@ target, encodes with the GPU, and keeps only the configured replay duration as
 compressed data. Saving sends `SIGUSR1`; the existing encoded buffer is written
 without a second encode.
 
+`traced` checks the recorder process four times per second. A failed recorder
+is restarted with a bounded backoff, while systemd independently keeps the
+daemon attached to the user's `default.target`. This avoids relying on a
+desktop-specific graphical-session target that may never become active.
+
 Quickshell and Pywal palette discovery are optional UI enhancements. Their
 absence does not affect capture, controls, audio, notifications, or startup.

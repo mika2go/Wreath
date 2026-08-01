@@ -115,7 +115,7 @@ run_root install -Dm644 docs/install.md /usr/share/doc/trace/install.md
 
 systemctl --user daemon-reload
 if $start_service; then
-  systemctl --user enable traced.service
+  systemctl --user reenable traced.service
   systemctl --user restart traced.service
 fi
 

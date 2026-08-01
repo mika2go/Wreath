@@ -1,7 +1,7 @@
 post_install() {
   printf '%s\n' \
     'Trace installed.' \
-    'Enable the recorder with: systemctl --user enable --now traced.service' \
+    'Enable the recorder with: systemctl --user reenable --now traced.service' \
     'Hyprland shortcuts are registered automatically.' \
     'On KDE Plasma, assign your preferred shortcut to: tracectl save' \
     'Run `tracectl doctor` to verify capture, GPU, audio, and desktop integration.'

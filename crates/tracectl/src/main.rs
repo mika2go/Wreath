@@ -4,6 +4,8 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::Stdio;
 use std::process::{Command, ExitCode};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use trace_core::display;
 use trace_core::engine;
@@ -15,6 +17,8 @@ use trace_core::{config::Codec, config::Config, config::HotkeyConfig};
 const SOUND_SAMPLE_RATE: usize = 48_000;
 const SOUND_DURATION_SECONDS: f32 = 0.48;
 const SOUND_PLAYBACK_VOLUME: &str = "9175";
+const DAEMON_START_TIMEOUT: Duration = Duration::from_secs(5);
+const DAEMON_CONNECT_INTERVAL: Duration = Duration::from_millis(100);
 
 fn main() -> ExitCode {
     match run() {
@@ -330,12 +334,22 @@ fn send(paths: &AppPaths, request: &Request) -> Result<Response, String> {
                     paths.socket_file.display()
                 )
             })?;
-            UnixStream::connect(&paths.socket_file).map_err(|error| {
-                format!(
-                    "recorder started but cannot connect to {}: {error}",
-                    paths.socket_file.display()
-                )
-            })?
+            let deadline = Instant::now() + DAEMON_START_TIMEOUT;
+            loop {
+                match UnixStream::connect(&paths.socket_file) {
+                    Ok(stream) => break stream,
+                    Err(_) if Instant::now() < deadline => {
+                        thread::sleep(DAEMON_CONNECT_INTERVAL);
+                    }
+                    Err(error) => {
+                        return Err(format!(
+                            "recorder started but cannot connect to {} after {}s: {error}",
+                            paths.socket_file.display(),
+                            DAEMON_START_TIMEOUT.as_secs()
+                        ));
+                    }
+                }
+            }
         }
         Err(error) => {
             return Err(format!(
