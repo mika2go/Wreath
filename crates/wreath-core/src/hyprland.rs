@@ -3,8 +3,12 @@ use std::io;
 use std::path::Path;
 use std::process::Command;
 
+use serde::Deserialize;
+
 use crate::config::HotkeyConfig;
 use crate::display::Monitor;
+
+const REPLAY_BIND_DESCRIPTION: &str = "Save Wreath replay";
 
 #[derive(Debug)]
 pub enum HyprlandError {
@@ -74,6 +78,47 @@ pub fn replace_replay_bind(
     }
 }
 
+pub fn replay_bind_present(hotkey: &HotkeyConfig) -> Result<bool, HyprlandError> {
+    #[derive(Deserialize)]
+    struct Bind {
+        #[serde(default)]
+        modmask: u32,
+        #[serde(default)]
+        key: String,
+        #[serde(default)]
+        description: String,
+    }
+
+    let output = Command::new("hyprctl")
+        .args(["-j", "binds"])
+        .output()
+        .map_err(HyprlandError::Io)?;
+    if !output.status.success() {
+        return Err(HyprlandError::Command(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ));
+    }
+    let binds: Vec<Bind> = serde_json::from_slice(&output.stdout).map_err(HyprlandError::Json)?;
+    let expected_mask = modifier_mask(&hotkey.modifiers);
+    Ok(binds.iter().any(|bind| {
+        bind.description == REPLAY_BIND_DESCRIPTION
+            && bind.modmask == expected_mask
+            && bind.key.eq_ignore_ascii_case(&hotkey.key)
+    }))
+}
+
+fn modifier_mask(modifiers: &[String]) -> u32 {
+    modifiers.iter().fold(0, |mask, modifier| {
+        mask | match modifier.as_str() {
+            "SHIFT" => 1,
+            "CTRL" => 4,
+            "ALT" => 8,
+            "SUPER" => 64,
+            _ => 0,
+        }
+    })
+}
+
 fn replay_bind_code(
     previous_hotkey: Option<&HotkeyConfig>,
     hotkey: &HotkeyConfig,
@@ -91,7 +136,7 @@ fn replay_bind_code(
     format!(
         "{remove_previous}hl.unbind(\"{}\"); \
          hl.bind(\"{}\", hl.dsp.exec_cmd(\"{}\"), \
-         {{ description = \"Save Trace replay\" }})",
+         {{ description = \"Save Wreath replay\" }})",
         lua_escape(&hotkey.hyprland_expression()),
         lua_escape(&hotkey.hyprland_expression()),
         lua_escape(command)
@@ -120,9 +165,19 @@ mod tests {
     fn replay_bind_replaces_old_and_current_hotkeys() {
         let previous = HotkeyConfig::parse("SUPER+SHIFT+R").unwrap();
         let current = HotkeyConfig::parse("SUPER+ALT+C").unwrap();
-        let code = replay_bind_code(Some(&previous), &current, "'/usr/bin/tracectl' save");
+        let code = replay_bind_code(Some(&previous), &current, "'/usr/bin/wreathctl' save");
         assert!(code.contains("hl.unbind(\"SUPER + SHIFT + R\")"));
         assert!(code.contains("hl.unbind(\"SUPER + ALT + C\")"));
         assert!(code.contains("hl.bind(\"SUPER + ALT + C\""));
+    }
+
+    #[test]
+    fn modifier_masks_match_hyprland_bind_masks() {
+        assert_eq!(modifier_mask(&["CTRL".into()]), 4);
+        assert_eq!(modifier_mask(&["SUPER".into(), "SHIFT".into()]), 65);
+        assert_eq!(
+            modifier_mask(&["SUPER".into(), "CTRL".into(), "ALT".into()]),
+            76
+        );
     }
 }

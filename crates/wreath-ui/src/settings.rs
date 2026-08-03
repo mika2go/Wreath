@@ -11,11 +11,11 @@ use gtk::{
     EventControllerKey, GestureClick, Grid, Image, Label, Orientation, Scale, ScrolledWindow,
     SpinButton, Stack, StringList,
 };
-use trace_core::audio::{self, Microphone};
-use trace_core::config::{Codec, Config, HotkeyConfig};
-use trace_core::display::{self, Monitor};
-use trace_core::paths::AppPaths;
-use trace_core::shortcuts;
+use wreath_core::audio::{self, Microphone};
+use wreath_core::config::{Codec, Config, HotkeyConfig};
+use wreath_core::display::{self, Monitor};
+use wreath_core::paths::AppPaths;
+use wreath_core::shortcuts;
 
 #[derive(Clone)]
 pub struct SettingsView {
@@ -370,7 +370,7 @@ pub fn build() -> SettingsView {
 
     let display_page = settings_panel(
         "Display",
-        "Choose the display or desktop portal Trace records.",
+        "Choose the display or desktop portal Wreath records.",
     );
     let quality_page = settings_panel("Quality", "Balance detail, file size and encoder load.");
     let audio_page = settings_panel(
@@ -382,10 +382,10 @@ pub fn build() -> SettingsView {
             "Set the shortcut used to save the replay buffer. Hyprland updates immediately."
         }
         shortcuts::ShortcutBackend::Plasma => {
-            "Record the shortcut here, then assign tracectl save in Plasma System Settings."
+            "Record the shortcut here, then assign wreathctl save in Plasma System Settings."
         }
         shortcuts::ShortcutBackend::Manual(_) => {
-            "Record the shortcut here, then assign tracectl save in your desktop settings."
+            "Record the shortcut here, then assign wreathctl save in your desktop settings."
         }
     };
     let controls_page = settings_panel("Controls", controls_description);
@@ -506,7 +506,7 @@ pub fn build() -> SettingsView {
     microphone_gain.set_hexpand(true);
     microphone_gain.set_sensitive(config.audio.microphone);
     microphone_gain.set_tooltip_text(Some(
-        "Only changes microphone loudness in Trace recordings, never the system microphone volume",
+        "Only changes microphone loudness in Wreath recordings, never the system microphone volume",
     ));
     let microphone_gain_value =
         Label::new(Some(&format!("{}%", config.audio.microphone_gain_percent)));
@@ -713,9 +713,9 @@ fn sibling_control_executable() -> PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf))
-        .map(|directory| directory.join("tracectl"))
+        .map(|directory| directory.join("wreathctl"))
         .filter(|path| path.exists())
-        .unwrap_or_else(|| PathBuf::from("tracectl"))
+        .unwrap_or_else(|| PathBuf::from("wreathctl"))
 }
 
 fn monitor_model(monitors: &[Monitor]) -> StringList {

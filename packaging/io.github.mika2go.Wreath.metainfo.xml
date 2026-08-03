@@ -1,26 +1,26 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.mika2go.Trace</id>
-  <name>Trace</name>
+  <id>io.github.mika2go.Wreath</id>
+  <name>Wreath</name>
   <summary>Local instant replay recorder for Linux desktops</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <description>
     <p>
-      Trace records a short, hardware-encoded rolling buffer and saves a local
+      Wreath records a short, hardware-encoded rolling buffer and saves a local
       video only when you press your configured desktop shortcut.
     </p>
     <p>
-      Clips, settings, thumbnails, and playback stay on this machine. Trace
+      Clips, settings, thumbnails, and playback stay on this machine. Wreath
       contains no accounts, telemetry, uploads, or cloud synchronization.
     </p>
   </description>
-  <launchable type="desktop-id">io.github.mika2go.Trace.desktop</launchable>
+  <launchable type="desktop-id">io.github.mika2go.Wreath.desktop</launchable>
   <developer id="io.github.mika2go">
     <name>Mika</name>
   </developer>
-  <url type="homepage">https://github.com/mika2go/trace</url>
-  <url type="bugtracker">https://github.com/mika2go/trace/issues</url>
+  <url type="homepage">https://github.com/mika2go/wreath</url>
+  <url type="bugtracker">https://github.com/mika2go/wreath/issues</url>
   <categories>
     <category>AudioVideo</category>
     <category>Recorder</category>

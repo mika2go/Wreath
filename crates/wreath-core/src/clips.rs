@@ -404,7 +404,7 @@ mod tests {
     #[test]
     fn deletes_clip_and_cached_thumbnail() {
         let root = std::env::temp_dir().join(format!(
-            "trace-delete-test-{}-{}",
+            "wreath-delete-test-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
@@ -490,7 +490,7 @@ mod tests {
 
     fn test_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "trace-{name}-test-{}-{}",
+            "wreath-{name}-test-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)

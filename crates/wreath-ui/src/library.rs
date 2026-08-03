@@ -10,14 +10,14 @@ use gtk::glib::{self, ControlFlow};
 use gtk::pango;
 use gtk::prelude::*;
 use gtk::{
-    Align, AspectFrame, Box as GtkBox, Button, ContentFit, DragSource, DropTarget, Entry, FlowBox,
-    FlowBoxChild, Grid, Image, Label, Orientation, Overlay, Picture, Popover, PositionType,
-    ScrolledWindow, SelectionMode, Stack, Video,
+    Align, Box as GtkBox, Button, ContentFit, DragSource, DropTarget, Entry, FlowBox, FlowBoxChild,
+    Grid, Image, Label, Orientation, Overlay, Picture, Popover, PositionType, ScrolledWindow,
+    SelectionMode, Stack, Video,
 };
 use gtk::{gdk, gio};
-use trace_core::clips::{self, Clip, ClipPreview};
-use trace_core::config::Config;
-use trace_core::paths::AppPaths;
+use wreath_core::clips::{self, Clip, ClipPreview};
+use wreath_core::config::Config;
+use wreath_core::paths::AppPaths;
 
 #[derive(Clone)]
 pub struct ClipViews {
@@ -93,6 +93,9 @@ struct LibraryState {
     empty_detail: Label,
     empty_steps: GtkBox,
     count: Label,
+    summary_count: Label,
+    summary_storage: Label,
+    section_count: Label,
     search: Entry,
     preview_widgets: RefCell<HashMap<PathBuf, Vec<PreviewWidgets>>>,
     jobs: Vec<mpsc::Sender<Clip>>,
@@ -125,7 +128,7 @@ pub fn build(stack: &Stack) -> ClipViews {
         let updates = preview_sender.clone();
         let thumbnails = paths.thumbnail_dir.clone();
         let _ = std::thread::Builder::new()
-            .name(format!("trace-thumbnail-{index}"))
+            .name(format!("wreath-thumbnail-{index}"))
             .spawn(move || {
                 while let Ok(clip) = job_receiver.recv() {
                     let preview = clips::build_preview(&clip, &thumbnails);
@@ -145,17 +148,29 @@ pub fn build(stack: &Stack) -> ClipViews {
     header.set_margin_bottom(26);
     let heading = GtkBox::new(Orientation::Vertical, 3);
     heading.set_hexpand(true);
-    let title = Label::new(Some("Library"));
+    let title_row = GtkBox::new(Orientation::Horizontal, 11);
+    let title = Label::new(Some("Clips"));
     title.add_css_class("page-title");
     title.set_halign(Align::Start);
-    let count = Label::new(Some("Your local moments"));
+    let live = GtkBox::new(Orientation::Horizontal, 6);
+    live.add_css_class("live-badge");
+    live.set_valign(Align::Center);
+    let live_dot = GtkBox::new(Orientation::Horizontal, 0);
+    live_dot.add_css_class("live-dot");
+    let live_label = Label::new(Some("LOCAL REPLAY"));
+    live_label.add_css_class("live-label");
+    live.append(&live_dot);
+    live.append(&live_label);
+    title_row.append(&title);
+    title_row.append(&live);
+    let count = Label::new(Some("Your local replay library"));
     count.add_css_class("page-subtitle");
     count.set_halign(Align::Start);
-    heading.append(&title);
+    heading.append(&title_row);
     heading.append(&count);
     let search = Entry::new();
     search.add_css_class("search");
-    search.set_placeholder_text(Some("Search library"));
+    search.set_placeholder_text(Some("Search clips"));
     search.set_size_request(190, 34);
     let refresh = Button::from_icon_name("view-refresh-symbolic");
     refresh.add_css_class("icon-action");
@@ -167,12 +182,36 @@ pub fn build(stack: &Stack) -> ClipViews {
     header.attach(&refresh, 2, 0, 1, 1);
     page.append(&header);
 
+    let summary = GtkBox::new(Orientation::Horizontal, 1);
+    summary.add_css_class("library-summary");
+    summary.set_homogeneous(true);
+    summary.set_margin_bottom(24);
+    let summary_count = Label::new(Some("0"));
+    let summary_storage = Label::new(Some("0 MB"));
+    summary.append(&summary_metric(&summary_count, "CLIPS"));
+    summary.append(&summary_metric(&summary_storage, "LOCAL STORAGE"));
+    summary.append(&summary_status());
+    page.append(&summary);
+
+    let section_bar = GtkBox::new(Orientation::Horizontal, 12);
+    section_bar.add_css_class("library-section-bar");
+    section_bar.set_margin_bottom(12);
+    let section_title = Label::new(Some("Recent captures"));
+    section_title.add_css_class("library-section-title");
+    section_title.set_halign(Align::Start);
+    section_title.set_hexpand(true);
+    let section_count = Label::new(Some("0 items"));
+    section_count.add_css_class("library-section-count");
+    section_bar.append(&section_title);
+    section_bar.append(&section_count);
+    page.append(&section_bar);
+
     let flow = FlowBox::new();
     flow.set_selection_mode(SelectionMode::None);
-    flow.set_column_spacing(20);
-    flow.set_row_spacing(24);
+    flow.set_column_spacing(14);
+    flow.set_row_spacing(16);
     flow.set_min_children_per_line(1);
-    flow.set_max_children_per_line(3);
+    flow.set_max_children_per_line(4);
     flow.set_homogeneous(true);
     flow.set_valign(Align::Start);
 
@@ -208,6 +247,9 @@ pub fn build(stack: &Stack) -> ClipViews {
         empty_detail,
         empty_steps: empty_steps.clone(),
         count,
+        summary_count,
+        summary_storage,
+        section_count,
         search,
         preview_widgets: RefCell::new(HashMap::new()),
         jobs: job_senders,
@@ -283,6 +325,38 @@ pub fn build(stack: &Stack) -> ClipViews {
     }
 }
 
+fn summary_metric(value: &Label, caption: &str) -> GtkBox {
+    let metric = GtkBox::new(Orientation::Vertical, 2);
+    metric.add_css_class("summary-metric");
+    let value = value.clone();
+    value.add_css_class("summary-value");
+    value.set_halign(Align::Start);
+    let caption = Label::new(Some(caption));
+    caption.add_css_class("summary-caption");
+    caption.set_halign(Align::Start);
+    metric.append(&value);
+    metric.append(&caption);
+    metric
+}
+
+fn summary_status() -> GtkBox {
+    let metric = GtkBox::new(Orientation::Vertical, 2);
+    metric.add_css_class("summary-metric");
+    let status = GtkBox::new(Orientation::Horizontal, 7);
+    let dot = GtkBox::new(Orientation::Horizontal, 0);
+    dot.add_css_class("summary-status-dot");
+    let value = Label::new(Some("On device"));
+    value.add_css_class("summary-value");
+    status.append(&dot);
+    status.append(&value);
+    let caption = Label::new(Some("PRIVATE & LOCAL"));
+    caption.add_css_class("summary-caption");
+    caption.set_halign(Align::Start);
+    metric.append(&status);
+    metric.append(&caption);
+    metric
+}
+
 fn build_collections_page() -> (GtkBox, FlowBox, FlowBox, GtkBox, Label, Button) {
     let page = GtkBox::new(Orientation::Vertical, 0);
     page.add_css_class("collections-page");
@@ -331,8 +405,8 @@ fn build_collections_page() -> (GtkBox, FlowBox, FlowBox, GtkBox, Label, Button)
 
     let clips = FlowBox::new();
     clips.set_selection_mode(SelectionMode::None);
-    clips.set_column_spacing(20);
-    clips.set_row_spacing(24);
+    clips.set_column_spacing(14);
+    clips.set_row_spacing(16);
     clips.set_min_children_per_line(1);
     clips.set_max_children_per_line(3);
     clips.set_homogeneous(true);
@@ -364,12 +438,17 @@ fn build_collections_page() -> (GtkBox, FlowBox, FlowBox, GtkBox, Label, Button)
 
 fn reload_clips(state: &LibraryState, directory: &std::path::Path) {
     let loaded = clips::scan(directory).unwrap_or_default();
+    let size_bytes = loaded.iter().map(|clip| clip.size_bytes).sum::<u64>();
     let count = match loaded.len() {
         0 => "No local clips yet".to_owned(),
         1 => "1 local clip".to_owned(),
         count => format!("{count} local clips"),
     };
     state.count.set_text(&count);
+    state.summary_count.set_text(&loaded.len().to_string());
+    state
+        .summary_storage
+        .set_text(&clips::format_size(size_bytes));
     state.clips.replace(loaded);
 }
 
@@ -392,6 +471,10 @@ fn render_clips(state: &Rc<LibraryState>) {
         .filter(|clip| query.is_empty() || clip.title.to_ascii_lowercase().contains(&query))
         .cloned()
         .collect::<Vec<_>>();
+    state.section_count.set_text(&match clips.len() {
+        1 => "1 item".to_owned(),
+        count => format!("{count} items"),
+    });
     let empty = clips.is_empty();
     if empty {
         if state.clips.borrow().is_empty() {
@@ -400,7 +483,7 @@ fn render_clips(state: &Rc<LibraryState>) {
                 .empty_title
                 .set_text("Your first replay is one shortcut away");
             state.empty_detail.set_text(
-                "Trace keeps the latest moments ready in memory. Save one and it appears here immediately.",
+                "Wreath keeps the latest moments ready in memory. Save one and it appears here immediately.",
             );
             state.empty_steps.set_visible(true);
         } else {
@@ -723,26 +806,57 @@ fn clip_card(clip: &Clip, state: &Rc<LibraryState>) -> (FlowBoxChild, PreviewWid
     open.set_hexpand(true);
     open.set_tooltip_text(Some(&clip.path.to_string_lossy()));
     let body = GtkBox::new(Orientation::Vertical, 0);
+    body.set_hexpand(true);
+    body.set_halign(Align::Fill);
     let picture = Picture::new();
     picture.add_css_class("clip-preview");
-    picture.set_content_fit(ContentFit::Contain);
+    picture.set_content_fit(ContentFit::Cover);
     picture.set_can_shrink(true);
     picture.set_hexpand(true);
-    picture.set_size_request(250, 141);
-    let preview_frame = AspectFrame::new(0.5, 0.5, 16.0 / 9.0, false);
-    preview_frame.add_css_class("clip-preview-frame");
-    preview_frame.set_hexpand(true);
-    preview_frame.set_overflow(gtk::Overflow::Hidden);
-    preview_frame.set_child(Some(&picture));
-    body.append(&preview_frame);
+    picture.set_vexpand(true);
+    picture.set_halign(Align::Fill);
+    picture.set_valign(Align::Fill);
+    let preview = Overlay::new();
+    preview.add_css_class("clip-preview-frame");
+    preview.set_hexpand(true);
+    preview.set_size_request(-1, 150);
+    preview.set_overflow(gtk::Overflow::Hidden);
+    preview.set_child(Some(&picture));
+    let play = Image::from_icon_name("media-playback-start-symbolic");
+    play.add_css_class("clip-play");
+    play.set_pixel_size(15);
+    play.set_halign(Align::Center);
+    play.set_valign(Align::Center);
+    preview.add_overlay(&play);
+    let duration = Label::new(None);
+    duration.add_css_class("duration");
+    duration.set_halign(Align::End);
+    duration.set_valign(Align::End);
+    duration.set_margin_end(8);
+    duration.set_margin_bottom(8);
+    duration.set_visible(false);
+    preview.add_overlay(&duration);
+    body.append(&preview);
 
     let text = GtkBox::new(Orientation::Vertical, 3);
-    text.set_margin_top(11);
+    text.add_css_class("clip-info");
     let title = Label::new(Some(&clip.title));
     title.add_css_class("clip-title");
     title.set_halign(Align::Start);
     title.set_ellipsize(pango::EllipsizeMode::End);
-    title.set_max_width_chars(26);
+    title.set_max_width_chars(23);
+    let title_row = GtkBox::new(Orientation::Horizontal, 8);
+    title.set_hexpand(true);
+    let format = clip
+        .path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("video")
+        .to_ascii_uppercase();
+    let format = Label::new(Some(&format));
+    format.add_css_class("clip-format");
+    title_row.append(&title);
+    title_row.append(&format);
     let metadata = GtkBox::new(Orientation::Horizontal, 7);
     let age = Label::new(Some(&clips::format_age(clip.modified)));
     age.add_css_class("clip-meta");
@@ -750,16 +864,10 @@ fn clip_card(clip: &Clip, state: &Rc<LibraryState>) -> (FlowBoxChild, PreviewWid
     separator.add_css_class("clip-meta");
     let size = Label::new(Some(&clips::format_size(clip.size_bytes)));
     size.add_css_class("clip-meta");
-    let duration = Label::new(None);
-    duration.add_css_class("duration");
-    duration.set_hexpand(true);
-    duration.set_halign(Align::End);
-    duration.set_visible(false);
     metadata.append(&age);
     metadata.append(&separator);
     metadata.append(&size);
-    metadata.append(&duration);
-    text.append(&title);
+    text.append(&title_row);
     text.append(&metadata);
     body.append(&text);
     open.set_child(Some(&body));
@@ -770,9 +878,9 @@ fn clip_card(clip: &Clip, state: &Rc<LibraryState>) -> (FlowBoxChild, PreviewWid
     more.set_tooltip_text(Some("Clip actions"));
     more.set_halign(Align::End);
     more.set_valign(Align::Start);
-    more.set_margin_top(7);
-    more.set_margin_end(7);
-    more.set_size_request(34, 34);
+    more.set_margin_top(8);
+    more.set_margin_end(8);
+    more.set_size_request(30, 30);
     item.add_overlay(&more);
 
     let selected = clip.clone();
@@ -1049,7 +1157,7 @@ fn empty_state(directory: &std::path::Path, hotkey: &str) -> (GtkBox, Label, Lab
     title.add_css_class("empty-hero-title");
     title.set_halign(Align::Start);
     let detail = Label::new(Some(
-        "Trace keeps the latest moments ready in memory. Save one and it appears here immediately.",
+        "Wreath keeps the latest moments ready in memory. Save one and it appears here immediately.",
     ));
     detail.add_css_class("empty-detail");
     detail.set_halign(Align::Start);

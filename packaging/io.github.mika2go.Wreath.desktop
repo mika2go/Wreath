@@ -1,18 +1,18 @@
 [Desktop Entry]
 Type=Application
-Name=Trace
+Name=Wreath
 GenericName=Game Clip Recorder
 Comment=Capture and watch local instant replays
-Exec=trace-ui
-TryExec=trace-ui
-Icon=io.github.mika2go.Trace
+Exec=wreath-ui
+TryExec=wreath-ui
+Icon=io.github.mika2go.Wreath
 Terminal=false
 Categories=AudioVideo;Recorder;
-Keywords=trace;replay;recording;clip;video;hyprland;kde;plasma;
+Keywords=wreath;replay;recording;clip;video;hyprland;kde;plasma;
 StartupNotify=true
-StartupWMClass=io.github.mika2go.Trace
+StartupWMClass=io.github.mika2go.Wreath
 Actions=SaveClip;
 
 [Desktop Action SaveClip]
 Name=Save replay now
-Exec=tracectl save
+Exec=wreathctl save

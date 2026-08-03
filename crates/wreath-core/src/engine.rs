@@ -189,14 +189,14 @@ struct MicrophoneGainSource {
 impl MicrophoneGainSource {
     fn create(master: &str, gain_percent: u16) -> Result<Self, EngineError> {
         Self::unload_stale_sources();
-        let name = format!("trace_recording_mic_{}", std::process::id());
+        let name = format!("wreath_recording_mic_{}", std::process::id());
         let output = Command::new("pactl")
             .args([
                 "load-module",
                 "module-remap-source",
                 &format!("master={master}"),
                 &format!("source_name={name}"),
-                "source_properties=device.description=TraceRecordingMicrophone",
+                "source_properties=device.description=WreathRecordingMicrophone",
                 "channels=2",
                 "channel_map=front-left,front-right",
                 "remix=yes",
@@ -241,7 +241,7 @@ impl MicrophoneGainSource {
         else {
             return;
         };
-        for module_id in stale_trace_module_ids(&String::from_utf8_lossy(&output.stdout)) {
+        for module_id in stale_wreath_module_ids(&String::from_utf8_lossy(&output.stdout)) {
             let _ = Command::new("pactl")
                 .args(["unload-module", module_id.as_str()])
                 .stdin(Stdio::null())
@@ -263,7 +263,7 @@ impl Drop for MicrophoneGainSource {
     }
 }
 
-fn stale_trace_module_ids(output: &str) -> Vec<String> {
+fn stale_wreath_module_ids(output: &str) -> Vec<String> {
     output
         .lines()
         .filter_map(|line| {
@@ -272,7 +272,7 @@ fn stale_trace_module_ids(output: &str) -> Vec<String> {
             let module_name = fields.next()?;
             let arguments = fields.next()?;
             (module_name == "module-remap-source"
-                && arguments.contains("source_name=trace_recording_mic_"))
+                && arguments.contains("source_name=wreath_recording_mic_"))
             .then(|| module_id.to_owned())
         })
         .collect()
@@ -287,7 +287,7 @@ pub struct RecorderCapabilities {
 impl GpuScreenRecorder {
     pub fn start(spec: &ReplaySpec) -> Result<Self, EngineError> {
         let executable =
-            std::env::var_os("TRACE_RECORDER").unwrap_or_else(|| "gpu-screen-recorder".into());
+            std::env::var_os("WREATH_RECORDER").unwrap_or_else(|| "gpu-screen-recorder".into());
         Self::start_with_executable(spec, executable)
     }
 
@@ -332,7 +332,7 @@ impl GpuScreenRecorder {
             .ok_or_else(|| EngineError::Io(io::Error::other("recorder stdout was not captured")))?;
         let (saved_sender, saved_paths) = mpsc::channel();
         thread::Builder::new()
-            .name("trace-save-reader".into())
+            .name("wreath-save-reader".into())
             .spawn(move || {
                 for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                     let trimmed = line.trim();
@@ -492,7 +492,7 @@ mod tests {
             microphone_audio: false,
             microphone_device: None,
             microphone_gain_percent: 100,
-            output_directory: PathBuf::from("/tmp/trace-test"),
+            output_directory: PathBuf::from("/tmp/wreath-test"),
             portal_session_token_file: None,
         }
     }
@@ -548,7 +548,7 @@ mod tests {
     fn portal_capture_restores_the_users_session_choice() {
         let mut replay = spec();
         replay.monitor = "portal".into();
-        replay.portal_session_token_file = Some(PathBuf::from("/tmp/trace-portal-token"));
+        replay.portal_session_token_file = Some(PathBuf::from("/tmp/wreath-portal-token"));
         let arguments = replay
             .arguments()
             .into_iter()
@@ -563,7 +563,7 @@ mod tests {
         assert!(
             arguments
                 .windows(2)
-                .any(|pair| pair == ["-portal-session-token-filepath", "/tmp/trace-portal-token"])
+                .any(|pair| pair == ["-portal-session-token-filepath", "/tmp/wreath-portal-token"])
         );
     }
 
@@ -591,13 +591,13 @@ mod tests {
     }
 
     #[test]
-    fn identifies_only_stale_trace_microphone_modules() {
+    fn identifies_only_stale_wreath_microphone_modules() {
         let modules = concat!(
-            "10\tmodule-remap-source\tmaster=mic source_name=trace_recording_mic_123 remix=yes\t\n",
+            "10\tmodule-remap-source\tmaster=mic source_name=wreath_recording_mic_123 remix=yes\t\n",
             "11\tmodule-remap-source\tmaster=mic source_name=other_app\t\n",
-            "12\tmodule-null-sink\tsink_name=trace_recording_mic_456\t\n",
+            "12\tmodule-null-sink\tsink_name=wreath_recording_mic_456\t\n",
         );
-        assert_eq!(stale_trace_module_ids(modules), ["10"]);
+        assert_eq!(stale_wreath_module_ids(modules), ["10"]);
     }
 
     #[test]
@@ -609,7 +609,7 @@ mod tests {
         assert!(recorder.is_running().unwrap());
         assert_eq!(
             recorder.save().unwrap(),
-            PathBuf::from("/tmp/trace-test/clip.mp4")
+            PathBuf::from("/tmp/wreath-test/clip.mp4")
         );
         recorder.stop().unwrap();
     }

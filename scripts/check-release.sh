@@ -6,7 +6,7 @@ cd "$workspace_dir"
 
 cargo build --locked --release --workspace
 
-for binary in target/release/traced target/release/tracectl; do
+for binary in target/release/wreathd target/release/wreathctl; do
   if readelf -d "$binary" | grep -Eiq 'NEEDED.*(curl|ssl|crypto|gtk|gdk|webkit)'; then
     echo "$binary links a forbidden network or UI library" >&2
     exit 1
@@ -18,7 +18,7 @@ for binary in target/release/traced target/release/tracectl; do
   fi
 done
 
-grep -qx 'IPAddressDeny=any' packaging/traced.service
+grep -qx 'IPAddressDeny=any' packaging/wreathd.service
 for incompatible_sandbox in \
   PrivateTmp \
   ProtectSystem \
@@ -28,7 +28,7 @@ for incompatible_sandbox in \
   RestrictSUIDSGID \
   LockPersonality \
   RestrictAddressFamilies; do
-  if grep -q "^${incompatible_sandbox}=" packaging/traced.service; then
+  if grep -q "^${incompatible_sandbox}=" packaging/wreathd.service; then
     echo "${incompatible_sandbox} breaks gpu-screen-recorder KMS capture" >&2
     exit 1
   fi

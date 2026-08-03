@@ -67,6 +67,19 @@ pub fn install(
     replace(None, hotkey, control_executable)
 }
 
+/// Restores a runtime-only Hyprland bind after compositor reloads.
+pub fn ensure(hotkey: &HotkeyConfig, control_executable: &Path) -> Result<bool, ShortcutError> {
+    if !matches!(backend(), ShortcutBackend::Hyprland) {
+        return Ok(false);
+    }
+    if hyprland::replay_bind_present(hotkey).map_err(ShortcutError::Hyprland)? {
+        return Ok(false);
+    }
+    hyprland::replace_replay_bind(None, hotkey, control_executable)
+        .map_err(ShortcutError::Hyprland)?;
+    Ok(true)
+}
+
 pub fn replace(
     previous_hotkey: Option<&HotkeyConfig>,
     hotkey: &HotkeyConfig,
@@ -93,14 +106,14 @@ mod tests {
     fn manual_installation_exposes_the_exact_save_command() {
         let installation = ShortcutInstall::Manual {
             backend: ShortcutBackend::Plasma,
-            command: "/usr/bin/tracectl save".into(),
+            command: "/usr/bin/wreathctl save".into(),
         };
 
         assert_eq!(
             installation,
             ShortcutInstall::Manual {
                 backend: ShortcutBackend::Plasma,
-                command: "/usr/bin/tracectl save".into(),
+                command: "/usr/bin/wreathctl save".into(),
             }
         );
     }

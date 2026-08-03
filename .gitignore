@@ -5,5 +5,5 @@
 .vscode/
 /packaging/pkg/
 /packaging/src/
-/packaging/trace-git/
+/packaging/*-git/
 /packaging/*.pkg.tar.*

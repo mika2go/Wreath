@@ -10,7 +10,7 @@ usage() {
     'Usage: scripts/install-arch.sh [--install-deps] [--no-start]' \
     '' \
     '  --install-deps  Install build and runtime packages with pacman.' \
-    '  --no-start      Install files but do not enable or start traced.service.'
+    '  --no-start      Install files but do not enable or start wreathd.service.'
 }
 
 for argument in "$@"; do
@@ -97,36 +97,36 @@ cd "$workspace_dir"
 cargo build --locked --release --workspace
 cargo test --locked --workspace
 
-run_root install -Dm755 target/release/traced /usr/bin/traced
-run_root install -Dm755 target/release/tracectl /usr/bin/tracectl
-run_root install -Dm755 target/release/trace-ui /usr/bin/trace-ui
-run_root install -Dm644 packaging/traced.service /usr/lib/systemd/user/traced.service
-run_root install -Dm644 packaging/io.github.mika2go.Trace.desktop \
-  /usr/share/applications/io.github.mika2go.Trace.desktop
-run_root install -Dm644 packaging/io.github.mika2go.Trace.metainfo.xml \
-  /usr/share/metainfo/io.github.mika2go.Trace.metainfo.xml
-run_root install -Dm644 packaging/io.github.mika2go.Trace.svg \
-  /usr/share/icons/hicolor/scalable/apps/io.github.mika2go.Trace.svg
-run_root install -Dm644 packaging/io.github.mika2go.Trace-symbolic.svg \
-  /usr/share/icons/hicolor/symbolic/apps/io.github.mika2go.Trace-symbolic.svg
-run_root install -Dm644 LICENSE /usr/share/licenses/trace/LICENSE
-run_root install -Dm644 README.md /usr/share/doc/trace/README.md
-run_root install -Dm644 docs/install.md /usr/share/doc/trace/install.md
+run_root install -Dm755 target/release/wreathd /usr/bin/wreathd
+run_root install -Dm755 target/release/wreathctl /usr/bin/wreathctl
+run_root install -Dm755 target/release/wreath-ui /usr/bin/wreath-ui
+run_root install -Dm644 packaging/wreathd.service /usr/lib/systemd/user/wreathd.service
+run_root install -Dm644 packaging/io.github.mika2go.Wreath.desktop \
+  /usr/share/applications/io.github.mika2go.Wreath.desktop
+run_root install -Dm644 packaging/io.github.mika2go.Wreath.metainfo.xml \
+  /usr/share/metainfo/io.github.mika2go.Wreath.metainfo.xml
+run_root install -Dm644 packaging/io.github.mika2go.Wreath.svg \
+  /usr/share/icons/hicolor/scalable/apps/io.github.mika2go.Wreath.svg
+run_root install -Dm644 packaging/io.github.mika2go.Wreath-symbolic.svg \
+  /usr/share/icons/hicolor/symbolic/apps/io.github.mika2go.Wreath-symbolic.svg
+run_root install -Dm644 LICENSE /usr/share/licenses/wreath/LICENSE
+run_root install -Dm644 README.md /usr/share/doc/wreath/README.md
+run_root install -Dm644 docs/install.md /usr/share/doc/wreath/install.md
 
 systemctl --user daemon-reload
 if $start_service; then
-  systemctl --user reenable traced.service
-  systemctl --user restart traced.service
+  systemctl --user reenable wreathd.service
+  systemctl --user restart wreathd.service
 fi
 
-printf '\nTrace is installed on %s.\n' "${PRETTY_NAME:-this Arch-based system}"
+printf '\nWreath is installed on %s.\n' "${PRETTY_NAME:-this Arch-based system}"
 if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
-  /usr/bin/tracectl bind
+  /usr/bin/wreathctl bind
 else
   printf '%s\n' \
-    'Configure a global desktop shortcut for: /usr/bin/tracectl save' \
+    'Configure a global desktop shortcut for: /usr/bin/wreathctl save' \
     'KDE Plasma: System Settings → Keyboard → Shortcuts → Add New → Command or Script'
 fi
 printf '%s\n' \
-  'Run `tracectl doctor` to verify the installation.' \
-  'Existing Trace settings and custom Hyprland/Quickshell integration were not changed.'
+  'Run `wreathctl doctor` to verify the installation.' \
+  'Existing Wreath settings and custom Hyprland/Quickshell integration were not changed.'

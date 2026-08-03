@@ -2,18 +2,21 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use trace_core::config::Config;
-use trace_core::display;
-use trace_core::engine::{GpuScreenRecorder, ReplaySpec};
-use trace_core::ipc::{DaemonState, Request, Response};
-use trace_core::paths::AppPaths;
+use wreath_core::config::Config;
+use wreath_core::display;
+use wreath_core::engine::{GpuScreenRecorder, ReplaySpec};
+use wreath_core::ipc::{DaemonState, Request, Response};
+use wreath_core::paths::AppPaths;
+use wreath_core::shortcuts;
 
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 const RECORDER_READY_DELAY: Duration = Duration::from_millis(750);
+const SHORTCUT_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 struct Daemon {
     paths: AppPaths,
@@ -26,13 +29,14 @@ struct Daemon {
     capture_started_at: Option<Instant>,
     restart_attempts: u32,
     next_restart_at: Option<Instant>,
+    next_shortcut_check_at: Instant,
     last_error: Option<String>,
     shutdown: bool,
 }
 
 fn main() -> ExitCode {
     if let Err(error) = run() {
-        eprintln!("traced: {error}");
+        eprintln!("wreathd: {error}");
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
@@ -78,23 +82,24 @@ fn run() -> Result<(), String> {
         capture_started_at: None,
         restart_attempts: 0,
         next_restart_at: None,
+        next_shortcut_check_at: Instant::now(),
         last_error: None,
         shutdown: false,
     };
     daemon.start_capture();
-    eprintln!("traced: ready on {}", daemon.paths.socket_file.display());
+    eprintln!("wreathd: ready on {}", daemon.paths.socket_file.display());
 
     while !daemon.shutdown {
         loop {
             match listener.accept() {
                 Ok((stream, _)) => {
                     if let Err(error) = daemon.handle(stream) {
-                        eprintln!("traced: {error}");
+                        eprintln!("wreathd: {error}");
                     }
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => {
-                    eprintln!("traced: socket error: {error}");
+                    eprintln!("wreathd: socket error: {error}");
                     break;
                 }
             }
@@ -166,7 +171,7 @@ impl Daemon {
         match GpuScreenRecorder::start(spec) {
             Ok(recorder) => {
                 eprintln!(
-                    "traced: recording {} at {} fps (estimated buffer {} MiB)",
+                    "wreathd: recording {} at {} fps (estimated buffer {} MiB)",
                     spec.monitor,
                     spec.frames_per_second,
                     spec.estimated_buffer_megabytes()
@@ -238,7 +243,7 @@ impl Daemon {
         if let Some(mut recorder) = self.recorder.take()
             && let Err(error) = recorder.stop()
         {
-            eprintln!("traced: {error}");
+            eprintln!("wreathd: {error}");
         }
     }
 
@@ -307,7 +312,7 @@ impl Daemon {
     }
 
     fn fail(&mut self, message: String) {
-        eprintln!("traced: {message}");
+        eprintln!("wreathd: {message}");
         self.recorder = None;
         self.capture_started_at = None;
         self.state = DaemonState::Error;
@@ -316,7 +321,7 @@ impl Daemon {
             let delay = restart_delay(self.restart_attempts);
             self.restart_attempts = self.restart_attempts.saturating_add(1);
             self.next_restart_at = Some(Instant::now() + delay);
-            eprintln!("traced: retrying capture in {}s", delay.as_secs());
+            eprintln!("wreathd: retrying capture in {}s", delay.as_secs());
         }
     }
 
@@ -332,6 +337,7 @@ impl Daemon {
 
     fn maintain_capture(&mut self) {
         self.check_recorder();
+        self.maintain_shortcut();
         if self.capture_requested
             && self.recorder.is_none()
             && self
@@ -341,6 +347,32 @@ impl Daemon {
             self.start_capture();
         }
     }
+
+    fn maintain_shortcut(&mut self) {
+        if Instant::now() < self.next_shortcut_check_at {
+            return;
+        }
+        self.next_shortcut_check_at = Instant::now() + SHORTCUT_CHECK_INTERVAL;
+        let executable = control_executable();
+        match shortcuts::ensure(&self.config.hotkey, &executable) {
+            Ok(true) => eprintln!("wreathd: restored replay shortcut {}", self.config.hotkey),
+            Ok(false) => {}
+            Err(error) => eprintln!("wreathd: shortcut health check failed: {error}"),
+        }
+    }
+}
+
+fn control_executable() -> PathBuf {
+    if let Some(path) = std::env::var_os("WREATH_CONTROL") {
+        return PathBuf::from(path);
+    }
+    if let Ok(current) = std::env::current_exe() {
+        let sibling = current.with_file_name("wreathctl");
+        if sibling.exists() {
+            return sibling;
+        }
+    }
+    PathBuf::from("/usr/bin/wreathctl")
 }
 
 fn restart_delay(attempt: u32) -> Duration {

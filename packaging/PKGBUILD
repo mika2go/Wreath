@@ -1,9 +1,9 @@
-pkgname=trace-git
+pkgname=wreath-git
 pkgver=0.1.0.r0.g0000000
 pkgrel=1
 pkgdesc="Lightweight local-first instant replay recorder for Linux desktops"
 arch=('x86_64')
-url="https://github.com/mika2go/trace"
+url="https://github.com/mika2go/wreath"
 license=('MIT')
 depends=(
   'ffmpeg'
@@ -22,9 +22,9 @@ optdepends=(
   'xdg-desktop-portal-hyprland: portal capture fallback on Hyprland'
   'xdg-desktop-portal-kde: portal capture fallback on KDE Plasma'
 )
-provides=('trace')
-conflicts=('trace')
-install=trace.install
+provides=('wreath')
+conflicts=('wreath')
+install=wreath.install
 source=("$pkgname::git+$url.git")
 b2sums=('SKIP')
 
@@ -52,20 +52,20 @@ check() {
 
 package() {
   cd "$pkgname"
-  install -Dm755 target/release/traced "$pkgdir/usr/bin/traced"
-  install -Dm755 target/release/tracectl "$pkgdir/usr/bin/tracectl"
-  install -Dm755 target/release/trace-ui "$pkgdir/usr/bin/trace-ui"
+  install -Dm755 target/release/wreathd "$pkgdir/usr/bin/wreathd"
+  install -Dm755 target/release/wreathctl "$pkgdir/usr/bin/wreathctl"
+  install -Dm755 target/release/wreath-ui "$pkgdir/usr/bin/wreath-ui"
 
-  install -Dm644 packaging/traced.service \
-    "$pkgdir/usr/lib/systemd/user/traced.service"
-  install -Dm644 packaging/io.github.mika2go.Trace.desktop \
-    "$pkgdir/usr/share/applications/io.github.mika2go.Trace.desktop"
-  install -Dm644 packaging/io.github.mika2go.Trace.metainfo.xml \
-    "$pkgdir/usr/share/metainfo/io.github.mika2go.Trace.metainfo.xml"
-  install -Dm644 packaging/io.github.mika2go.Trace.svg \
-    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.mika2go.Trace.svg"
-  install -Dm644 packaging/io.github.mika2go.Trace-symbolic.svg \
-    "$pkgdir/usr/share/icons/hicolor/symbolic/apps/io.github.mika2go.Trace-symbolic.svg"
+  install -Dm644 packaging/wreathd.service \
+    "$pkgdir/usr/lib/systemd/user/wreathd.service"
+  install -Dm644 packaging/io.github.mika2go.Wreath.desktop \
+    "$pkgdir/usr/share/applications/io.github.mika2go.Wreath.desktop"
+  install -Dm644 packaging/io.github.mika2go.Wreath.metainfo.xml \
+    "$pkgdir/usr/share/metainfo/io.github.mika2go.Wreath.metainfo.xml"
+  install -Dm644 packaging/io.github.mika2go.Wreath.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.mika2go.Wreath.svg"
+  install -Dm644 packaging/io.github.mika2go.Wreath-symbolic.svg \
+    "$pkgdir/usr/share/icons/hicolor/symbolic/apps/io.github.mika2go.Wreath-symbolic.svg"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 docs/install.md "$pkgdir/usr/share/doc/$pkgname/install.md"

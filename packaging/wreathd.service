@@ -1,14 +1,14 @@
 [Unit]
-Description=Trace instant replay daemon
-Documentation=https://github.com/mika2go/trace
+Description=Wreath instant replay daemon
+Documentation=https://github.com/mika2go/wreath
 After=pipewire.service pipewire-pulse.service
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/traced
+ExecStart=/usr/bin/wreathd
 # Hyprland is configured automatically. Other desktops receive manual shortcut guidance.
-ExecStartPost=-/usr/bin/tracectl bind
+ExecStartPost=-/usr/bin/wreathctl bind
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=10

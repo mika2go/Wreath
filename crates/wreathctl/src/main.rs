@@ -7,12 +7,12 @@ use std::process::{Command, ExitCode};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use trace_core::display;
-use trace_core::engine;
-use trace_core::ipc::{Request, Response};
-use trace_core::paths::AppPaths;
-use trace_core::shortcuts::{self, ShortcutInstall};
-use trace_core::{config::Codec, config::Config, config::HotkeyConfig};
+use wreath_core::display;
+use wreath_core::engine;
+use wreath_core::ipc::{Request, Response};
+use wreath_core::paths::AppPaths;
+use wreath_core::shortcuts::{self, ShortcutInstall};
+use wreath_core::{config::Codec, config::Config, config::HotkeyConfig};
 
 const SOUND_SAMPLE_RATE: usize = 48_000;
 const SOUND_DURATION_SECONDS: f32 = 0.48;
@@ -24,7 +24,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            eprintln!("tracectl: {message}");
+            eprintln!("wreathctl: {message}");
             ExitCode::FAILURE
         }
     }
@@ -85,7 +85,7 @@ fn run() -> Result<(), String> {
             print_help();
             return Ok(());
         }
-        other => return Err(format!("unknown command `{other}`; try `tracectl help`")),
+        other => return Err(format!("unknown command `{other}`; try `wreathctl help`")),
     };
 
     let response = send(&AppPaths::discover(), &request)?;
@@ -121,8 +121,8 @@ fn show_clip_saved_feedback(path: &Path) {
     spawn_quiet(
         "notify-send",
         &[
-            "--app-name=Trace",
-            "--icon=io.github.mika2go.Trace-symbolic",
+            "--app-name=Wreath",
+            "--icon=io.github.mika2go.Wreath-symbolic",
             "--urgency=normal",
             "--expire-time=3000",
             "Clip taken",
@@ -273,7 +273,7 @@ fn configure(arguments: &[String]) -> Result<(), String> {
             let monitor = monitors
                 .iter()
                 .find(|monitor| monitor.name == *value || monitor.description == *value)
-                .ok_or_else(|| format!("unknown monitor `{value}`; run `tracectl monitors`"))?;
+                .ok_or_else(|| format!("unknown monitor `{value}`; run `wreathctl monitors`"))?;
             config.capture.monitor = Some(monitor.description.clone());
         }
         "hotkey" => {
@@ -369,7 +369,7 @@ fn send(paths: &AppPaths, request: &Request) -> Result<Response, String> {
 
 fn start_daemon() -> Result<(), String> {
     let output = Command::new("systemctl")
-        .args(["--user", "start", "traced.service"])
+        .args(["--user", "start", "wreathd.service"])
         .output()
         .map_err(|error| format!("cannot run systemctl: {error}"))?;
     if output.status.success() {
@@ -386,16 +386,16 @@ fn start_daemon() -> Result<(), String> {
 
 fn print_help() {
     println!(
-        "tracectl <command>\n\n\
+        "wreathctl <command>\n\n\
          commands:\n  monitors  list available capture targets\n  status    show daemon state\n  \
          save      save the replay buffer\n  pause     pause capture\n  resume    resume capture\n  \
          reload    reload local configuration\n  bind      register or explain the desktop hotkey\n  \
          sound     preview the clip confirmation sound\n  \
          config    show or change local settings\n  doctor    verify the local runtime\n  \
          shutdown  stop the daemon\n\n\
-         examples:\n  tracectl config monitor DP-1\n  tracectl config hotkey SUPER+SHIFT+R\n  \
-         tracectl config duration 30\n  tracectl config fps 60\n  \
-         tracectl config codec av1"
+         examples:\n  wreathctl config monitor DP-1\n  wreathctl config hotkey SUPER+SHIFT+R\n  \
+         wreathctl config duration 30\n  wreathctl config fps 60\n  \
+         wreathctl config codec av1"
     );
 }
 
@@ -405,9 +405,12 @@ mod tests {
 
     #[test]
     fn saved_clip_feedback_uses_the_output_filename() {
-        let path = Path::new("/tmp/Trace Replay 2026-07-29.mp4");
+        let path = Path::new("/tmp/Wreath Replay 2026-07-29.mp4");
 
-        assert_eq!(clip_saved_detail(path), "Saved Trace Replay 2026-07-29.mp4");
+        assert_eq!(
+            clip_saved_detail(path),
+            "Saved Wreath Replay 2026-07-29.mp4"
+        );
     }
 
     #[test]

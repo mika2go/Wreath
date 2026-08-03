@@ -1,9 +1,13 @@
 use gtk::glib;
+use gtk::pango;
 use gtk::prelude::*;
-use gtk::{Align, Box as GtkBox, Button, Image, Label, Orientation};
-use trace_core::clips;
-use trace_core::config::Config;
-use trace_core::paths::AppPaths;
+use gtk::{
+    Align, Box as GtkBox, Button, ContentFit, FlowBox, Image, Label, Orientation, Overlay, Picture,
+    SelectionMode,
+};
+use wreath_core::clips::{self, Clip};
+use wreath_core::config::Config;
+use wreath_core::paths::AppPaths;
 
 #[derive(Clone)]
 pub struct HomeView {
@@ -12,6 +16,7 @@ pub struct HomeView {
     pub open_collections: Button,
     stats: GtkBox,
     actions: GtkBox,
+    recent: FlowBox,
 }
 
 impl HomeView {
@@ -31,15 +36,17 @@ impl HomeView {
             .set_halign(if compact { Align::Fill } else { Align::Start });
         self.open_collections
             .set_halign(if compact { Align::Fill } else { Align::Start });
+        let columns = if compact { 2 } else { 4 };
+        self.recent.set_min_children_per_line(columns);
+        self.recent.set_max_children_per_line(columns);
     }
 }
 
 pub fn build() -> HomeView {
     let paths = AppPaths::discover();
     let config = Config::load(&paths).unwrap_or_default();
-    let clip_count = clips::scan(&config.storage.directory)
-        .map(|clips| clips.len())
-        .unwrap_or_default();
+    let local_clips = clips::scan(&config.storage.directory).unwrap_or_default();
+    let clip_count = local_clips.len();
     let collection_count = clips::collections(&config.storage.directory)
         .map(|collections| collections.len())
         .unwrap_or_default();
@@ -80,13 +87,93 @@ pub fn build() -> HomeView {
     actions.append(&open_collections);
     page.append(&actions);
 
+    if !local_clips.is_empty() {
+        let recent_header = GtkBox::new(Orientation::Horizontal, 12);
+        recent_header.add_css_class("home-recent-header");
+        let recent_title = Label::new(Some("Recent clips"));
+        recent_title.add_css_class("home-section-title");
+        recent_title.set_halign(Align::Start);
+        recent_title.set_hexpand(true);
+        let recent_count = Label::new(Some(&format!("Latest {}", local_clips.len().min(8))));
+        recent_count.add_css_class("home-section-detail");
+        recent_header.append(&recent_title);
+        recent_header.append(&recent_count);
+        page.append(&recent_header);
+    }
+
+    let recent = FlowBox::new();
+    recent.add_css_class("home-recent-flow");
+    recent.set_selection_mode(SelectionMode::None);
+    recent.set_column_spacing(12);
+    recent.set_row_spacing(12);
+    recent.set_homogeneous(true);
+    recent.set_min_children_per_line(4);
+    recent.set_max_children_per_line(4);
+    recent.set_valign(Align::Start);
+    recent.set_vexpand(false);
+    for clip in local_clips.iter().take(8) {
+        recent.insert(&recent_clip(clip, &paths.thumbnail_dir), -1);
+    }
+    recent.set_visible(!local_clips.is_empty());
+    page.append(&recent);
+
     HomeView {
         page,
         open_library,
         open_collections,
         stats,
         actions,
+        recent,
     }
+}
+
+fn recent_clip(clip: &Clip, thumbnail_directory: &std::path::Path) -> GtkBox {
+    let card = GtkBox::new(Orientation::Vertical, 0);
+    card.add_css_class("home-recent-card");
+    card.set_hexpand(true);
+
+    let picture = Picture::new();
+    picture.add_css_class("home-recent-picture");
+    picture.set_content_fit(ContentFit::Cover);
+    picture.set_can_shrink(true);
+    picture.set_hexpand(true);
+    picture.set_vexpand(true);
+    picture.set_halign(Align::Fill);
+    picture.set_valign(Align::Fill);
+    let thumbnail = clips::thumbnail_path(clip, thumbnail_directory);
+    if thumbnail.exists() {
+        picture.set_filename(Some(&thumbnail));
+    }
+    let preview = Overlay::new();
+    preview.add_css_class("home-recent-preview");
+    preview.set_size_request(-1, 112);
+    preview.set_overflow(gtk::Overflow::Hidden);
+    preview.set_child(Some(&picture));
+    let play = Image::from_icon_name("media-playback-start-symbolic");
+    play.add_css_class("home-recent-play");
+    play.set_pixel_size(12);
+    play.set_halign(Align::Center);
+    play.set_valign(Align::Center);
+    preview.add_overlay(&play);
+    card.append(&preview);
+
+    let info = GtkBox::new(Orientation::Vertical, 2);
+    info.add_css_class("home-recent-info");
+    let title = Label::new(Some(&clip.title));
+    title.add_css_class("home-recent-title");
+    title.set_halign(Align::Start);
+    title.set_ellipsize(pango::EllipsizeMode::End);
+    let meta = Label::new(Some(&format!(
+        "{} · {}",
+        clips::format_age(clip.modified),
+        clips::format_size(clip.size_bytes)
+    )));
+    meta.add_css_class("home-section-detail");
+    meta.set_halign(Align::Start);
+    info.append(&title);
+    info.append(&meta);
+    card.append(&info);
+    card
 }
 
 fn greeting() -> String {

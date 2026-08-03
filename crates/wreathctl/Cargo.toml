@@ -1,5 +1,5 @@
 [package]
-name = "trace-ui"
+name = "wreathctl"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,6 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-gdk-pixbuf.workspace = true
-gtk.workspace = true
+wreath-core = { path = "../wreath-core" }
 serde_json.workspace = true
-trace-core = { path = "../trace-core" }
+toml.workspace = true

@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "crates/trace-core",
-    "crates/trace-ui",
-    "crates/tracectl",
-    "crates/traced",
+    "crates/wreath-core",
+    "crates/wreath-ui",
+    "crates/wreathctl",
+    "crates/wreathd",
 ]
 resolver = "3"
 
@@ -11,7 +11,7 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/mika2go/trace"
+repository = "https://github.com/mika2go/wreath"
 rust-version = "1.85"
 
 [workspace.dependencies]

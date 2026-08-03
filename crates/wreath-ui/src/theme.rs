@@ -90,11 +90,11 @@ impl Palette {
         let stage = Rgb::new(3, 4, 7).mix(self.dominant, 0.10);
         let accent_strong = self.accent.mix(Rgb::new(255, 255, 255), 0.08);
         format!(
-            "@define-color trace_bg {};\n\
-             @define-color trace_surface {};\n\
-             @define-color trace_stage {};\n\
-             @define-color trace_accent {};\n\
-             @define-color trace_accent_strong {};\n",
+            "@define-color wreath_bg {};\n\
+             @define-color wreath_surface {};\n\
+             @define-color wreath_stage {};\n\
+             @define-color wreath_accent {};\n\
+             @define-color wreath_accent_strong {};\n",
             background.rgba(0.80),
             surface.rgba(0.84),
             stage.rgba(0.88),
@@ -139,7 +139,7 @@ pub fn watch_palette_changes(callback: impl Fn() + 'static) {
 }
 
 fn current_wallpaper() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("TRACE_WALLPAPER").map(PathBuf::from)
+    if let Some(path) = std::env::var_os("WREATH_WALLPAPER").map(PathBuf::from)
         && path.is_file()
     {
         return Some(path);
@@ -316,7 +316,7 @@ mod tests {
             dominant: FALLBACK_DOMINANT,
         }
         .css_prefix();
-        assert!(stylesheet.contains("@define-color trace_bg rgba("));
+        assert!(stylesheet.contains("@define-color wreath_bg rgba("));
         assert!(stylesheet.contains(", 0.80);"));
     }
 }

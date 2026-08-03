@@ -1,9 +1,9 @@
-# Installing Trace
+# Installing Wreath
 
-Trace supports Arch Linux and Arch-based distributions such as CachyOS. The
+Wreath supports Arch Linux and Arch-based distributions such as CachyOS. The
 primary tested desktops are Hyprland and KDE Plasma. Hyprland receives a native
 runtime shortcut automatically; Plasma and other desktops use their own global
-shortcut settings with the command `tracectl save`.
+shortcut settings with the command `wreathctl save`.
 
 ## Support matrix
 
@@ -21,19 +21,19 @@ after the first permission prompt.
 
 ## Fast installation from a clone
 
-Install Git first if necessary, then clone Trace:
+Install Git first if necessary, then clone Wreath:
 
 ```bash
 sudo pacman -S --needed git
-git clone https://github.com/mika2go/trace.git
-cd trace
+git clone https://github.com/mika2go/wreath.git
+cd wreath
 ./scripts/install-arch.sh --install-deps
 ```
 
 The same command is used on Arch Linux and CachyOS. It installs the required
 packages with `pacman`, builds the locked Rust workspace, installs the binaries
-and desktop files below `/usr`, enables `traced.service` for the current user,
-and restarts an already-running Trace service. Run the script as your regular
+and desktop files below `/usr`, enables `wreathd.service` for the current user,
+and restarts an already-running Wreath service. Run the script as your regular
 desktop user; it requests `sudo` only for package and `/usr` installation.
 
 The installer does **not** edit:
@@ -41,10 +41,10 @@ The installer does **not** edit:
 - `~/.config/hypr`;
 - `~/.config/quickshell`;
 - KDE configuration files;
-- an existing `~/.config/trace/config.toml`.
+- an existing `~/.config/wreath/config.toml`.
 
 This preserves custom shell widgets, runtime bindings, themes, and existing
-Trace settings.
+Wreath settings.
 
 To install files without starting the recorder immediately:
 
@@ -54,12 +54,12 @@ To install files without starting the recorder immediately:
 
 ## Package build
 
-The included `PKGBUILD` creates `trace-git` without requiring Hyprland:
+The included `PKGBUILD` creates `wreath-git` without requiring Hyprland:
 
 ```bash
 cd packaging
 makepkg -si
-systemctl --user reenable --now traced.service
+systemctl --user reenable --now wreathd.service
 ```
 
 The package works unchanged on CachyOS because CachyOS is Arch-based and uses
@@ -111,8 +111,8 @@ graphics drivers do not need to be replaced.
 ### Hyprland
 
 No configuration-file edit is required. When the user service starts,
-`tracectl bind` registers the configured shortcut through Hyprland. Changing
-the shortcut in Trace updates that runtime bind. Existing Quickshell or custom
+`wreathctl bind` registers the configured shortcut through Hyprland. Changing
+the shortcut in Wreath updates that runtime bind. Existing Quickshell or custom
 Hyprland integration remains untouched.
 
 The default shortcut is `SUPER+SHIFT+R`.
@@ -128,12 +128,12 @@ System Settings → Keyboard → Shortcuts → Add New → Command or Script
 Use:
 
 ```text
-Name: Trace — Save replay
-Command: /usr/bin/tracectl save
+Name: Wreath — Save replay
+Command: /usr/bin/wreathctl save
 Shortcut: Meta+Shift+R
 ```
 
-Plasma owns the shortcut, so changing the displayed shortcut in Trace does not
+Plasma owns the shortcut, so changing the displayed shortcut in Wreath does not
 rewrite KDE configuration. Update the Plasma shortcut from System Settings
 when choosing a different combination.
 
@@ -142,7 +142,7 @@ when choosing a different combination.
 Create a global application shortcut for:
 
 ```bash
-/usr/bin/tracectl save
+/usr/bin/wreathctl save
 ```
 
 The desktop-file action “Save replay now” provides the same command for launchers
@@ -153,29 +153,29 @@ that expose application actions.
 Start or restart the recorder:
 
 ```bash
-systemctl --user reenable --now traced.service
-tracectl doctor
-tracectl monitors
+systemctl --user reenable --now wreathd.service
+wreathctl doctor
+wreathctl monitors
 ```
 
-Open **Trace** from the application launcher and select a direct monitor. On a
+Open **Wreath** from the application launcher and select a direct monitor. On a
 desktop where direct monitor capture is unavailable, choose **Desktop portal**;
 the compositor will ask which screen may be recorded. The choice is restored
-from `$XDG_CACHE_HOME/trace/portal-session-token`.
+from `$XDG_CACHE_HOME/wreath/portal-session-token`.
 
 Test only the confirmation sound:
 
 ```bash
-tracectl sound
+wreathctl sound
 ```
 
 Save a real replay:
 
 ```bash
-tracectl save
+wreathctl save
 ```
 
-After a successful save, Trace shows a standard desktop notification and plays
+After a successful save, Wreath shows a standard desktop notification and plays
 its quiet confirmation chime. Notifications use `notify-send`; sound playback
 uses the PulseAudio-compatible client and works with both PulseAudio and
 PipeWire-Pulse.
@@ -185,31 +185,31 @@ PipeWire-Pulse.
 Inspect the service:
 
 ```bash
-systemctl --user status traced.service
-journalctl --user -u traced.service -b
+systemctl --user status wreathd.service
+journalctl --user -u wreathd.service -b
 ```
 
 If no display appears:
 
 ```bash
 gpu-screen-recorder --info
-tracectl monitors
+wreathctl monitors
 ```
 
 If portal capture is missing, install the portal backend for the active desktop
 and log out and back in. Avoid running competing portal backends for the same
 desktop unless their portal configuration explicitly selects between them.
 
-If the shortcut does not work on Plasma, run `tracectl save` in a terminal. If
+If the shortcut does not work on Plasma, run `wreathctl save` in a terminal. If
 that succeeds, the recorder is healthy and only the Plasma shortcut assignment
 needs correction.
 
 If an older user-local test installation shadows the packaged binaries:
 
 ```bash
-type -a traced tracectl trace-ui
-systemctl --user cat traced.service
+type -a wreathd wreathctl wreath-ui
+systemctl --user cat wreathd.service
 ```
 
 Remove only the obsolete override or binary you recognize; do not delete
-`~/.config/trace` if the existing settings and clip location should be kept.
+`~/.config/wreath` if the existing settings and clip location should be kept.

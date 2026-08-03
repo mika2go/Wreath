@@ -1,5 +1,5 @@
-window.trace-window {
-  background: #0f0f11;
+window.wreath-window {
+  background: #0d0d0f;
   color: #eef0f6;
 }
 
@@ -16,7 +16,7 @@ tooltip {
 
 tooltip.background {
   color: #d9dce5;
-  background: @trace_surface;
+  background: #17171a;
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
@@ -114,15 +114,15 @@ button.nav-button.active {
 }
 
 .clips-page {
-  padding: 40px 42px 30px;
+  padding: 28px 30px 24px;
 }
 
 .home-page {
-  padding: 56px 48px 38px;
+  padding: 36px 38px 30px;
 }
 
 .collections-page {
-  padding: 40px 42px 30px;
+  padding: 28px 30px 24px;
 }
 
 .player-page {
@@ -152,8 +152,8 @@ button.nav-button.active {
 
 .page-title {
   color: #f4f5f9;
-  font-size: 27px;
-  font-weight: 750;
+  font-size: 25px;
+  font-weight: 780;
 }
 
 .page-subtitle,
@@ -162,28 +162,88 @@ button.nav-button.active {
   font-size: 11px;
 }
 
+.live-badge {
+  padding: 4px 7px;
+  color: #8fe3b0;
+  background: rgba(79, 201, 127, 0.10);
+  border: 1px solid rgba(99, 222, 147, 0.16);
+  border-radius: 99px;
+}
+
+.live-dot,
+.summary-status-dot {
+  min-width: 6px;
+  min-height: 6px;
+  background: #64dc93;
+  border-radius: 99px;
+}
+
+.live-label {
+  color: inherit;
+  font-size: 8px;
+  font-weight: 850;
+  letter-spacing: 0.55px;
+}
+
+.library-summary {
+  padding: 0;
+  background: rgba(255, 255, 255, 0.028);
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 11px;
+}
+
+.summary-metric {
+  padding: 12px 14px;
+  border-right: 1px solid rgba(255, 255, 255, 0.055);
+}
+
+.summary-value {
+  color: #e8eaf1;
+  font-size: 14px;
+  font-weight: 720;
+  font-feature-settings: "tnum";
+}
+
+.summary-caption {
+  color: #626978;
+  font-size: 8px;
+  font-weight: 820;
+  letter-spacing: 0.45px;
+}
+
+.library-section-title {
+  color: #e3e5ec;
+  font-size: 14px;
+  font-weight: 720;
+}
+
+.library-section-count {
+  color: #656c7b;
+  font-size: 10px;
+  font-feature-settings: "tnum";
+}
+
 entry.search {
   min-height: 32px;
-  padding: 0 4px;
+  padding: 0 12px;
   color: #e9ebf2;
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 0;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 9px;
   box-shadow: none;
 }
 
 entry.search:focus {
-  border: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.38);
+  background: rgba(255, 255, 255, 0.065);
+  border: 1px solid rgba(255, 255, 255, 0.24);
   outline: none;
   box-shadow: none;
 }
 
 entry.search:focus-visible,
 entry.search:focus-within {
-  border: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.38);
+  background: rgba(255, 255, 255, 0.065);
+  border: 1px solid rgba(255, 255, 255, 0.24);
   outline: none;
   box-shadow: none;
 }
@@ -219,33 +279,58 @@ button.icon-action:hover {
 flowboxchild {
   padding: 0;
   background: transparent;
-  min-width: 230px;
+  min-width: 198px;
 }
 
 .clip-item {
-  min-width: 230px;
-  min-height: 202px;
+  min-width: 198px;
+  min-height: 184px;
 }
 
 button.clip-open {
   padding: 0;
   color: #e8e9ef;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  box-shadow: none;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
 }
 
-button.clip-open:hover .clip-preview-frame {
-  outline: 2px solid rgba(255, 255, 255, 0.75);
-  outline-offset: -2px;
+button.clip-open:hover {
+  background: rgba(255, 255, 255, 0.065);
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: 0 11px 28px rgba(0, 0, 0, 0.25);
 }
 
 .clip-preview-frame,
 .clip-preview {
-  min-height: 129px;
-  background: @trace_surface;
-  border-radius: 12px;
+  min-height: 150px;
+  background: #101012;
+  border-radius: 11px 11px 7px 7px;
+}
+
+.clip-info {
+  padding: 10px 11px 11px;
+}
+
+.clip-play {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+  color: rgba(255, 255, 255, 0.94);
+  background: rgba(8, 10, 15, 0.68);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 99px;
+}
+
+.clip-format {
+  padding: 2px 5px;
+  color: #838998;
+  background: rgba(255, 255, 255, 0.045);
+  border-radius: 4px;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
 }
 
 button.clip-more,
@@ -254,15 +339,16 @@ button.collection-more {
   min-height: 34px;
   padding: 0;
   color: rgba(255, 255, 255, 0.76);
-  background: transparent;
+  background: rgba(8, 10, 14, 0.72);
   border: none;
+  border-radius: 8px;
   box-shadow: none;
 }
 
 button.clip-more:hover,
 button.collection-more:hover {
   color: #ffffff;
-  background: transparent;
+  background: rgba(8, 10, 14, 0.92);
 }
 
 button.collection-more {
@@ -323,7 +409,7 @@ button.collection-button:drop(active) {
 popover.compact-popover contents {
   padding: 0;
   color: #e9ebf2;
-  background: @trace_surface;
+  background: #17171a;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 11px;
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
@@ -337,7 +423,7 @@ popover.compact-popover contents {
 popover.clip-menu contents {
   padding: 0;
   color: #e9ebf2;
-  background: @trace_surface;
+  background: #17171a;
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 11px;
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
@@ -382,8 +468,8 @@ button.menu-action.danger-menu-action {
 }
 
 .home-stats {
-  margin-top: 46px;
-  margin-bottom: 48px;
+  margin-top: 28px;
+  margin-bottom: 30px;
 }
 
 .home-stat-value {
@@ -416,10 +502,63 @@ button.home-action:hover {
   background: rgba(255, 255, 255, 0.13);
 }
 
+.home-recent-header {
+  margin-top: 30px;
+  margin-bottom: 10px;
+}
+
+.home-section-title {
+  color: #e8e9ef;
+  font-size: 14px;
+  font-weight: 720;
+}
+
+.home-section-detail {
+  color: #696f7d;
+  font-size: 9px;
+}
+
+.home-recent-flow flowboxchild {
+  min-width: 160px;
+}
+
+.home-recent-card {
+  min-width: 160px;
+  background: #141417;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+}
+
+.home-recent-preview,
+.home-recent-picture {
+  min-height: 112px;
+  background: #101012;
+  border-radius: 9px 9px 5px 5px;
+}
+
+.home-recent-play {
+  min-width: 25px;
+  min-height: 25px;
+  color: #ffffff;
+  background: rgba(7, 8, 11, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 99px;
+}
+
+.home-recent-info {
+  padding: 9px 10px 10px;
+}
+
+.home-recent-title {
+  color: #e2e4ea;
+  font-size: 10px;
+  font-weight: 680;
+}
+
 popover.delete-confirmation contents {
   padding: 0;
   color: #e9ebf2;
-  background: @trace_surface;
+  background: #17171a;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 12px;
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
@@ -489,9 +628,14 @@ button.danger-action:hover {
 }
 
 .duration {
-  color: #aeb2c0;
-  font-size: 10px;
-  font-weight: 700;
+  padding: 3px 6px;
+  color: #f2f3f7;
+  background: rgba(7, 9, 13, 0.80);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 6px;
+  font-size: 9px;
+  font-weight: 750;
+  font-feature-settings: "tnum";
 }
 
 .empty-state {
@@ -557,7 +701,7 @@ button.danger-action:hover {
 
 .video-stage {
   min-height: 180px;
-  background: @trace_stage;
+  background: @wreath_stage;
   border-radius: 9px;
 }
 
@@ -667,6 +811,31 @@ entry.recording:not(.search):focus {
   border-bottom-color: rgba(255, 255, 255, 0.95);
 }
 
+popover arrow {
+  color: #17171a;
+  background: #17171a;
+}
+
+popover entry:not(.search) {
+  min-height: 34px;
+  padding: 0 9px;
+  color: #f0f1f5;
+  background: #101012;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 7px;
+  outline: none;
+  box-shadow: none;
+}
+
+popover entry:not(.search):focus,
+popover entry:not(.search):focus-visible,
+popover entry:not(.search):focus-within {
+  background: #101012;
+  border: 1px solid rgba(255, 255, 255, 0.52);
+  outline: none;
+  box-shadow: none;
+}
+
 dropdown button,
 spinbutton button {
   background: transparent;
@@ -701,7 +870,7 @@ checkbutton {
 checkbutton check {
   min-width: 14px;
   min-height: 14px;
-  background: @trace_surface;
+  background: #17171a;
   border: 1px solid #4d5361;
   border-radius: 3px;
   box-shadow: none;

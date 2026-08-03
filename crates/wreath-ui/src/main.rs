@@ -16,7 +16,7 @@ use gtk::{
     Stack,
 };
 
-const APP_ID: &str = "io.github.mika2go.Trace";
+const APP_ID: &str = "io.github.mika2go.Wreath";
 
 fn main() -> ExitCode {
     let application = Application::builder().application_id(APP_ID).build();
@@ -55,12 +55,12 @@ fn build_ui(application: &Application) {
     }
     let window = ApplicationWindow::builder()
         .application(application)
-        .title("Trace")
-        .default_width(1120)
-        .default_height(700)
+        .title("Wreath")
+        .default_width(1280)
+        .default_height(760)
         .resizable(true)
         .build();
-    window.add_css_class("trace-window");
+    window.add_css_class("wreath-window");
 
     let shell = GtkBox::new(Orientation::Horizontal, 0);
     let sidebar = GtkBox::new(Orientation::Vertical, 0);
@@ -70,7 +70,7 @@ fn build_ui(application: &Application) {
     let brand = GtkBox::new(Orientation::Horizontal, 0);
     brand.add_css_class("brand");
     brand.set_halign(Align::Center);
-    let mark = Image::from_icon_name("io.github.mika2go.Trace-symbolic");
+    let mark = Image::from_icon_name("io.github.mika2go.Wreath-symbolic");
     mark.set_pixel_size(24);
     mark.add_css_class("brand-mark");
     brand.append(&mark);
@@ -107,7 +107,6 @@ fn build_ui(application: &Application) {
     content.add_named(&clip_views.collections, Some("collections"));
     content.add_named(&clip_views.player, Some("player"));
     content.add_named(&settings_page.page, Some("settings"));
-    content.set_visible_child_name("home");
 
     let home_stack = content.clone();
     let home_button = home_nav.clone();
@@ -198,6 +197,7 @@ fn build_ui(application: &Application) {
     shell.append(&sidebar);
     shell.append(&content);
     window.set_child(Some(&shell));
+    content.set_visible_child_name("home");
     window.present();
     install_responsive_layout(
         &window,
@@ -252,9 +252,13 @@ fn install_responsive_layout(
         let compact_sidebar = width < 760;
         let narrow_content = width < 980;
         let compact_header = width < 820;
-        let clip_columns = if width >= 1_120 {
+        let clip_columns = if width >= 1_500 {
+            6
+        } else if width >= 1_100 {
+            4
+        } else if width >= 820 {
             3
-        } else if width >= 700 {
+        } else if width >= 620 {
             2
         } else {
             1

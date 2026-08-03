@@ -1,5 +1,5 @@
 [package]
-name = "traced"
+name = "wreathd"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,6 +7,6 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-trace-core = { path = "../trace-core" }
+wreath-core = { path = "../wreath-core" }
 serde_json.workspace = true
 
