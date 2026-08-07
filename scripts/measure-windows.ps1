@@ -15,6 +15,7 @@ param(
     [double]$MaxSaveLatencySeconds = 10,
     [string]$FfprobePath = "ffprobe",
     [double]$MinClipDurationSeconds = 5,
+    [double]$MinFrameRateRatio = 0.90,
     [double]$MaxAudioVideoSkewSeconds = 0.50,
     [switch]$AllowVideoOnly,
     [switch]$MeasureMedalOnly,
@@ -53,6 +54,9 @@ if ($DurationMinutes -le 0) { throw "DurationMinutes must be positive" }
 if ($SampleIntervalSeconds -lt 1) { throw "SampleIntervalSeconds must be at least one" }
 if ($SaveEverySeconds -lt 0) { throw "SaveEverySeconds cannot be negative" }
 if ($MinClipDurationSeconds -le 0) { throw "MinClipDurationSeconds must be positive" }
+if ($MinFrameRateRatio -le 0 -or $MinFrameRateRatio -gt 1) {
+    throw "MinFrameRateRatio must be greater than zero and at most one"
+}
 if ($MaxAudioVideoSkewSeconds -lt 0) { throw "MaxAudioVideoSkewSeconds cannot be negative" }
 if ($MaxSaveLatencySeconds -le 0) { throw "MaxSaveLatencySeconds must be positive" }
 if ($MaxRelativeWriteIo -le 0) { throw "MaxRelativeWriteIo must be positive" }
@@ -349,6 +353,14 @@ function Get-WreathConfiguredDuration([string]$Configuration) {
     return [int]$Match.Groups[1].Value
 }
 
+function Get-WreathConfiguredFrameRate([string]$Configuration) {
+    $Match = [regex]::Match($Configuration, '(?m)^frames_per_second\s*=\s*(\d+)\s*$')
+    if (-not $Match.Success) {
+        throw "Wreath configuration did not report capture.frames_per_second"
+    }
+    return [int]$Match.Groups[1].Value
+}
+
 function Test-MedalBaseline(
     [object]$Baseline,
     [string]$Scenario,
@@ -403,20 +415,35 @@ function Convert-InvariantDouble([object]$Value, [string]$Description) {
     return $Parsed
 }
 
+function Convert-FfprobeRate([object]$Value, [string]$Description) {
+    $Text = [string]$Value
+    $Match = [regex]::Match($Text, '^(\d+)/(\d+)$')
+    if ($Match.Success) {
+        $Denominator = [double]$Match.Groups[2].Value
+        if ($Denominator -eq 0) {
+            throw "ffprobe returned an invalid $Description value: '$Text'"
+        }
+        return [double]$Match.Groups[1].Value / $Denominator
+    }
+    return Convert-InvariantDouble $Value $Description
+}
+
 function Test-ReplayClip(
     [string]$Path,
     [string]$Ffprobe,
     [bool]$VideoOnly,
     [double]$MinimumDurationSeconds,
-    [double]$MaximumAudioVideoSkewSeconds
+    [double]$MaximumAudioVideoSkewSeconds,
+    [int]$ExpectedFramesPerSecond,
+    [double]$MinimumFrameRateRatio
 ) {
     $ResolvedPath = [System.IO.Path]::GetFullPath($Path)
     if (-not (Test-Path -LiteralPath $ResolvedPath -PathType Leaf)) {
         throw "saved clip does not exist: $ResolvedPath"
     }
 
-    $MetadataJson = @(& $Ffprobe -v error `
-        -show_entries "format=duration:stream=index,codec_name,codec_type,start_time,duration" `
+    $MetadataJson = @(& $Ffprobe -v error -count_frames `
+        -show_entries "format=duration:stream=index,codec_name,codec_type,start_time,duration,avg_frame_rate,nb_read_frames" `
         -of json $ResolvedPath)
     if ($LASTEXITCODE -ne 0) { throw "ffprobe could not read $ResolvedPath" }
     $Metadata = ($MetadataJson -join [Environment]::NewLine) | ConvertFrom-Json
@@ -430,6 +457,18 @@ function Test-ReplayClip(
     $Duration = Convert-InvariantDouble $Metadata.format.duration "container duration"
     if ($Duration -lt $MinimumDurationSeconds) {
         throw "clip duration $Duration seconds is below $MinimumDurationSeconds seconds"
+    }
+    $VideoDuration = Convert-InvariantDouble $Video[0].duration "video duration"
+    $AverageFrameRate = Convert-FfprobeRate $Video[0].avg_frame_rate "average frame rate"
+    $FrameCount = 0L
+    if (-not [long]::TryParse([string]$Video[0].nb_read_frames, [ref]$FrameCount) -or
+        $FrameCount -le 0 -or $VideoDuration -le 0) {
+        throw "ffprobe did not return a usable decoded video frame count"
+    }
+    $CountedFrameRate = [double]$FrameCount / $VideoDuration
+    $MinimumFrameRate = [double]$ExpectedFramesPerSecond * $MinimumFrameRateRatio
+    if ($AverageFrameRate -lt $MinimumFrameRate -or $CountedFrameRate -lt $MinimumFrameRate) {
+        throw "clip frame rate $([Math]::Round([Math]::Min($AverageFrameRate, $CountedFrameRate), 3)) fps is below $([Math]::Round($MinimumFrameRate, 3)) fps"
     }
 
     $FirstPacketJson = @(& $Ffprobe -v error -select_streams v:0 `
@@ -458,7 +497,6 @@ function Test-ReplayClip(
     if ($Audio.Count -gt 0) {
         $VideoStart = Convert-InvariantDouble $Video[0].start_time "video start time"
         $AudioStart = Convert-InvariantDouble $Audio[0].start_time "audio start time"
-        $VideoDuration = Convert-InvariantDouble $Video[0].duration "video duration"
         $AudioDuration = Convert-InvariantDouble $Audio[0].duration "audio duration"
         if ([Math]::Abs($VideoStart - $AudioStart) -gt $MaximumAudioVideoSkewSeconds) {
             throw "audio/video start delta exceeds $MaximumAudioVideoSkewSeconds seconds"
@@ -473,6 +511,10 @@ function Test-ReplayClip(
         Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ResolvedPath).Hash
         Bytes = (Get-Item -LiteralPath $ResolvedPath).Length
         DurationSeconds = [Math]::Round($Duration, 3)
+        Frames = $FrameCount
+        AverageFramesPerSecond = [Math]::Round($AverageFrameRate, 3)
+        CountedFramesPerSecond = [Math]::Round($CountedFrameRate, 3)
+        MinimumFramesPerSecond = [Math]::Round($MinimumFrameRate, 3)
         VideoCodec = [string]$Video[0].codec_name
         AudioStreams = $Audio.Count
         AudioVideoSkewLimitSeconds = $MaximumAudioVideoSkewSeconds
@@ -558,6 +600,11 @@ $ConfiguredReplaySeconds = if ($MeasureMedalOnly) {
     $null
 } else {
     Get-WreathConfiguredDuration $WreathConfiguration
+}
+$ConfiguredFramesPerSecond = if ($MeasureMedalOnly) {
+    $null
+} else {
+    Get-WreathConfiguredFrameRate $WreathConfiguration
 }
 $EffectiveMinClipDurationSeconds = if ($MeasureMedalOnly) {
     $MinClipDurationSeconds
@@ -840,7 +887,9 @@ if (-not $MeasureMedalOnly -and $SaveAttempts -gt 0) {
                     $Ffprobe.Source `
                     $AllowVideoOnly.IsPresent `
                     $EffectiveMinClipDurationSeconds `
-                    $MaxAudioVideoSkewSeconds))
+                    $MaxAudioVideoSkewSeconds `
+                    $ConfiguredFramesPerSecond `
+                    $MinFrameRateRatio))
             } catch {
                 $Failures.Add("clip validation failed for '$Clip': $($_.Exception.Message)")
             }
@@ -912,6 +961,7 @@ $Summary = [ordered]@{
     MedalBaselineRunId = if ($null -eq $Baseline) { $null } else { $Baseline.RunId }
     DurationMinutes = $DurationMinutes
     ConfiguredReplaySeconds = $ConfiguredReplaySeconds
+    ConfiguredFramesPerSecond = $ConfiguredFramesPerSecond
     SampleIntervalSeconds = $SampleIntervalSeconds
     RelativeGatesEvaluated = (-not $MeasureMedalOnly -and $null -ne $Baseline)
     Gates = [ordered]@{
@@ -926,6 +976,7 @@ $Summary = [ordered]@{
         MaxEncodedReplayMb = $MaxEncodedReplayMb
         MaxSaveLatencySeconds = $MaxSaveLatencySeconds
         MinClipDurationSeconds = $EffectiveMinClipDurationSeconds
+        MinFrameRateRatio = $MinFrameRateRatio
         ReplayDurationToleranceSeconds = $ReplayDurationToleranceSeconds
         MaxAudioVideoSkewSeconds = $MaxAudioVideoSkewSeconds
     }

@@ -79,8 +79,9 @@ foreach ($File in $Files) {
     }
     $RequiredProperties = @(
         "RunId", "Product", "Passed", "MatrixTags", "System", "AvailableHardwareCodecs",
-        "ActiveHardwareCodec", "ActiveGpuAdapter", "RelativeGatesEvaluated", "DurationMinutes", "SaveAttempts",
-        "ConfiguredReplaySeconds", "ShortReplaySaves", "SlowReplaySaves",
+        "ActiveHardwareCodec", "ActiveGpuAdapter", "RelativeGatesEvaluated", "DurationMinutes",
+        "SaveAttempts", "SaveFailures", "ValidatedClips", "ClipValidations", "ConfiguredReplaySeconds",
+        "ConfiguredFramesPerSecond", "ShortReplaySaves", "SlowReplaySaves",
         "PeakSaveDurationMs", "PeakEncodedReplayMb", "IoCountersAvailable",
         "AverageWreathWriteBytesPerSecond", "AverageMedalWriteBytesPerSecond",
         "WreathToMedalWriteIoRatio", "AverageIdleWreathWriteMbPerSecond", "Gates"
@@ -122,7 +123,8 @@ foreach ($File in $Files) {
     }
     $RequiredGateProperties = @(
         "MaxEncodedReplayMb", "MaxSaveLatencySeconds", "MinClipDurationSeconds",
-        "ReplayDurationToleranceSeconds", "MaxRelativeWriteIo", "MaxIdleWriteMbPerSecond"
+        "ReplayDurationToleranceSeconds", "MinFrameRateRatio", "MaxRelativeWriteIo",
+        "MaxIdleWriteMbPerSecond"
     )
     $MissingGateProperties = @($RequiredGateProperties | Where-Object {
         $null -eq $Summary.Gates.PSObject.Properties[$_]
@@ -157,6 +159,37 @@ foreach ($File in $Files) {
     }
     if ([int]$Summary.ConfiguredReplaySeconds -le 0) {
         $Failures.Add("$($File.Name): configured replay duration is missing or invalid")
+    }
+    if ([int]$Summary.ConfiguredFramesPerSecond -le 0 -or
+        [double]$Summary.Gates.MinFrameRateRatio -lt 0.90 -or
+        [double]$Summary.Gates.MinFrameRateRatio -gt 1.0) {
+        $Failures.Add("$($File.Name): video frame-rate gate is missing or weaker than release policy")
+    }
+    if ([int]$Summary.SaveAttempts -le 0 -or
+        [int]$Summary.SaveFailures -ne 0 -or
+        [int]$Summary.ValidatedClips -ne [int]$Summary.SaveAttempts) {
+        $Failures.Add("$($File.Name): not every replay save has successful clip validation")
+    }
+    $ClipEvidence = @($Summary.ClipValidations)
+    if ($ClipEvidence.Count -ne [int]$Summary.ValidatedClips) {
+        $Failures.Add("$($File.Name): saved-clip evidence count is incomplete")
+    }
+    foreach ($Clip in $ClipEvidence) {
+        $MissingClipProperties = @(@(
+            "Frames", "AverageFramesPerSecond", "CountedFramesPerSecond", "MinimumFramesPerSecond"
+        ) | Where-Object { $null -eq $Clip.PSObject.Properties[$_] })
+        if ($MissingClipProperties.Count -gt 0) {
+            $Failures.Add("$($File.Name): clip is missing frame-rate evidence")
+            continue
+        }
+        $ExpectedMinimumFramesPerSecond = [int]$Summary.ConfiguredFramesPerSecond *
+            [double]$Summary.Gates.MinFrameRateRatio
+        if ([long]$Clip.Frames -le 0 -or
+            [Math]::Abs([double]$Clip.MinimumFramesPerSecond - $ExpectedMinimumFramesPerSecond) -gt 0.01 -or
+            [double]$Clip.AverageFramesPerSecond -lt $ExpectedMinimumFramesPerSecond -or
+            [double]$Clip.CountedFramesPerSecond -lt $ExpectedMinimumFramesPerSecond) {
+            $Failures.Add("$($File.Name): clip frame-rate evidence violates the release limit")
+        }
     }
     if ([int]$Summary.ShortReplaySaves -ne 0) {
         $Failures.Add("$($File.Name): one or more saves used an incomplete replay buffer")

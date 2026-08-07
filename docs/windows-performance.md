@@ -14,6 +14,7 @@ settings. The default automated comparison gates define "materially fewer" as:
 - native tray peak working set at most 64 MiB;
 - encoded replay payload never above the fixed 512 MiB process limit;
 - each replay save completes within ten seconds;
+- every saved clip sustains at least 90% of the configured frame rate;
 - zero failed periodic replay saves.
 
 These thresholds can be tightened after measurements from the first hardware
@@ -83,10 +84,12 @@ they are a conservative load gate rather than a physical-disk-only estimate.
 Install `ffprobe` from FFmpeg before the Wreath phase. After the timed measurement
 has ended, every saved clip is checked for a video stream, the expected audio
 stream, the configured replay duration with at most two seconds of GOP tolerance,
-keyframe-clean start, monotonic DTS, and bounded audio/video duration skew. The
-live ring fill level is checked before every save as well. Clip hashes and probe
-results are included in the JSON summary. Raw output belongs in test artifacts,
-not in Git.
+keyframe-clean start, monotonic DTS, bounded audio/video duration skew, and at
+least 90% of the configured frame rate. Both FFmpeg's average rate and the
+independently counted decoded frames per video-stream duration must pass, so a
+nominal 60-fps header cannot hide dropped frames. The live ring fill level is
+checked before every save as well. Clip hashes and probe results are included in
+the JSON summary. Raw output belongs in test artifacts, not in Git.
 
 Use `-AllowVideoOnly` only for a matrix row whose Wreath configuration has both
 desktop and microphone audio disabled. `-MinClipDurationSeconds` may tighten the
@@ -119,11 +122,11 @@ size, idle write I/O, and replay saves remain hard gates.
 | Duration | 30-minute comparison and four-hour Wreath soak |
 
 Every saved MP4 must be checked for playable video, audible selected sources,
-monotonic duration, A/V sync at the beginning and end, and a keyframe-clean
-start. The sampler automates the structural portion, but listening to selected
-audio sources and visually checking end-to-end A/V sync remain manual hardware
-checks. A hardware encoder absence must be reported as an error; a CPU video
-fallback is a release failure.
+monotonic duration, sustained frame rate, A/V sync at the beginning and end, and
+a keyframe-clean start. The sampler automates the structural portion, but
+listening to selected audio sources and visually checking end-to-end A/V sync
+remain manual hardware checks. A hardware encoder absence must be reported as
+an error; a CPU video fallback is a release failure.
 
 ## Release evidence
 
@@ -153,5 +156,7 @@ by each tested machine, and at least one passing four-hour Wreath-only soak. A
 GPU tag is accepted only when its vendor matches the adapter actually opened by
 D3D11, so an installed but unused discrete GPU cannot satisfy a hybrid-system
 row. Every matrix row must also contain valid process I/O evidence and enforce
-the fixed relative and idle write limits. The verifier writes
-`perf/windows/matrix-summary.json`; raw evidence remains outside Git.
+the fixed relative and idle write limits. It rejects rows unless every scheduled
+save produced a structurally validated clip under the 90% frame-rate gate. The
+verifier writes `perf/windows/matrix-summary.json`; raw evidence remains outside
+Git.
