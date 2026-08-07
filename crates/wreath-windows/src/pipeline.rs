@@ -205,7 +205,8 @@ struct PipelineAudio {
     auxiliary_microphone: Option<crate::audio::MicrophoneCapture>,
     mixer: Option<crate::audio_mixer::PcmMixer>,
     master_gain_percent: u16,
-    pending_master: Option<crate::audio::Pcm16Chunk>,
+    pending_master: std::collections::VecDeque<crate::audio::Pcm16Chunk>,
+    microphone_watermark: Option<std::time::Duration>,
     encoder: crate::audio_encoder::AacEncoder,
 }
 
@@ -258,7 +259,8 @@ impl PipelineAudio {
             } else {
                 config.microphone_gain_percent
             },
-            pending_master: None,
+            pending_master: std::collections::VecDeque::with_capacity(12),
+            microphone_watermark: None,
             encoder,
         }))
     }
@@ -286,30 +288,64 @@ impl PipelineAudio {
                 self.master_gain_percent,
             )?;
         }
-        let ready = if let Some(mixer) = &mut self.mixer {
-            self.pending_master
-                .replace(normalized)
-                .map(|pending| mixer.mix(pending))
-                .transpose()?
-        } else {
-            Some(normalized)
-        };
-        ready.map_or_else(|| Ok(Vec::new()), |chunk| self.encoder.encode(chunk))
+        if self.mixer.is_none() {
+            return self.encoder.encode(normalized);
+        }
+        self.pending_master.push_back(normalized);
+        self.encode_synchronized_master()
     }
 
     fn push_microphone(
         &mut self,
         chunk: crate::audio::PcmChunk,
-    ) -> Result<(), crate::audio::AudioError> {
+    ) -> Result<Vec<wreath_core::replay_buffer::EncodedPacket>, crate::audio::AudioError> {
         let capture = self.auxiliary_microphone.as_ref().ok_or_else(|| {
             crate::audio::AudioError("microphone packet arrived without a mixer".into())
         })?;
         let format = capture.format();
         let normalized = crate::audio::normalize_to_pcm16(format, chunk)?;
+        let microphone_end = pcm_chunk_end(&normalized, format.sample_rate);
         self.mixer
             .as_mut()
             .ok_or_else(|| crate::audio::AudioError("microphone mixer is unavailable".into()))?
-            .push_auxiliary(normalized, format.sample_rate, format.channels)
+            .push_auxiliary(normalized, format.sample_rate, format.channels)?;
+        self.microphone_watermark = Some(
+            self.microphone_watermark
+                .map_or(microphone_end, |current| current.max(microphone_end)),
+        );
+        self.encode_synchronized_master()
+    }
+
+    fn encode_synchronized_master(
+        &mut self,
+    ) -> Result<Vec<wreath_core::replay_buffer::EncodedPacket>, crate::audio::AudioError> {
+        const MAX_PENDING_MASTER_CHUNKS: usize = 12;
+        let mut packets = Vec::new();
+        loop {
+            let Some(master) = self.pending_master.front() else {
+                break;
+            };
+            let master_end = pcm_chunk_end(master, self.master.format().sample_rate);
+            if !synchronized_master_ready(
+                master_end,
+                self.microphone_watermark,
+                self.pending_master.len(),
+                MAX_PENDING_MASTER_CHUNKS,
+            ) {
+                break;
+            }
+            let master = self
+                .pending_master
+                .pop_front()
+                .expect("front master packet was checked");
+            let mixed = self
+                .mixer
+                .as_mut()
+                .ok_or_else(|| crate::audio::AudioError("microphone mixer is unavailable".into()))?
+                .mix(master)?;
+            packets.extend(self.encoder.encode(mixed)?);
+        }
+        Ok(packets)
     }
 
     fn output_media_type(
@@ -324,7 +360,8 @@ impl PipelineAudio {
     }
 
     fn discard_queued(&mut self) {
-        self.pending_master = None;
+        self.pending_master.clear();
+        self.microphone_watermark = None;
         while self.master.receiver().try_recv().is_ok() {}
         if let Some(microphone) = &self.auxiliary_microphone {
             while microphone.receiver().try_recv().is_ok() {}
@@ -335,6 +372,26 @@ impl PipelineAudio {
         self.discard_queued();
         self.encoder.flush()
     }
+}
+
+#[cfg(target_os = "windows")]
+fn pcm_chunk_end(chunk: &crate::audio::Pcm16Chunk, sample_rate: u32) -> std::time::Duration {
+    chunk
+        .timestamp
+        .saturating_add(std::time::Duration::from_nanos(
+            u64::from(chunk.frames).saturating_mul(1_000_000_000) / u64::from(sample_rate.max(1)),
+        ))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn synchronized_master_ready(
+    master_end: std::time::Duration,
+    microphone_watermark: Option<std::time::Duration>,
+    pending_chunks: usize,
+    maximum_pending_chunks: usize,
+) -> bool {
+    microphone_watermark.is_some_and(|watermark| watermark >= master_end)
+        || pending_chunks > maximum_pending_chunks
 }
 
 #[cfg(target_os = "windows")]
@@ -537,11 +594,15 @@ fn run_pipeline(
                         .expect("microphone selector is only registered with a microphone"),
                 )
                 .map_err(|error| VideoError::Initialization(error.to_string()))?;
-            audio
+            for packet in audio
                 .as_mut()
                 .expect("microphone selector requires audio")
                 .push_microphone(chunk)
-                .map_err(|error| VideoError::Initialization(error.to_string()))?;
+                .map_err(|error| VideoError::Initialization(error.to_string()))?
+            {
+                buffer.push(packet);
+            }
+            update_buffer_status(status, &buffer);
         } else if Some(operation.index()) == audio_index {
             let chunk = operation
                 .recv(
@@ -854,5 +915,25 @@ mod tests {
 
         assert!(bitrate >= 2_500);
         assert!(bytes < 100 * 1_048_576);
+    }
+
+    #[test]
+    fn desktop_audio_waits_for_the_microphone_without_stalling_forever() {
+        use std::time::Duration;
+
+        let master_end = Duration::from_millis(120);
+        assert!(!synchronized_master_ready(
+            master_end,
+            Some(Duration::from_millis(110)),
+            4,
+            12,
+        ));
+        assert!(synchronized_master_ready(
+            master_end,
+            Some(Duration::from_millis(120)),
+            4,
+            12,
+        ));
+        assert!(synchronized_master_ready(master_end, None, 13, 12));
     }
 }
