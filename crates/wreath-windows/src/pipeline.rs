@@ -321,10 +321,7 @@ impl PipelineAudio {
     ) -> Result<Vec<wreath_core::replay_buffer::EncodedPacket>, crate::audio::AudioError> {
         const MAX_PENDING_MASTER_CHUNKS: usize = 12;
         let mut packets = Vec::new();
-        loop {
-            let Some(master) = self.pending_master.front() else {
-                break;
-            };
+        while let Some(master) = self.pending_master.front() {
             let master_end = pcm_chunk_end(master, self.master.format().sample_rate);
             if !synchronized_master_ready(
                 master_end,
