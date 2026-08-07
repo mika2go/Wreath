@@ -81,7 +81,9 @@ foreach ($File in $Files) {
         "RunId", "Product", "Passed", "MatrixTags", "System", "AvailableHardwareCodecs",
         "ActiveHardwareCodec", "ActiveGpuAdapter", "RelativeGatesEvaluated", "DurationMinutes", "SaveAttempts",
         "ConfiguredReplaySeconds", "ShortReplaySaves", "SlowReplaySaves",
-        "PeakSaveDurationMs", "PeakEncodedReplayMb", "Gates"
+        "PeakSaveDurationMs", "PeakEncodedReplayMb", "IoCountersAvailable",
+        "AverageWreathWriteBytesPerSecond", "AverageMedalWriteBytesPerSecond",
+        "WreathToMedalWriteIoRatio", "AverageIdleWreathWriteMbPerSecond", "Gates"
     )
     $MissingProperties = @($RequiredProperties | Where-Object {
         $null -eq $Summary.PSObject.Properties[$_]
@@ -120,7 +122,7 @@ foreach ($File in $Files) {
     }
     $RequiredGateProperties = @(
         "MaxEncodedReplayMb", "MaxSaveLatencySeconds", "MinClipDurationSeconds",
-        "ReplayDurationToleranceSeconds"
+        "ReplayDurationToleranceSeconds", "MaxRelativeWriteIo", "MaxIdleWriteMbPerSecond"
     )
     $MissingGateProperties = @($RequiredGateProperties | Where-Object {
         $null -eq $Summary.Gates.PSObject.Properties[$_]
@@ -175,6 +177,33 @@ foreach ($File in $Files) {
             [double]$Summary.Gates.ReplayDurationToleranceSeconds -lt
             [double]$Summary.ConfiguredReplaySeconds) {
         $Failures.Add("$($File.Name): replay duration gate is weaker than the release policy")
+    }
+    if (-not $Summary.IoCountersAvailable) {
+        $Failures.Add("$($File.Name): process I/O counter evidence is incomplete")
+    }
+    if ([double]$Summary.AverageWreathWriteBytesPerSecond -lt 0 -or
+        [double]$Summary.AverageMedalWriteBytesPerSecond -lt 0) {
+        $Failures.Add("$($File.Name): process write-I/O evidence cannot be negative")
+    }
+    if ([double]$Summary.AverageIdleWreathWriteMbPerSecond -lt 0 -or
+        [double]$Summary.AverageIdleWreathWriteMbPerSecond -gt 1.0 -or
+        [double]$Summary.Gates.MaxIdleWriteMbPerSecond -gt 1.0) {
+        $Failures.Add("$($File.Name): idle write-I/O evidence violates the release limit")
+    }
+    if ($Summary.RelativeGatesEvaluated -and (
+        $null -eq $Summary.WreathToMedalWriteIoRatio -or
+        [double]$Summary.AverageMedalWriteBytesPerSecond -le 0 -or
+        [double]$Summary.WreathToMedalWriteIoRatio -lt 0 -or
+        [double]$Summary.WreathToMedalWriteIoRatio -gt 0.25 -or
+        [double]$Summary.Gates.MaxRelativeWriteIo -gt 0.25
+    )) {
+        $Failures.Add("$($File.Name): Medal write-I/O comparison violates the release limit")
+    } elseif ($Summary.RelativeGatesEvaluated) {
+        $ExpectedWriteIoRatio = [double]$Summary.AverageWreathWriteBytesPerSecond /
+            [double]$Summary.AverageMedalWriteBytesPerSecond
+        if ([Math]::Abs($ExpectedWriteIoRatio - [double]$Summary.WreathToMedalWriteIoRatio) -gt 0.001) {
+            $Failures.Add("$($File.Name): reported write-I/O ratio does not match its samples")
+        }
     }
     if ($GpuTags.Count -eq 1 -and -not (Test-GpuInventory $Summary $GpuTags[0])) {
         $Failures.Add("$($File.Name): GPU tag does not match the hardware inventory")

@@ -8,6 +8,8 @@ settings. The default automated comparison gates define "materially fewer" as:
 - peak combined Wreath working set at most 60% of the Medal process group;
 - average combined Wreath CPU at most 70% of the Medal process group;
 - average combined Wreath GPU-engine load at most 85% of Medal;
+- average Wreath process write I/O at most 25% of Medal;
+- idle Wreath process write I/O at most 1 MiB/s outside replay saves;
 - no more than 32 MiB working-set growth across a run;
 - native tray peak working set at most 64 MiB;
 - encoded replay payload never above the fixed 512 MiB process limit;
@@ -72,6 +74,11 @@ only when a validated isolated baseline is supplied. A comparison also requires
 periodic replay saves; setting `SaveEverySeconds` to zero is rejected. Saves run
 under observation instead of blocking the sampler, so mux-time CPU, I/O, and the
 temporary shared replay snapshot are included in the reported peaks.
+Unavailable process I/O counters fail the run instead of being treated as zero.
+The full-run write-transfer average must remain at most 25% of Medal, while
+samples outside an active replay save must average at most 1 MiB/s. These are
+process transfer counters and intentionally include file, pipe, and device I/O;
+they are a conservative load gate rather than a physical-disk-only estimate.
 
 Install `ffprobe` from FFmpeg before the Wreath phase. After the timed measurement
 has ended, every saved clip is checked for a video stream, the expected audio
@@ -96,7 +103,7 @@ For a Wreath-only four-hour soak:
 ```
 
 The relative Medal gates are skipped when Medal is absent; memory growth, tray
-size, and replay saves remain hard gates.
+size, idle write I/O, and replay saves remain hard gates.
 
 ## Required hardware matrix
 
@@ -145,5 +152,6 @@ comparisons per GPU vendor, H.264 on every vendor, every additional codec expose
 by each tested machine, and at least one passing four-hour Wreath-only soak. A
 GPU tag is accepted only when its vendor matches the adapter actually opened by
 D3D11, so an installed but unused discrete GPU cannot satisfy a hybrid-system
-row. The verifier writes `perf/windows/matrix-summary.json`; raw evidence remains
-outside Git.
+row. Every matrix row must also contain valid process I/O evidence and enforce
+the fixed relative and idle write limits. The verifier writes
+`perf/windows/matrix-summary.json`; raw evidence remains outside Git.
