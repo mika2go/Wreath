@@ -18,12 +18,20 @@ pub fn run() -> Result<(), String> {
     let mut pipeline = ReplayPipeline::spawn(config.clone()).map_err(|error| error.to_string())?;
     let server = NamedPipeServer::new(paths.pipe_name()).map_err(|error| error.to_string())?;
     let pipe_name = paths.pipe_name().to_owned();
-    let _hotkey = HotkeyListener::spawn(1, &config.hotkey, move || {
-        if let Err(error) = wreath_windows::control::send_request(&pipe_name, &Request::Save) {
-            eprintln!("wreathd: hotkey save failed: {error}");
-        }
-    })
-    .map_err(|error| error.to_string())?;
+    let _hotkey =
+        HotkeyListener::spawn(
+            1,
+            &config.hotkey,
+            move || match wreath_windows::control::send_request(&pipe_name, &Request::Save) {
+                Ok(Response::Saved { .. }) => wreath_windows::feedback::broadcast_clip_saved(),
+                Ok(Response::Error { message }) => {
+                    eprintln!("wreathd: hotkey save failed: {message}")
+                }
+                Err(error) => eprintln!("wreathd: hotkey save failed: {error}"),
+                Ok(_) => {}
+            },
+        )
+        .map_err(|error| error.to_string())?;
     let mut shutdown = false;
     while !shutdown {
         let mut connection = server.accept().map_err(|error| error.to_string())?;

@@ -137,6 +137,11 @@ unsafe extern "system" fn window_proc(
     }
 
     match message {
+        wreath_windows::feedback::CLIP_SAVED_MESSAGE => {
+            wreath_windows::feedback::play_clip_saved_sound();
+            notify(window, "Clip saved", "Replay added to your Library", false);
+            LRESULT(0)
+        }
         WM_COMMAND => {
             handle_command(window, wparam.0 & 0xffff);
             LRESULT(0)
@@ -176,7 +181,9 @@ fn handle_command(window: HWND, command: usize) {
         }
         COMMAND_SAVE => match send(Request::Save) {
             Ok(Response::Saved { path }) => {
-                notify(window, "Clip saved", &path.display().to_string(), false)
+                wreath_windows::feedback::play_clip_saved_sound();
+                notify(window, "Clip saved", &path.display().to_string(), false);
+                wreath_windows::feedback::notify_app_clip_saved();
             }
             Ok(Response::Error { message }) | Err(message) => {
                 notify(window, "Wreath error", &message, true)

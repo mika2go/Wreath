@@ -190,6 +190,14 @@ unsafe extern "system" fn window_proc(
         return LRESULT(1);
     }
     match message {
+        wreath_windows::feedback::CLIP_SAVED_MESSAGE => {
+            if let Some(state) = state_mut(window) {
+                let result = state.model.refresh();
+                set_result(&mut state.model, result, "Clip added to Library");
+                redraw(window);
+            }
+            LRESULT(0)
+        }
         WM_SIZE => {
             if let Some(state) = state_mut(window) {
                 state.width = low_word(lparam.0) as u32;
@@ -371,7 +379,13 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         }
         Action::SaveReplay => match send(Request::Save) {
             Ok(Response::Saved { path }) => {
-                state.model.notice = Some(format!("Saved {}", path.display()))
+                let result = state.model.refresh();
+                set_result(
+                    &mut state.model,
+                    result,
+                    &format!("Saved {}", path.display()),
+                );
+                wreath_windows::feedback::broadcast_clip_saved();
             }
             Ok(Response::Error { message }) | Err(message) => state.model.notice = Some(message),
             Ok(_) => {}

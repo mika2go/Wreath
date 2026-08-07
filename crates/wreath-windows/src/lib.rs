@@ -6,6 +6,7 @@ pub mod control;
 pub mod conversion;
 pub mod display;
 pub mod encoder;
+pub mod feedback;
 pub mod hotkey;
 pub mod mux;
 pub mod pipeline;
