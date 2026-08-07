@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufReader};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use wreath_core::config::Config;
 use wreath_core::display;
 use wreath_core::engine::{GpuScreenRecorder, GpuScreenRecorderBackend};
-use wreath_core::ipc::{DaemonState, Request, Response};
+use wreath_core::ipc::{self, DaemonState, Request, Response};
 use wreath_core::paths::AppPaths;
 use wreath_core::replay::{ReplayBackend, ReplaySpec};
 use wreath_core::shortcuts;
@@ -127,22 +127,14 @@ impl Daemon {
         stream
             .set_write_timeout(Some(Duration::from_secs(2)))
             .map_err(|error| format!("socket timeout setup failed: {error}"))?;
-        let mut line = String::new();
-        BufReader::new(
+        let mut reader = BufReader::new(
             stream
                 .try_clone()
                 .map_err(|error| format!("socket clone failed: {error}"))?,
-        )
-        .read_line(&mut line)
-        .map_err(|error| format!("socket read failed: {error}"))?;
-        let request: Request =
-            serde_json::from_str(&line).map_err(|error| format!("invalid request: {error}"))?;
+        );
+        let request = ipc::read_request(&mut reader).map_err(|error| error.to_string())?;
         let response = self.respond(request);
-        serde_json::to_writer(&mut stream, &response)
-            .map_err(|error| format!("socket write failed: {error}"))?;
-        stream
-            .write_all(b"\n")
-            .map_err(|error| format!("socket write failed: {error}"))
+        ipc::write_response(&mut stream, &response).map_err(|error| error.to_string())
     }
 
     fn respond(&mut self, request: Request) -> Response {

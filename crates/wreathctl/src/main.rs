@@ -1,5 +1,5 @@
 use std::env;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::Stdio;
@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use wreath_core::display;
 use wreath_core::engine;
-use wreath_core::ipc::{Request, Response};
+use wreath_core::ipc::{self, Request, Response};
 use wreath_core::paths::AppPaths;
 use wreath_core::replay::ReplaySpec;
 use wreath_core::shortcuts::{self, ShortcutInstall};
@@ -359,13 +359,8 @@ fn send(paths: &AppPaths, request: &Request) -> Result<Response, String> {
             ));
         }
     };
-    serde_json::to_writer(&mut stream, request).map_err(|error| error.to_string())?;
-    stream.write_all(b"\n").map_err(|error| error.to_string())?;
-    let mut line = String::new();
-    BufReader::new(stream)
-        .read_line(&mut line)
-        .map_err(|error| error.to_string())?;
-    serde_json::from_str(&line).map_err(|error| format!("invalid daemon response: {error}"))
+    ipc::write_request(&mut stream, request).map_err(|error| error.to_string())?;
+    ipc::read_response(&mut BufReader::new(stream)).map_err(|error| error.to_string())
 }
 
 fn start_daemon() -> Result<(), String> {

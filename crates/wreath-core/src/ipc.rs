@@ -1,6 +1,40 @@
+use std::fmt;
+use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug)]
+pub enum IpcError {
+    Io(io::Error),
+    Json(serde_json::Error),
+    Closed,
+}
+
+impl fmt::Display for IpcError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "control channel I/O failed: {error}"),
+            Self::Json(error) => write!(formatter, "invalid control message: {error}"),
+            Self::Closed => formatter.write_str("control channel closed before a message arrived"),
+        }
+    }
+}
+
+impl std::error::Error for IpcError {}
+
+impl From<io::Error> for IpcError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl From<serde_json::Error> for IpcError {
+    fn from(value: serde_json::Error) -> Self {
+        Self::Json(value)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "command", rename_all = "kebab-case")]
@@ -38,4 +72,70 @@ pub enum DaemonState {
     Recording,
     Paused,
     Error,
+}
+
+pub fn read_request(reader: &mut impl BufRead) -> Result<Request, IpcError> {
+    read_message(reader)
+}
+
+pub fn write_request(writer: &mut impl Write, request: &Request) -> Result<(), IpcError> {
+    write_message(writer, request)
+}
+
+pub fn read_response(reader: &mut impl BufRead) -> Result<Response, IpcError> {
+    read_message(reader)
+}
+
+pub fn write_response(writer: &mut impl Write, response: &Response) -> Result<(), IpcError> {
+    write_message(writer, response)
+}
+
+fn read_message<T: DeserializeOwned>(reader: &mut impl BufRead) -> Result<T, IpcError> {
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Err(IpcError::Closed);
+    }
+    serde_json::from_str(&line).map_err(IpcError::Json)
+}
+
+fn write_message<T: Serialize>(writer: &mut impl Write, message: &T) -> Result<(), IpcError> {
+    serde_json::to_writer(&mut *writer, message)?;
+    writer.write_all(b"\n").map_err(IpcError::Io)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{BufReader, Cursor};
+
+    use super::*;
+
+    #[test]
+    fn request_round_trips_over_line_framing() {
+        let mut bytes = Vec::new();
+        write_request(&mut bytes, &Request::Save).unwrap();
+
+        let mut reader = BufReader::new(Cursor::new(bytes));
+        assert_eq!(read_request(&mut reader).unwrap(), Request::Save);
+    }
+
+    #[test]
+    fn response_round_trips_over_line_framing() {
+        let response = Response::Status {
+            state: DaemonState::Recording,
+            monitor: Some("DISPLAY-1".into()),
+            buffered_seconds: 30,
+            error: None,
+        };
+        let mut bytes = Vec::new();
+        write_response(&mut bytes, &response).unwrap();
+
+        let mut reader = BufReader::new(Cursor::new(bytes));
+        assert_eq!(read_response(&mut reader).unwrap(), response);
+    }
+
+    #[test]
+    fn closed_channel_has_a_distinct_error() {
+        let mut reader = BufReader::new(Cursor::new(Vec::<u8>::new()));
+        assert!(matches!(read_request(&mut reader), Err(IpcError::Closed)));
+    }
 }

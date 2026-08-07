@@ -129,7 +129,7 @@ fn replay_bind_code(
         .map(|previous| {
             format!(
                 "hl.unbind(\"{}\"); ",
-                lua_escape(&previous.hyprland_expression())
+                lua_escape(&hotkey_expression(previous))
             )
         })
         .unwrap_or_default();
@@ -137,10 +137,20 @@ fn replay_bind_code(
         "{remove_previous}hl.unbind(\"{}\"); \
          hl.bind(\"{}\", hl.dsp.exec_cmd(\"{}\"), \
          {{ description = \"Save Wreath replay\" }})",
-        lua_escape(&hotkey.hyprland_expression()),
-        lua_escape(&hotkey.hyprland_expression()),
+        lua_escape(&hotkey_expression(hotkey)),
+        lua_escape(&hotkey_expression(hotkey)),
         lua_escape(command)
     )
+}
+
+fn hotkey_expression(hotkey: &HotkeyConfig) -> String {
+    hotkey
+        .modifiers
+        .iter()
+        .chain(std::iter::once(&hotkey.key))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" + ")
 }
 
 fn lua_escape(value: &str) -> String {
@@ -179,5 +189,11 @@ mod tests {
             modifier_mask(&["SUPER".into(), "CTRL".into(), "ALT".into()]),
             76
         );
+    }
+
+    #[test]
+    fn formats_hotkeys_for_hyprland() {
+        let hotkey = HotkeyConfig::parse("SUPER+SHIFT+R").unwrap();
+        assert_eq!(hotkey_expression(&hotkey), "SUPER + SHIFT + R");
     }
 }

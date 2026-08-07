@@ -138,15 +138,6 @@ impl HotkeyConfig {
         Ok(hotkey)
     }
 
-    pub fn hyprland_expression(&self) -> String {
-        self.modifiers
-            .iter()
-            .chain(std::iter::once(&self.key))
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(" + ")
-    }
-
     fn validate(&self) -> Result<(), ConfigError> {
         const MODIFIERS: &[&str] = &["SUPER", "SHIFT", "CTRL", "ALT"];
         if self
@@ -304,10 +295,9 @@ mod tests {
     }
 
     #[test]
-    fn hotkey_parses_for_hyprland() {
+    fn hotkey_parses_and_normalizes() {
         let hotkey = HotkeyConfig::parse("super + shift + r").unwrap();
         assert_eq!(hotkey.to_string(), "SUPER+SHIFT+R");
-        assert_eq!(hotkey.hyprland_expression(), "SUPER + SHIFT + R");
     }
 
     #[test]
