@@ -857,6 +857,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wreath-win-ui"
+version = "0.1.0"
+dependencies = [
+ "windows",
+ "wreath-core",
+ "wreath-windows",
+]
+
+[[package]]
 name = "wreath-windows"
 version = "0.1.0"
 dependencies = [

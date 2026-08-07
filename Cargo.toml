@@ -2,6 +2,7 @@
 members = [
     "crates/wreath-core",
     "crates/wreath-ui",
+    "crates/wreath-win-ui",
     "crates/wreath-windows",
     "crates/wreathctl",
     "crates/wreathd",
