@@ -1,6 +1,5 @@
 Unicode true
 RequestExecutionLevel user
-SetShellVarContext current
 SetCompressor /SOLID lzma
 
 !ifndef VERSION
@@ -40,6 +39,7 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Wreath contributors"
 
 Section "Wreath" MainSection
   SectionIn RO
+  SetShellVarContext current
   SetOutPath "$INSTDIR"
 
   File /oname=wreath-win-ui.exe "${BINDIR}\wreath-win-ui.exe"
@@ -63,6 +63,7 @@ Section "Wreath" MainSection
 SectionEnd
 
 Section "Uninstall"
+  SetShellVarContext current
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Wreath"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Wreath"
   DeleteRegKey /ifempty HKCU "Software\Wreath"
