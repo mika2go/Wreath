@@ -25,6 +25,13 @@ pub struct PcmChunk {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pcm16Chunk {
+    pub timestamp: std::time::Duration,
+    pub frames: u32,
+    pub data: Box<[u8]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioError(pub String);
 
 impl fmt::Display for AudioError {
@@ -34,6 +41,106 @@ impl fmt::Display for AudioError {
 }
 
 impl std::error::Error for AudioError {}
+
+/// Converts one bounded WASAPI packet to packed, interleaved signed 16-bit PCM.
+/// The AAC encoder only accepts this format, so unsupported layouts fail early
+/// instead of being interpreted with the wrong sample width.
+pub fn normalize_to_pcm16(format: AudioFormat, chunk: PcmChunk) -> Result<Pcm16Chunk, AudioError> {
+    let source_sample_bytes = match (format.floating_point, format.bits_per_sample) {
+        (true, 32) => 4,
+        (false, 8) => 1,
+        (false, 16) => 2,
+        (false, 24) => 3,
+        (false, 32) => 4,
+        _ => {
+            return Err(AudioError(format!(
+                "unsupported WASAPI sample format: {}-bit {}",
+                format.bits_per_sample,
+                if format.floating_point {
+                    "float"
+                } else {
+                    "integer"
+                }
+            )));
+        }
+    };
+    if format.channels == 0 || format.sample_rate == 0 {
+        return Err(AudioError("WASAPI returned an empty audio format".into()));
+    }
+    let packed_frame_bytes = usize::from(format.channels)
+        .checked_mul(source_sample_bytes)
+        .ok_or_else(|| AudioError("audio frame layout overflow".into()))?;
+    if usize::from(format.block_align) < packed_frame_bytes {
+        return Err(AudioError(
+            "WASAPI block alignment is smaller than its channel layout".into(),
+        ));
+    }
+    let expected_source_bytes = format
+        .bytes_for_frames(chunk.frames)
+        .ok_or_else(|| AudioError("audio packet size overflow".into()))?;
+    if chunk.data.len() != expected_source_bytes {
+        return Err(AudioError(format!(
+            "WASAPI packet has {} bytes; expected {expected_source_bytes}",
+            chunk.data.len()
+        )));
+    }
+
+    let sample_count = usize::try_from(chunk.frames)
+        .ok()
+        .and_then(|frames| frames.checked_mul(usize::from(format.channels)))
+        .ok_or_else(|| AudioError("audio sample count overflow".into()))?;
+    let output_bytes = sample_count
+        .checked_mul(2)
+        .ok_or_else(|| AudioError("normalized audio packet size overflow".into()))?;
+    let mut output = Vec::with_capacity(output_bytes);
+    for frame in chunk.data.chunks_exact(usize::from(format.block_align)) {
+        for channel in 0..usize::from(format.channels) {
+            let offset = channel * source_sample_bytes;
+            let sample = &frame[offset..offset + source_sample_bytes];
+            let normalized = if format.floating_point {
+                float_to_i16(f32::from_le_bytes(
+                    sample.try_into().expect("four-byte float"),
+                ))
+            } else {
+                integer_to_i16(sample)
+            };
+            output.extend_from_slice(&normalized.to_le_bytes());
+        }
+    }
+    debug_assert_eq!(output.len(), output_bytes);
+    Ok(Pcm16Chunk {
+        timestamp: chunk.timestamp,
+        frames: chunk.frames,
+        data: output.into_boxed_slice(),
+    })
+}
+
+fn float_to_i16(sample: f32) -> i16 {
+    if !sample.is_finite() {
+        0
+    } else if sample <= -1.0 {
+        i16::MIN
+    } else if sample >= 1.0 {
+        i16::MAX
+    } else {
+        (sample * f32::from(i16::MAX)).round() as i16
+    }
+}
+
+fn integer_to_i16(sample: &[u8]) -> i16 {
+    match sample {
+        [value] => (i16::from(*value) - 128) << 8,
+        [low, high] => i16::from_le_bytes([*low, *high]),
+        [low, middle, high] => {
+            let sign = if high & 0x80 == 0 { 0 } else { 0xff };
+            (i32::from_le_bytes([*low, *middle, *high, sign]) >> 8) as i16
+        }
+        [byte0, byte1, byte2, byte3] => {
+            (i32::from_le_bytes([*byte0, *byte1, *byte2, *byte3]) >> 16) as i16
+        }
+        _ => unreachable!("sample widths are validated before conversion"),
+    }
+}
 
 /// Event-driven WASAPI loopback capture. Its queue is intentionally bounded;
 /// lagging consumers lose old capture callbacks instead of growing memory.
@@ -289,5 +396,113 @@ mod tests {
         };
 
         assert_eq!(format.bytes_for_frames(480), Some(3_840));
+    }
+
+    #[test]
+    fn normalizes_float_stereo_to_packed_pcm16() {
+        let format = AudioFormat {
+            sample_rate: 48_000,
+            channels: 2,
+            bits_per_sample: 32,
+            block_align: 8,
+            floating_point: true,
+        };
+        let data = [-1.0_f32, -0.5, 0.5, 1.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+
+        let normalized = normalize_to_pcm16(
+            format,
+            PcmChunk {
+                timestamp: std::time::Duration::from_secs(2),
+                frames: 2,
+                data,
+            },
+        )
+        .unwrap();
+
+        let samples = normalized
+            .data
+            .chunks_exact(2)
+            .map(|sample| i16::from_le_bytes(sample.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(samples, [i16::MIN, -16_384, 16_384, i16::MAX]);
+        assert_eq!(normalized.timestamp, std::time::Duration::from_secs(2));
+        assert_eq!(normalized.frames, 2);
+    }
+
+    #[test]
+    fn normalizes_integer_widths_without_unbounded_buffers() {
+        let formats_and_data = [
+            (8, vec![0x00, 0x80, 0xff], vec![i16::MIN, 0, 32_512]),
+            (
+                24,
+                vec![0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0xff, 0xff, 0x7f],
+                vec![i16::MIN, 0, i16::MAX],
+            ),
+            (
+                32,
+                vec![0x00, 0x00, 0x00, 0x80, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0x7f],
+                vec![i16::MIN, 0, i16::MAX],
+            ),
+        ];
+
+        for (bits, data, expected) in formats_and_data {
+            let format = AudioFormat {
+                sample_rate: 48_000,
+                channels: 1,
+                bits_per_sample: bits,
+                block_align: bits / 8,
+                floating_point: false,
+            };
+            let normalized = normalize_to_pcm16(
+                format,
+                PcmChunk {
+                    timestamp: std::time::Duration::ZERO,
+                    frames: 3,
+                    data: data.into_boxed_slice(),
+                },
+            )
+            .unwrap();
+            let samples = normalized
+                .data
+                .chunks_exact(2)
+                .map(|sample| i16::from_le_bytes(sample.try_into().unwrap()))
+                .collect::<Vec<_>>();
+            assert_eq!(samples, expected);
+            assert_eq!(normalized.data.len(), 6);
+        }
+    }
+
+    #[test]
+    fn rejects_truncated_and_unknown_audio_packets() {
+        let base = AudioFormat {
+            sample_rate: 48_000,
+            channels: 2,
+            bits_per_sample: 16,
+            block_align: 4,
+            floating_point: false,
+        };
+        let chunk = PcmChunk {
+            timestamp: std::time::Duration::ZERO,
+            frames: 2,
+            data: vec![0; 7].into_boxed_slice(),
+        };
+        assert!(normalize_to_pcm16(base, chunk).is_err());
+
+        let unsupported = AudioFormat {
+            bits_per_sample: 64,
+            floating_point: true,
+            block_align: 16,
+            ..base
+        };
+        let chunk = PcmChunk {
+            timestamp: std::time::Duration::ZERO,
+            frames: 1,
+            data: vec![0; 16].into_boxed_slice(),
+        };
+        assert!(normalize_to_pcm16(unsupported, chunk).is_err());
     }
 }
