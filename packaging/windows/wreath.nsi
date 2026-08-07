@@ -27,8 +27,8 @@ VIAddVersionKey /LANG=1033 "FileDescription" "Wreath low-overhead replay recorde
 VIAddVersionKey /LANG=1033 "LegalCopyright" "Wreath contributors"
 
 !define MUI_ABORTWARNING
-!define MUI_FINISHPAGE_RUN "$INSTDIR\wreath-tray.exe"
-!define MUI_FINISHPAGE_RUN_TEXT "Start the Wreath background recorder"
+!define MUI_FINISHPAGE_RUN "$INSTDIR\wreath-win-ui.exe"
+!define MUI_FINISHPAGE_RUN_TEXT "Open Wreath"
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
@@ -42,6 +42,18 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Wreath contributors"
 Section "Wreath" MainSection
   SectionIn RO
   SetShellVarContext current
+
+  ; v0.1.x used wreath-win-ui.exe as the tray. Stop both old and new process
+  ; layouts before replacing files so upgrades cannot retain the legacy tray
+  ; mutex or leave the old executable mapped in memory.
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /IM "wreath-win-ui.exe"'
+  Pop $1
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /IM "wreath-tray.exe"'
+  Pop $1
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /IM "wreathd.exe"'
+  Pop $1
+  Sleep 250
+
   SetOutPath "$INSTDIR"
 
   File /oname=wreath-win-ui.exe "${BINDIR}\wreath-win-ui.exe"

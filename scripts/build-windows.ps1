@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.2.0",
+    [string]$Version = "0.2.1",
     [string]$Target = "x86_64-pc-windows-msvc"
 )
 
@@ -122,6 +122,110 @@ try {
     if ($InstallerFile.Length -eq 0) {
         throw "NSIS produced an empty installer"
     }
+
+    $SmokeInstallDirectory = Join-Path $env:TEMP "WreathInstallerSmoke-$PID"
+    $SmokeUninstaller = Join-Path $SmokeInstallDirectory "Uninstall.exe"
+    $SmokeUi = $null
+    $SmokePassed = $false
+    try {
+        $InstallProcess = Start-Process `
+            -FilePath $Installer `
+            -ArgumentList "/S /D=`"$SmokeInstallDirectory`"" `
+            -Wait `
+            -PassThru
+        if ($InstallProcess.ExitCode -ne 0) {
+            throw "NSIS clean-install smoke test exited with $($InstallProcess.ExitCode)"
+        }
+        foreach ($Executable in $Executables.Keys) {
+            $InstalledPath = Join-Path $SmokeInstallDirectory $Executable
+            if (-not (Test-Path -LiteralPath $InstalledPath -PathType Leaf)) {
+                throw "NSIS smoke install omitted $Executable"
+            }
+        }
+        if (-not (Test-Path -LiteralPath $SmokeUninstaller -PathType Leaf)) {
+            throw "NSIS smoke install omitted Uninstall.exe"
+        }
+
+        $SmokeUi = Start-Process `
+            -FilePath (Join-Path $SmokeInstallDirectory "wreath-win-ui.exe") `
+            -WorkingDirectory $SmokeInstallDirectory `
+            -PassThru
+        Start-Sleep -Seconds 5
+        $SmokeUi.Refresh()
+        $SmokeTrays = @(Get-Process -Name "wreath-tray" -ErrorAction SilentlyContinue)
+        if ($SmokeUi.HasExited) {
+            throw "the installed full application exited during the clean-install smoke test"
+        }
+        if ($SmokeTrays.Count -ne 1) {
+            throw "the installed full application started $($SmokeTrays.Count) tray processes"
+        }
+        $SmokeTrayPath = [System.IO.Path]::GetFullPath($SmokeTrays[0].Path)
+        $ExpectedTrayPath = [System.IO.Path]::GetFullPath(
+            (Join-Path $SmokeInstallDirectory "wreath-tray.exe")
+        )
+        if ($SmokeTrayPath -ne $ExpectedTrayPath) {
+            throw "clean-install smoke test started an unexpected tray: $SmokeTrayPath"
+        }
+
+        $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+        $LegacyAutostart = '"C:\Legacy Wreath\wreath-win-ui.exe"'
+        Set-ItemProperty -Path $RunKey -Name "Wreath" -Value $LegacyAutostart
+
+        $UpgradeProcess = Start-Process `
+            -FilePath $Installer `
+            -ArgumentList "/S /D=`"$SmokeInstallDirectory`"" `
+            -Wait `
+            -PassThru
+        if ($UpgradeProcess.ExitCode -ne 0) {
+            throw "NSIS running-upgrade smoke test exited with $($UpgradeProcess.ExitCode)"
+        }
+        Start-Sleep -Seconds 1
+        $SmokeUi.Refresh()
+        if (-not $SmokeUi.HasExited) {
+            throw "NSIS upgrade left the previous full application running"
+        }
+        if (@(Get-Process -Name "wreath-tray" -ErrorAction SilentlyContinue).Count -ne 0) {
+            throw "NSIS upgrade left the previous tray running"
+        }
+        $MigratedAutostart = (Get-ItemProperty -Path $RunKey -Name "Wreath").Wreath
+        $ExpectedAutostart = '"' + (Join-Path $SmokeInstallDirectory "wreath-tray.exe") + '"'
+        if ($MigratedAutostart -ne $ExpectedAutostart) {
+            throw "NSIS upgrade did not migrate the legacy autostart value"
+        }
+
+        $SmokeUi = Start-Process `
+            -FilePath (Join-Path $SmokeInstallDirectory "wreath-win-ui.exe") `
+            -WorkingDirectory $SmokeInstallDirectory `
+            -PassThru
+        Start-Sleep -Seconds 5
+        $SmokeUi.Refresh()
+        $UpgradedTrays = @(Get-Process -Name "wreath-tray" -ErrorAction SilentlyContinue)
+        if ($SmokeUi.HasExited -or $UpgradedTrays.Count -ne 1) {
+            throw "the full application and tray did not restart after the NSIS upgrade"
+        }
+        $SmokePassed = $true
+    } finally {
+        Get-Process `
+            -Name "wreath-win-ui", "wreath-tray", "wreathd" `
+            -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $SmokeUninstaller -PathType Leaf) {
+            $UninstallProcess = Start-Process `
+                -FilePath $SmokeUninstaller `
+                -ArgumentList "/S" `
+                -Wait `
+                -PassThru
+            if ($UninstallProcess.ExitCode -ne 0 -and $SmokePassed) {
+                throw "NSIS uninstall smoke test exited with $($UninstallProcess.ExitCode)"
+            }
+        }
+        if (Test-Path -LiteralPath $SmokeInstallDirectory) {
+            Remove-Item -LiteralPath $SmokeInstallDirectory -Recurse -Force
+        }
+    }
+    if (-not $SmokePassed) {
+        throw "NSIS clean-install smoke test did not complete"
+    }
+
     $Evidence = [ordered]@{
         BuiltAtUtc = [DateTime]::UtcNow.ToString("o")
         Version = $Version
@@ -146,6 +250,12 @@ try {
             File = $InstallerFile.Name
             Bytes = $InstallerFile.Length
             Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $Installer).Hash
+            CleanInstallSmokeTest = $true
+            RunningUpgradeSmokeTest = $true
+            LegacyAutostartMigrationTest = $true
+            FullApplicationStarted = $true
+            IndependentTrayStarted = $true
+            UninstallSmokeTest = $true
         }
     }
     $EvidencePath = Join-Path $DistributionDirectory "Wreath-$Version-x64-build.json"

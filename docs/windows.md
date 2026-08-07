@@ -71,20 +71,28 @@ Requirements on a Windows x64 build host:
 From the repository root:
 
 ```powershell
-./scripts/build-windows.ps1 -Version 0.2.0
+./scripts/build-windows.ps1 -Version 0.2.1
 ```
 
 The script runs the locked Windows-target test suite and Clippy with warnings as
 errors, builds only the four Windows executables in release mode, enforces small
 binary-size budgets, and writes
-`dist/windows/Wreath-0.2.0-x64-setup.exe`. A matching
-`Wreath-0.2.0-x64-build.json` records the SHA-256 hash and size of every binary
+`dist/windows/Wreath-0.2.1-x64-setup.exe`. A matching
+`Wreath-0.2.1-x64-build.json` records the SHA-256 hash and size of every binary
 and the setup executable, the exact Git commit, Windows build, architecture, and
 Rust/Cargo/NSIS versions. The script refuses non-Windows hosts and modified
 tracked source, so the evidence always identifies the native, reproducible
-release input. The NSIS setup installs per user below `%LOCALAPPDATA%\Wreath`
+release input. It also performs a clean installation into a temporary directory,
+starts the installed full application, verifies that exactly one independent
+tray starts, reinstalls while both processes are running, verifies the upgraded
+app starts again, and runs the uninstaller. The NSIS setup installs per user below
+`%LOCALAPPDATA%\Wreath`
 and adds Start-menu shortcuts for Wreath and its uninstaller. It does not ask for
-administrator rights. Autostart remains opt-in from the tray menu.
+administrator rights. The finish page opens the full application, which starts
+the independent tray and recorder. Upgrades stop the old tray-only process
+before replacing files and preserve an existing autostart opt-in by migrating it
+to `wreath-tray.exe`. Autostart remains opt-in from the tray menu on clean
+installations.
 
 ## Local data
 
