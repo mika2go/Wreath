@@ -1,6 +1,14 @@
 use crate::video::VideoError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncoderEvent {
+    NeedInput,
+    HaveOutput,
+    DrainComplete,
+    Other(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderSettings {
     pub width: u32,
     pub height: u32,
@@ -41,6 +49,7 @@ impl EncoderSettings {
 #[cfg(target_os = "windows")]
 pub struct HardwareVideoEncoder {
     transform: windows::Win32::Media::MediaFoundation::IMFTransform,
+    events: windows::Win32::Media::MediaFoundation::IMFMediaEventGenerator,
     _device_manager: windows::Win32::Media::MediaFoundation::IMFDXGIDeviceManager,
     settings: EncoderSettings,
     codec: crate::video::HardwareCodec,
@@ -55,6 +64,7 @@ impl HardwareVideoEncoder {
     ) -> Result<Self, VideoError> {
         use windows::Win32::Media::MediaFoundation::{
             IMFTransform, MF_TRANSFORM_ASYNC_UNLOCK, MFCreateDXGIDeviceManager,
+            MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
             MFT_MESSAGE_SET_D3D_MANAGER,
         };
         use windows::core::Interface;
@@ -70,6 +80,7 @@ impl HardwareVideoEncoder {
             }))?;
         let transform: IMFTransform = unsafe { activation.ActivateObject() }
             .map_err(|error| VideoError::Initialization(error.to_string()))?;
+        let events = transform.cast().map_err(initialization_error)?;
         let attributes = unsafe { transform.GetAttributes() }
             .map_err(|error| VideoError::Initialization(error.to_string()))?;
         unsafe { attributes.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1) }
@@ -102,9 +113,14 @@ impl HardwareVideoEncoder {
             .map_err(|error| VideoError::Initialization(error.to_string()))?;
         unsafe { transform.SetInputType(0, &input_type, 0) }
             .map_err(|error| VideoError::Initialization(error.to_string()))?;
+        unsafe { transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0) }
+            .map_err(|error| VideoError::Initialization(error.to_string()))?;
+        unsafe { transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0) }
+            .map_err(|error| VideoError::Initialization(error.to_string()))?;
 
         Ok(Self {
             transform,
+            events,
             _device_manager: device_manager,
             settings,
             codec,
@@ -122,6 +138,146 @@ impl HardwareVideoEncoder {
     pub fn transform(&self) -> &windows::Win32::Media::MediaFoundation::IMFTransform {
         &self.transform
     }
+
+    pub fn submit_texture(
+        &self,
+        texture: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
+        timestamp: std::time::Duration,
+    ) -> Result<(), VideoError> {
+        use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
+        use windows::Win32::Media::MediaFoundation::{MFCreateDXGISurfaceBuffer, MFCreateSample};
+        use windows::core::Interface;
+
+        let buffer = unsafe { MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, texture, 0, false) }
+            .map_err(initialization_error)?;
+        let sample = unsafe { MFCreateSample() }.map_err(initialization_error)?;
+        let submit = || -> windows::core::Result<()> {
+            unsafe {
+                sample.AddBuffer(&buffer)?;
+                sample.SetSampleTime(duration_to_hns(timestamp))?;
+                sample.SetSampleDuration(self.frame_duration_hns())?;
+                self.transform.ProcessInput(0, &sample, 0)?;
+            }
+            Ok(())
+        };
+        submit().map_err(initialization_error)
+    }
+
+    pub fn take_packet(
+        &self,
+    ) -> Result<Option<wreath_core::replay_buffer::EncodedPacket>, VideoError> {
+        use std::mem::ManuallyDrop;
+        use std::time::Duration;
+
+        use windows::Win32::Media::MediaFoundation::{
+            IMFSample, MF_E_TRANSFORM_NEED_MORE_INPUT, MFCreateMemoryBuffer, MFCreateSample,
+            MFSampleExtension_CleanPoint, MFT_OUTPUT_DATA_BUFFER,
+            MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
+        };
+
+        let stream_info =
+            unsafe { self.transform.GetOutputStreamInfo(0) }.map_err(initialization_error)?;
+        let provides_sample =
+            stream_info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 != 0;
+        let supplied_sample = if provides_sample {
+            None
+        } else {
+            let sample = unsafe { MFCreateSample() }.map_err(initialization_error)?;
+            let buffer = unsafe { MFCreateMemoryBuffer(stream_info.cbSize.max(1)) }
+                .map_err(initialization_error)?;
+            unsafe { sample.AddBuffer(&buffer) }.map_err(initialization_error)?;
+            Some(sample)
+        };
+        let mut output = MFT_OUTPUT_DATA_BUFFER {
+            dwStreamID: 0,
+            pSample: ManuallyDrop::new(supplied_sample),
+            ..Default::default()
+        };
+        let mut status = 0_u32;
+        let process_result = unsafe {
+            self.transform
+                .ProcessOutput(0, std::slice::from_mut(&mut output), &mut status)
+        };
+        let output_sample = unsafe { ManuallyDrop::take(&mut output.pSample) };
+        unsafe { ManuallyDrop::drop(&mut output.pEvents) };
+        if let Err(error) = process_result {
+            if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT {
+                return Ok(None);
+            }
+            return Err(initialization_error(error));
+        }
+        let sample: IMFSample = output_sample.ok_or_else(|| {
+            VideoError::Initialization("hardware encoder produced no output sample".into())
+        })?;
+        let buffer = unsafe { sample.ConvertToContiguousBuffer() }.map_err(initialization_error)?;
+        let mut data = std::ptr::null_mut();
+        let mut length = 0_u32;
+        unsafe { buffer.Lock(&mut data, None, Some(&mut length)) }.map_err(initialization_error)?;
+        let payload = if data.is_null() || length == 0 {
+            Box::default()
+        } else {
+            unsafe { std::slice::from_raw_parts(data, length as usize) }
+                .to_vec()
+                .into_boxed_slice()
+        };
+        unsafe { buffer.Unlock() }.map_err(initialization_error)?;
+
+        let timestamp_hns = unsafe { sample.GetSampleTime() }.unwrap_or_default().max(0) as u64;
+        let duration_hns = unsafe { sample.GetSampleDuration() }
+            .unwrap_or(self.frame_duration_hns())
+            .max(0) as u64;
+        let keyframe =
+            unsafe { sample.GetUINT32(&MFSampleExtension_CleanPoint) }.unwrap_or_default() != 0;
+        Ok(Some(wreath_core::replay_buffer::EncodedPacket {
+            track: wreath_core::replay_buffer::TrackKind::Video,
+            timestamp: Duration::from_nanos(timestamp_hns.saturating_mul(100)),
+            duration: Duration::from_nanos(duration_hns.saturating_mul(100)),
+            keyframe,
+            payload,
+        }))
+    }
+
+    /// Blocks on Media Foundation's event queue; no encoder polling is needed.
+    pub fn wait_for_event(&self) -> Result<EncoderEvent, VideoError> {
+        use windows::Win32::Media::MediaFoundation::{
+            MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS, METransformDrainComplete, METransformHaveOutput,
+            METransformNeedInput,
+        };
+
+        let event = unsafe {
+            self.events
+                .GetEvent(MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS(0))
+        }
+        .map_err(initialization_error)?;
+        unsafe { event.GetStatus() }
+            .map_err(initialization_error)?
+            .ok()
+            .map_err(initialization_error)?;
+        let event_type = unsafe { event.GetType() }.map_err(initialization_error)?;
+        Ok(if event_type == METransformNeedInput.0 as u32 {
+            EncoderEvent::NeedInput
+        } else if event_type == METransformHaveOutput.0 as u32 {
+            EncoderEvent::HaveOutput
+        } else if event_type == METransformDrainComplete.0 as u32 {
+            EncoderEvent::DrainComplete
+        } else {
+            EncoderEvent::Other(event_type)
+        })
+    }
+
+    fn frame_duration_hns(&self) -> i64 {
+        10_000_000_i64 / i64::from(self.settings.frames_per_second)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn duration_to_hns(duration: std::time::Duration) -> i64 {
+    i64::try_from(duration.as_nanos() / 100).unwrap_or(i64::MAX)
+}
+
+#[cfg(target_os = "windows")]
+fn initialization_error(error: windows::core::Error) -> VideoError {
+    VideoError::Initialization(error.to_string())
 }
 
 #[cfg(target_os = "windows")]
