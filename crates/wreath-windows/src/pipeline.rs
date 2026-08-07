@@ -179,8 +179,11 @@ fn run_pipeline(
     let initialized = (|| -> Result<_, VideoError> {
         let runtime = VideoRuntime::initialize()?;
         let codec = runtime.select_encoder(config.capture.codec)?;
+        let display = crate::display::select_display(config.capture.monitor.as_deref())?;
         let (capture, capture_info, frames) = MonitorCapture::start_primary(
             runtime.device(),
+            display.handle,
+            &display.target.name,
             config.capture.frames_per_second,
             config.capture.cursor,
         )?;

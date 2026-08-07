@@ -47,15 +47,15 @@ pub struct MonitorCapture {
 impl MonitorCapture {
     pub fn start_primary(
         device: &ID3D11Device,
+        monitor: windows::Win32::Graphics::Gdi::HMONITOR,
+        monitor_name: &str,
         frames_per_second: u16,
         capture_cursor: bool,
     ) -> Result<(Self, CaptureInfo, Receiver<CapturedFrame>), VideoError> {
         use windows::Graphics::Capture::GraphicsCaptureSession;
         use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
         use windows::Graphics::DirectX::DirectXPixelFormat;
-        use windows::Win32::Foundation::POINT;
         use windows::Win32::Graphics::Dxgi::IDXGIDevice;
-        use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint};
         use windows::Win32::System::WinRT::Direct3D11::CreateDirect3D11DeviceFromDXGIDevice;
         use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
         use windows::core::Interface;
@@ -71,7 +71,6 @@ impl MonitorCapture {
             .map_err(initialization_error)?;
         let direct3d_device: IDirect3DDevice = inspectable.cast().map_err(initialization_error)?;
 
-        let monitor = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
         let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
             .map_err(initialization_error)?;
         let item: GraphicsCaptureItem =
@@ -139,7 +138,7 @@ impl MonitorCapture {
                 frame_arrived_token,
             },
             CaptureInfo {
-                monitor: "Primary display".into(),
+                monitor: monitor_name.into(),
                 width: size.Width as u32,
                 height: size.Height as u32,
             },
