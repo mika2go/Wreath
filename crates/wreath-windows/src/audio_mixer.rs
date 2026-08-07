@@ -151,6 +151,24 @@ pub fn adapt_pcm16(
     })
 }
 
+pub fn apply_gain_pcm16(
+    chunk: &mut Pcm16Chunk,
+    channels: u16,
+    gain_percent: u16,
+) -> Result<(), AudioError> {
+    validate_pcm16(chunk, channels)?;
+    if gain_percent > 200 {
+        return Err(AudioError("microphone gain exceeds 200 percent".into()));
+    }
+    for sample in chunk.data.chunks_exact_mut(2) {
+        let value = i16::from_le_bytes([sample[0], sample[1]]);
+        let adjusted = (i32::from(value) * i32::from(gain_percent) / 100)
+            .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        sample.copy_from_slice(&adjusted.to_le_bytes());
+    }
+    Ok(())
+}
+
 fn validate_pcm16(chunk: &Pcm16Chunk, channels: u16) -> Result<(), AudioError> {
     let expected = usize::try_from(chunk.frames)
         .ok()
@@ -321,5 +339,13 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(mixer.queued_chunks(), MAX_AUXILIARY_CHUNKS);
+    }
+
+    #[test]
+    fn standalone_microphone_gain_is_bounded_and_clamped() {
+        let mut audio = chunk(0, 1, &[20_000, -20_000]);
+        apply_gain_pcm16(&mut audio, 1, 200).unwrap();
+        assert_eq!(samples(&audio), [i16::MAX, i16::MIN]);
+        assert!(apply_gain_pcm16(&mut audio, 1, 201).is_err());
     }
 }

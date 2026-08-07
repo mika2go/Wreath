@@ -162,6 +162,162 @@ enum PipelineCommandResult {
 }
 
 #[cfg(target_os = "windows")]
+enum AudioCaptureSource {
+    Desktop(crate::audio::LoopbackCapture),
+    Microphone(crate::audio::MicrophoneCapture),
+}
+
+#[cfg(target_os = "windows")]
+impl AudioCaptureSource {
+    fn format(&self) -> crate::audio::AudioFormat {
+        match self {
+            Self::Desktop(capture) => capture.format(),
+            Self::Microphone(capture) => capture.format(),
+        }
+    }
+
+    fn receiver(&self) -> &crossbeam_channel::Receiver<crate::audio::PcmChunk> {
+        match self {
+            Self::Desktop(capture) => capture.receiver(),
+            Self::Microphone(capture) => capture.receiver(),
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct PipelineAudio {
+    master: AudioCaptureSource,
+    auxiliary_microphone: Option<crate::audio::MicrophoneCapture>,
+    mixer: Option<crate::audio_mixer::PcmMixer>,
+    master_gain_percent: u16,
+    pending_master: Option<crate::audio::Pcm16Chunk>,
+    encoder: crate::audio_encoder::AacEncoder,
+}
+
+#[cfg(target_os = "windows")]
+impl PipelineAudio {
+    fn initialize(
+        config: &wreath_core::config::AudioConfig,
+    ) -> Result<Option<Self>, crate::audio::AudioError> {
+        let (master, auxiliary_microphone) = if config.desktop {
+            let desktop = crate::audio::LoopbackCapture::spawn()?;
+            let microphone = config
+                .microphone
+                .then(|| {
+                    crate::audio::MicrophoneCapture::spawn(config.microphone_device.as_deref())
+                })
+                .transpose()?;
+            (AudioCaptureSource::Desktop(desktop), microphone)
+        } else if config.microphone {
+            (
+                AudioCaptureSource::Microphone(crate::audio::MicrophoneCapture::spawn(
+                    config.microphone_device.as_deref(),
+                )?),
+                None,
+            )
+        } else {
+            return Ok(None);
+        };
+        let format = master.format();
+        let settings = crate::audio_encoder::AudioEncoderSettings::for_capture(
+            format.sample_rate,
+            format.channels,
+        )?;
+        let mixer = auxiliary_microphone
+            .as_ref()
+            .map(|_| {
+                crate::audio_mixer::PcmMixer::new(
+                    format.sample_rate,
+                    format.channels,
+                    config.microphone_gain_percent,
+                )
+            })
+            .transpose()?;
+        let encoder = crate::audio_encoder::AacEncoder::initialize(settings)?;
+        Ok(Some(Self {
+            master,
+            auxiliary_microphone,
+            mixer,
+            master_gain_percent: if config.desktop {
+                100
+            } else {
+                config.microphone_gain_percent
+            },
+            pending_master: None,
+            encoder,
+        }))
+    }
+
+    fn master_receiver(&self) -> &crossbeam_channel::Receiver<crate::audio::PcmChunk> {
+        self.master.receiver()
+    }
+
+    fn microphone_receiver(&self) -> Option<&crossbeam_channel::Receiver<crate::audio::PcmChunk>> {
+        self.auxiliary_microphone
+            .as_ref()
+            .map(crate::audio::MicrophoneCapture::receiver)
+    }
+
+    fn encode_master(
+        &mut self,
+        chunk: crate::audio::PcmChunk,
+    ) -> Result<Vec<wreath_core::replay_buffer::EncodedPacket>, crate::audio::AudioError> {
+        let format = self.master.format();
+        let mut normalized = crate::audio::normalize_to_pcm16(format, chunk)?;
+        if self.master_gain_percent != 100 {
+            crate::audio_mixer::apply_gain_pcm16(
+                &mut normalized,
+                format.channels,
+                self.master_gain_percent,
+            )?;
+        }
+        let ready = if let Some(mixer) = &mut self.mixer {
+            self.pending_master
+                .replace(normalized)
+                .map(|pending| mixer.mix(pending))
+                .transpose()?
+        } else {
+            Some(normalized)
+        };
+        ready.map_or_else(|| Ok(Vec::new()), |chunk| self.encoder.encode(chunk))
+    }
+
+    fn push_microphone(
+        &mut self,
+        chunk: crate::audio::PcmChunk,
+    ) -> Result<(), crate::audio::AudioError> {
+        let capture = self.auxiliary_microphone.as_ref().ok_or_else(|| {
+            crate::audio::AudioError("microphone packet arrived without a mixer".into())
+        })?;
+        let format = capture.format();
+        let normalized = crate::audio::normalize_to_pcm16(format, chunk)?;
+        self.mixer
+            .as_mut()
+            .ok_or_else(|| crate::audio::AudioError("microphone mixer is unavailable".into()))?
+            .push_auxiliary(normalized, format.sample_rate, format.channels)
+    }
+
+    fn output_media_type(
+        &self,
+    ) -> Result<windows::Win32::Media::MediaFoundation::IMFMediaType, crate::audio::AudioError>
+    {
+        self.encoder.output_media_type()
+    }
+
+    fn bytes_per_second(&self) -> u32 {
+        self.encoder.settings().bytes_per_second
+    }
+
+    fn discard_queued(&mut self) {
+        self.pending_master = None;
+        while self.master.receiver().try_recv().is_ok() {}
+        if let Some(microphone) = &self.auxiliary_microphone {
+            while microphone.receiver().try_recv().is_ok() {}
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn run_pipeline(
     config: wreath_core::config::Config,
     commands: crossbeam_channel::Receiver<PipelineCommand>,
@@ -206,24 +362,11 @@ fn run_pipeline(
             available_surfaces.push(converter.create_output_surface()?);
         }
         let encoder = HardwareVideoEncoder::initialize(runtime.device(), codec, settings)?;
-        let audio = if config.audio.desktop {
-            let capture = crate::audio::LoopbackCapture::spawn()
-                .map_err(|error| VideoError::Initialization(error.to_string()))?;
-            let format = capture.format();
-            let settings = crate::audio_encoder::AudioEncoderSettings::for_capture(
-                format.sample_rate,
-                format.channels,
-            )
+        let audio = PipelineAudio::initialize(&config.audio)
             .map_err(|error| VideoError::Initialization(error.to_string()))?;
-            let encoder = crate::audio_encoder::AacEncoder::initialize(settings)
-                .map_err(|error| VideoError::Initialization(error.to_string()))?;
-            Some((capture, encoder))
-        } else {
-            None
-        };
         let audio_bitrate_kbps = audio
             .as_ref()
-            .map_or(0, |(_, encoder)| encoder.settings().bytes_per_second / 125);
+            .map_or(0, |audio| audio.bytes_per_second() / 125);
         let memory_budget = replay_memory_budget(estimated_buffer_bytes(
             settings.bitrate_kbps.saturating_add(audio_bitrate_kbps),
             config.capture.duration_seconds,
@@ -254,7 +397,7 @@ fn run_pipeline(
         converter,
         mut available_surfaces,
         encoder,
-        desktop_audio,
+        mut audio,
         mut buffer,
     ) = match initialized {
         Ok(initialized) => initialized,
@@ -289,13 +432,24 @@ fn run_pipeline(
         let mut selector = crossbeam_channel::Select::new();
         let command_index = selector.recv(&commands);
         let frame_index = recording.then(|| selector.recv(&frames));
-        let audio_index = (recording && desktop_audio.is_some()).then(|| {
+        let audio_index = (recording && audio.is_some()).then(|| {
             selector.recv(
-                desktop_audio
+                audio
                     .as_ref()
-                    .expect("desktop audio presence checked")
-                    .0
-                    .receiver(),
+                    .expect("audio presence checked")
+                    .master_receiver(),
+            )
+        });
+        let microphone_index = (recording
+            && audio
+                .as_ref()
+                .is_some_and(|audio| audio.microphone_receiver().is_some()))
+        .then(|| {
+            selector.recv(
+                audio
+                    .as_ref()
+                    .and_then(PipelineAudio::microphone_receiver)
+                    .expect("microphone presence checked"),
             )
         });
         let operation = selector.select();
@@ -307,10 +461,17 @@ fn run_pipeline(
             match command.kind {
                 PipelineCommandKind::Pause => {
                     recording = false;
+                    if let Some(audio) = &mut audio {
+                        audio.discard_queued();
+                    }
                     update_status(status, |pipeline| pipeline.state = PipelineRunState::Paused);
                     let _ = command.reply.send(Ok(PipelineCommandResult::Ok));
                 }
                 PipelineCommandKind::Resume => {
+                    while frames.try_recv().is_ok() {}
+                    if let Some(audio) = &mut audio {
+                        audio.discard_queued();
+                    }
                     recording = true;
                     update_status(status, |pipeline| {
                         pipeline.state = PipelineRunState::Recording
@@ -318,14 +479,10 @@ fn run_pipeline(
                     let _ = command.reply.send(Ok(PipelineCommandResult::Ok));
                 }
                 PipelineCommandKind::Save => {
-                    let result = save_replay(
-                        &config.storage.directory,
-                        &encoder,
-                        desktop_audio.as_ref().map(|(_, encoder)| encoder),
-                        &buffer,
-                    )
-                    .map(PipelineCommandResult::Saved)
-                    .map_err(|error| error.to_string());
+                    let result =
+                        save_replay(&config.storage.directory, &encoder, audio.as_ref(), &buffer)
+                            .map(PipelineCommandResult::Saved)
+                            .map_err(|error| error.to_string());
                     let _ = command.reply.send(result);
                 }
                 PipelineCommandKind::Stop => {
@@ -337,17 +494,33 @@ fn run_pipeline(
                     break;
                 }
             }
-        } else if Some(operation.index()) == audio_index {
-            let (capture, audio_encoder) = desktop_audio
-                .as_ref()
-                .expect("audio selector is only registered with desktop audio");
+        } else if Some(operation.index()) == microphone_index {
             let chunk = operation
-                .recv(capture.receiver())
+                .recv(
+                    audio
+                        .as_ref()
+                        .and_then(PipelineAudio::microphone_receiver)
+                        .expect("microphone selector is only registered with a microphone"),
+                )
                 .map_err(|error| VideoError::Initialization(error.to_string()))?;
-            let normalized = crate::audio::normalize_to_pcm16(capture.format(), chunk)
+            audio
+                .as_mut()
+                .expect("microphone selector requires audio")
+                .push_microphone(chunk)
                 .map_err(|error| VideoError::Initialization(error.to_string()))?;
-            for packet in audio_encoder
-                .encode(normalized)
+        } else if Some(operation.index()) == audio_index {
+            let chunk = operation
+                .recv(
+                    audio
+                        .as_ref()
+                        .expect("audio selector is only registered with audio")
+                        .master_receiver(),
+                )
+                .map_err(|error| VideoError::Initialization(error.to_string()))?;
+            for packet in audio
+                .as_mut()
+                .expect("audio selector requires audio")
+                .encode_master(chunk)
                 .map_err(|error| VideoError::Initialization(error.to_string()))?
             {
                 buffer.push(packet);
@@ -389,7 +562,7 @@ fn run_pipeline(
 fn save_replay(
     directory: &std::path::Path,
     encoder: &crate::encoder::HardwareVideoEncoder,
-    audio_encoder: Option<&crate::audio_encoder::AacEncoder>,
+    audio: Option<&PipelineAudio>,
     buffer: &wreath_core::replay_buffer::EncodedReplayBuffer,
 ) -> Result<std::path::PathBuf, crate::video::VideoError> {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -407,8 +580,8 @@ fn save_replay(
         .unwrap_or("wreath-clip");
     let temporary_path = final_path.with_file_name(format!("{stem}.partial.mp4"));
     let video_media_type = encoder.output_media_type()?;
-    let audio_media_type = audio_encoder
-        .map(crate::audio_encoder::AacEncoder::output_media_type)
+    let audio_media_type = audio
+        .map(PipelineAudio::output_media_type)
         .transpose()
         .map_err(|error| crate::video::VideoError::Initialization(error.to_string()))?;
     if let Err(error) = crate::mux::write_mp4(
