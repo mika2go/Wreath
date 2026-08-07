@@ -55,14 +55,14 @@ clip. The tray checks health every five seconds and automatically attempts a
 failed pipeline recovery after sleep/resume or display-mode changes. Failed
 recovery attempts use a 30-second backoff to avoid a resource-heavy restart loop.
 
-## Build an MSI
+## Build the NSIS installer
 
 Requirements on a Windows x64 build host:
 
 - Rust 1.85 or newer with the `x86_64-pc-windows-msvc` target;
 - the Rust `clippy` component for that toolchain;
 - Visual Studio Build Tools with the Windows SDK;
-- WiX Toolset 4 with `wix.exe` on `PATH`;
+- NSIS 3 with `makensis.exe` on `PATH`;
 - Git on `PATH` and no modified tracked files;
 - PowerShell 7 or Windows PowerShell 5.1.
 
@@ -74,13 +74,15 @@ From the repository root:
 
 The script runs the locked Windows-target test suite and Clippy with warnings as
 errors, builds only the three Windows executables in release mode, enforces small
-binary-size budgets, and writes `dist/windows/Wreath-0.1.0-x64.msi`. A matching
+binary-size budgets, and writes
+`dist/windows/Wreath-0.1.0-x64-setup.exe`. A matching
 `Wreath-0.1.0-x64-build.json` records the SHA-256 hash and size of every binary
-and the MSI, the exact Git commit, Windows build, architecture, and Rust/Cargo/WiX
-versions. The script refuses non-Windows hosts and modified tracked source, so
-the evidence always identifies the native, reproducible release input.
-The MSI installs per user below `%LOCALAPPDATA%\Wreath` and adds a Start-menu
-shortcut. Autostart remains opt-in from the tray menu.
+and the setup executable, the exact Git commit, Windows build, architecture, and
+Rust/Cargo/NSIS versions. The script refuses non-Windows hosts and modified
+tracked source, so the evidence always identifies the native, reproducible
+release input. The NSIS setup installs per user below `%LOCALAPPDATA%\Wreath`
+and adds Start-menu shortcuts for Wreath and its uninstaller. It does not ask for
+administrator rights. Autostart remains opt-in from the tray menu.
 
 ## Local data
 
@@ -89,7 +91,8 @@ shortcut. Autostart remains opt-in from the tray menu.
 - clips: `%USERPROFILE%\Videos\Wreath` by default;
 - control endpoint: `\\.\pipe\wreath`.
 
-Uninstalling the MSI removes installed binaries, shortcuts, and the optional
+Uninstalling through the NSIS uninstaller removes installed binaries, shortcuts,
+the uninstall registration, and the optional
 autostart value. It intentionally does not delete configuration or clips.
 
 ## Validation status

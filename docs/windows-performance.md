@@ -135,7 +135,7 @@ an error; a CPU video fallback is a release failure.
 
 Attach the following to the release candidate:
 
-- MSI produced by `scripts/build-windows.ps1`;
+- NSIS setup executable produced by `scripts/build-windows.ps1`;
 - the JSON summaries and CSV files for every matrix row;
 - GPU model and driver, CPU, RAM, Windows build, and capture configuration;
 - hashes and MediaInfo/ffprobe output for representative saved clips;

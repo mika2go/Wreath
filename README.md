@@ -66,7 +66,7 @@ It does not modify existing files in:
 See [the installation guide](docs/install.md) for the `PKGBUILD`, GPU drivers,
 portal packages, KDE setup, and troubleshooting.
 
-The experimental Windows MSI build is documented in
+The experimental Windows NSIS installer is documented in
 [the Windows build guide](docs/windows.md).
 
 ## Shortcuts

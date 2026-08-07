@@ -15,7 +15,7 @@ shortcut settings with the command `wreathctl save`.
 | Other Wayland/X11 desktops | Recorder-discovered target or portal | Desktop-specific settings | systemd user service |
 | Windows 10/11 | Windows Graphics Capture | Native global hotkey | Optional per-user tray autostart |
 
-The Windows edition is still experimental. Build its per-user MSI on Windows
+The Windows edition is still experimental. Build its per-user NSIS setup on Windows
 using [the Windows build guide](windows.md). It installs only native binaries
 and keeps autostart opt-in in the tray menu.
 
