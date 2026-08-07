@@ -152,9 +152,9 @@ pub struct LoopbackCapture {
     stream: CaptureStream,
 }
 
-/// Timer-driven WASAPI microphone capture. Windows' shared audio engine is
-/// asked for a processed mono communications stream first; unusual drivers
-/// transparently fall back to their native shared mix format.
+/// Timer-driven WASAPI microphone capture. The endpoint is opened in its
+/// native shared mix format without a stream category, so Windows leaves the
+/// signal alone and Wreath does every conversion itself.
 #[cfg(target_os = "windows")]
 pub struct MicrophoneCapture {
     stream: CaptureStream,
@@ -174,7 +174,7 @@ pub struct MicrophoneTarget {
 pub fn microphones() -> Result<Vec<MicrophoneTarget>, AudioError> {
     use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
     use windows::Win32::Media::Audio::{
-        DEVICE_STATE_ACTIVE, IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eCommunications,
+        DEVICE_STATE_ACTIVE, IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eConsole,
     };
     use windows::Win32::System::Com::{
         CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
@@ -189,7 +189,7 @@ pub fn microphones() -> Result<Vec<MicrophoneTarget>, AudioError> {
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
                 .map_err(|error| AudioError(error.to_string()))?;
-        let default_id = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eCommunications) }
+        let default_id = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }
             .ok()
             .and_then(|device| device_id(&device).ok());
         let collection = unsafe { enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE) }
@@ -370,9 +370,8 @@ fn capture_loop(
 ) -> Result<(), AudioError> {
     use windows::Win32::Foundation::{CloseHandle, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
     use windows::Win32::Media::Audio::{
-        AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
-        AudioCategory_Communications, IAudioCaptureClient, IMMDeviceEnumerator, MMDeviceEnumerator,
-        eCapture, eCommunications, eConsole, eRender,
+        AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, IAudioCaptureClient,
+        IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eConsole, eRender,
     };
     use windows::Win32::System::Com::{
         CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
@@ -396,12 +395,11 @@ fn capture_loop(
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
                 .map_err(|error| AudioError(error.to_string()))?;
-        let (device, stream_flags, category, buffer_duration_hns, timer_driven) = match endpoint {
+        let (device, stream_flags, buffer_duration_hns, timer_driven) = match endpoint {
             CaptureEndpoint::Loopback => (
                 unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
                     .map_err(|error| AudioError(error.to_string()))?,
                 AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                None,
                 0,
                 false,
             ),
@@ -420,22 +418,20 @@ fn capture_loop(
                             ))
                         })?,
                     0,
-                    Some(AudioCategory_Communications),
                     MICROPHONE_BUFFER_DURATION_HNS,
                     true,
                 )
             }
             CaptureEndpoint::Microphone { endpoint_id: None } => (
-                unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eCommunications) }
+                unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }
                     .map_err(|error| AudioError(error.to_string()))?,
                 0,
-                Some(AudioCategory_Communications),
                 MICROPHONE_BUFFER_DURATION_HNS,
                 true,
             ),
         };
         let (client, format, device_period_hns, format_mode) =
-            initialize_capture_client(&device, stream_flags, buffer_duration_hns, category)?;
+            initialize_capture_client(&device, stream_flags, buffer_duration_hns, timer_driven)?;
         let endpoint_name = if timer_driven {
             "microphone"
         } else {
@@ -529,12 +525,23 @@ fn capture_loop(
     result
 }
 
+/// Opens the endpoint in its own shared mix format.
+///
+/// Wreath deliberately requests neither a stream category nor engine-side PCM
+/// conversion. `AudioCategory_Communications` puts the endpoint into the
+/// Windows communications signal-processing mode, which runs the driver's VoIP
+/// APO chain — automatic gain control, noise suppression, echo cancellation and
+/// beamforming. That chain is tuned for 16 kHz speech intelligibility, not for
+/// recording: the gain control pumps the noise floor up between words and the
+/// suppressor leaves musical noise behind, so captured voice sounds hissy and
+/// gritty on every machine regardless of the microphone. Taking the untouched
+/// mix format and converting in-process avoids all of it.
 #[cfg(target_os = "windows")]
 fn initialize_capture_client(
     device: &windows::Win32::Media::Audio::IMMDevice,
     stream_flags: u32,
     buffer_duration_hns: i64,
-    category: Option<windows::Win32::Media::Audio::AUDIO_STREAM_CATEGORY>,
+    microphone: bool,
 ) -> Result<
     (
         windows::Win32::Media::Audio::IAudioClient2,
@@ -544,87 +551,25 @@ fn initialize_capture_client(
     ),
     AudioError,
 > {
-    use windows::Win32::Media::Audio::{
-        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, WAVEFORMATEX,
-    };
-    if let Some(category) = category {
-        let (client, native_format, device_period_hns) =
-            prepare_capture_client(device, Some(category))?;
-        let sample_rate = preferred_microphone_sample_rate(native_format.sample_rate);
-        let desired = WAVEFORMATEX {
-            wFormatTag: windows::Win32::Media::Audio::WAVE_FORMAT_PCM as u16,
-            nChannels: 1,
-            nSamplesPerSec: sample_rate,
-            nAvgBytesPerSec: sample_rate.saturating_mul(2),
-            nBlockAlign: 2,
-            wBitsPerSample: 16,
-            cbSize: 0,
-        };
-        let preferred_flags = stream_flags
-            | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-            | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
-        match unsafe {
-            client.Initialize(
-                AUDCLNT_SHAREMODE_SHARED,
-                preferred_flags,
-                buffer_duration_hns,
-                0,
-                &desired,
-                None,
-            )
-        } {
-            Ok(()) => {
-                return Ok((
-                    client,
-                    AudioFormat {
-                        sample_rate,
-                        channels: 1,
-                        bits_per_sample: 16,
-                        block_align: 2,
-                        floating_point: false,
-                    },
-                    device_period_hns,
-                    CaptureFormatMode::SystemMono,
-                ));
-            }
-            Err(preferred_error) => {
-                eprintln!(
-                    "Wreath microphone: Windows mono conversion unavailable ({preferred_error}); retrying the endpoint's native format"
-                );
-            }
-        }
-
-        // IAudioClient cannot be reinitialized reliably after Initialize has
-        // failed. Activate a fresh client for the native-format fallback.
-        let (fallback, native_format, fallback_period_hns) =
-            prepare_capture_client(device, Some(category))?;
-        initialize_native_client(
-            fallback,
-            native_format,
-            fallback_period_hns,
-            stream_flags,
-            buffer_duration_hns,
-            CaptureFormatMode::NativeMicrophoneFallback,
-        )
-    } else {
-        let (client, native_format, device_period_hns) = prepare_capture_client(device, None)?;
-        initialize_native_client(
-            client,
-            native_format,
-            device_period_hns,
-            stream_flags,
-            buffer_duration_hns,
-            CaptureFormatMode::NativeLoopback,
-        )
-    }
+    let (client, native_format, device_period_hns) = prepare_capture_client(device)?;
+    initialize_native_client(
+        client,
+        native_format,
+        device_period_hns,
+        stream_flags,
+        buffer_duration_hns,
+        if microphone {
+            CaptureFormatMode::NativeMicrophone
+        } else {
+            CaptureFormatMode::NativeLoopback
+        },
+    )
 }
 
 #[cfg(target_os = "windows")]
 #[derive(Clone, Copy)]
 enum CaptureFormatMode {
-    SystemMono,
-    NativeMicrophoneFallback,
+    NativeMicrophone,
     NativeLoopback,
 }
 
@@ -632,15 +577,16 @@ enum CaptureFormatMode {
 impl fmt::Display for CaptureFormatMode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::SystemMono => "Windows-processed communications mono",
-            Self::NativeMicrophoneFallback => "native microphone fallback",
+            Self::NativeMicrophone => "unprocessed native microphone",
             Self::NativeLoopback => "native loopback",
         })
     }
 }
 
+/// Picks the AAC-compatible rate closest to what the endpoint already runs at,
+/// so a 44.1 kHz microphone is never resampled just to be resampled back.
 #[cfg(any(target_os = "windows", test))]
-fn preferred_microphone_sample_rate(native_sample_rate: u32) -> u32 {
+pub fn preferred_microphone_sample_rate(native_sample_rate: u32) -> u32 {
     if native_sample_rate == 44_100 {
         44_100
     } else {
@@ -651,7 +597,6 @@ fn preferred_microphone_sample_rate(native_sample_rate: u32) -> u32 {
 #[cfg(target_os = "windows")]
 fn prepare_capture_client(
     device: &windows::Win32::Media::Audio::IMMDevice,
-    category: Option<windows::Win32::Media::Audio::AUDIO_STREAM_CATEGORY>,
 ) -> Result<
     (
         windows::Win32::Media::Audio::IAudioClient2,
@@ -660,24 +605,11 @@ fn prepare_capture_client(
     ),
     AudioError,
 > {
-    use windows::Win32::Media::Audio::{
-        AUDCLNT_STREAMOPTIONS_NONE, AudioClientProperties, IAudioClient2,
-    };
+    use windows::Win32::Media::Audio::IAudioClient2;
     use windows::Win32::System::Com::{CLSCTX_ALL, CoTaskMemFree};
 
     let client: IAudioClient2 = unsafe { device.Activate(CLSCTX_ALL, None) }
         .map_err(|error| AudioError(error.to_string()))?;
-    if let Some(category) = category {
-        let properties = AudioClientProperties {
-            cbSize: std::mem::size_of::<AudioClientProperties>() as u32,
-            bIsOffload: false.into(),
-            eCategory: category,
-            Options: AUDCLNT_STREAMOPTIONS_NONE,
-        };
-        unsafe { client.SetClientProperties(&properties) }.map_err(|error| {
-            AudioError(format!("cannot enable Windows voice processing: {error}"))
-        })?;
-    }
     let mix_format =
         unsafe { client.GetMixFormat() }.map_err(|error| AudioError(error.to_string()))?;
     if mix_format.is_null() {
@@ -1000,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn microphone_conversion_uses_standard_communications_rates() {
+    fn microphone_output_uses_the_nearest_aac_compatible_rate() {
         assert_eq!(preferred_microphone_sample_rate(44_100), 44_100);
         assert_eq!(preferred_microphone_sample_rate(48_000), 48_000);
         assert_eq!(preferred_microphone_sample_rate(96_000), 48_000);

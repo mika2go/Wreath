@@ -240,11 +240,8 @@ impl PipelineAudio {
         let format = master.format();
         let (output_sample_rate, output_channels, master_converter) =
             if matches!(&master, AudioCaptureSource::Microphone(_)) {
-                let output_sample_rate = if format.sample_rate == 44_100 {
-                    44_100
-                } else {
-                    48_000
-                };
+                let output_sample_rate =
+                    crate::audio::preferred_microphone_sample_rate(format.sample_rate);
                 (
                     output_sample_rate,
                     1,

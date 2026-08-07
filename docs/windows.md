@@ -55,7 +55,13 @@ wreathctl config codec h264
 ```
 
 Use the endpoint ID printed by `wreathctl microphones` instead of `default` to
-pin capture to a specific microphone. `wreathctl config` prints the complete
+pin capture to a specific microphone. Wreath records the endpoint in its own
+shared mix format and does not put it into the Windows communications signal
+processing mode, so the driver's VoIP chain — automatic gain control, noise
+suppression, echo cancellation — stays out of the recording. Enable those per
+device under `Sound > Recording > Properties > Enhancements` if you want them;
+if you play desktop audio over speakers, expect some of it to reach the
+microphone. `wreathctl config` prints the complete
 current configuration. `wreathctl codecs` lists only hardware video encoders
 reported by Media Foundation; `wreathctl status` reports which one the live
 pipeline selected, the exact D3D11 adapter name and PCI vendor/device IDs used

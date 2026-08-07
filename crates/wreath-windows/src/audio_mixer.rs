@@ -76,16 +76,24 @@ impl PcmMixer {
             self.auxiliary.pop_front();
         }
 
+        // Headroom for the microphone is taken from the whole master packet,
+        // not only from the frames a microphone packet happens to cover. The
+        // old code scaled just the overlap, so the desktop level jumped by the
+        // mix ratio at the edge of every microphone gap — a step of up to
+        // 9.5 dB inside one packet, which is audible as a click.
+        let denominator = 100_i64.saturating_add(i64::from(self.gain_percent));
+        scale_pcm16(&mut master, 100, denominator);
         for auxiliary in &self.auxiliary {
             if auxiliary.timestamp >= master_end {
                 break;
             }
-            mix_overlap(
+            add_overlap(
                 &mut master,
                 auxiliary,
                 self.sample_rate,
                 self.channels,
-                self.gain_percent,
+                i64::from(self.gain_percent),
+                denominator,
             );
         }
         Ok(master)
@@ -97,11 +105,119 @@ impl PcmMixer {
     }
 }
 
+/// Band-limited polyphase resampling kernel.
+///
+/// Straight linear interpolation between two neighbouring samples is a very
+/// poor reconstruction filter: it leaves everything above the target Nyquist
+/// frequency in the signal, where it folds back down into the audible band.
+/// On a 96 kHz microphone converted to 48 kHz that alias energy sits right on
+/// top of the voice and is heard as a gritty, sandy edge. A windowed-sinc
+/// kernel whose cutoff follows the lower of the two Nyquist limits removes it.
+struct SincResampler {
+    taps: Box<[f32]>,
+    taps_per_phase: usize,
+    half_taps: u64,
+}
+
+impl SincResampler {
+    /// Sub-sample resolution of the phase table. 512 phases keep the timing
+    /// error of a full-scale 20 kHz tone near -52 dBFS.
+    const PHASES: usize = 512;
+    /// Kernel half-width in *output* frames, before it is widened to cover the
+    /// lower cutoff of a downsampling conversion.
+    const BASE_HALF_TAPS: usize = 24;
+    const MAX_HALF_TAPS: usize = 128;
+
+    fn new(source_rate: u32, target_rate: u32) -> Self {
+        // Downsampling has to band-limit to the *target* Nyquist frequency;
+        // upsampling only has to reconstruct, so the source limit applies.
+        let cutoff = if target_rate < source_rate {
+            f64::from(target_rate) / f64::from(source_rate)
+        } else {
+            1.0
+        };
+        // A lower cutoff needs a proportionally longer kernel, otherwise the
+        // transition band grows until unwanted content sits inside it and is
+        // barely attenuated at all.
+        let half_taps = ((Self::BASE_HALF_TAPS as f64 / cutoff).ceil() as usize)
+            .clamp(Self::BASE_HALF_TAPS, Self::MAX_HALF_TAPS);
+        let taps_per_phase = half_taps * 2;
+        let half_width = half_taps as f64;
+        let mut taps = Vec::with_capacity(Self::PHASES * taps_per_phase);
+        for phase in 0..Self::PHASES {
+            let fraction = phase as f64 / Self::PHASES as f64;
+            let mut row = Vec::with_capacity(taps_per_phase);
+            let mut sum = 0.0_f64;
+            for tap in 0..taps_per_phase {
+                let offset = tap as f64 - (half_width - 1.0) - fraction;
+                let value = cutoff * sinc(cutoff * offset) * blackman(offset / half_width);
+                sum += value;
+                row.push(value);
+            }
+            // Normalising every phase to unity DC gain keeps the converted
+            // stream free of the periodic level ripple an unnormalised kernel
+            // would otherwise add.
+            let normalizer = if sum.abs() > f64::EPSILON { sum } else { 1.0 };
+            taps.extend(row.into_iter().map(|value| (value / normalizer) as f32));
+        }
+        Self {
+            taps: taps.into_boxed_slice(),
+            taps_per_phase,
+            half_taps: half_taps as u64,
+        }
+    }
+
+    /// Source frames the kernel reads ahead of the interpolated position.
+    fn lookahead_frames(&self) -> u64 {
+        self.half_taps
+    }
+
+    /// Source frames the kernel reads behind the interpolated position.
+    fn history_frames(&self) -> u64 {
+        self.half_taps.saturating_sub(1)
+    }
+
+    fn phase(&self, fraction: u64, target_rate: u32) -> usize {
+        let phases = Self::PHASES as u64;
+        usize::try_from(fraction.saturating_mul(phases) / u64::from(target_rate.max(1)))
+            .unwrap_or_default()
+            .min(Self::PHASES - 1)
+    }
+
+    fn interpolate(&self, phase: usize, first_frame: i64, sample: impl Fn(i64) -> i16) -> i16 {
+        let base = phase * self.taps_per_phase;
+        let start = first_frame - self.history_frames() as i64;
+        let mut accumulator = 0.0_f32;
+        for tap in 0..self.taps_per_phase {
+            accumulator += self.taps[base + tap] * f32::from(sample(start + tap as i64));
+        }
+        clamp_to_i16(accumulator.round() as i64)
+    }
+}
+
+fn sinc(value: f64) -> f64 {
+    if value.abs() < 1e-9 {
+        1.0
+    } else {
+        let scaled = std::f64::consts::PI * value;
+        scaled.sin() / scaled
+    }
+}
+
+/// Blackman window over the normalised range [-1, 1].
+fn blackman(normalized: f64) -> f64 {
+    if normalized.abs() >= 1.0 {
+        return 0.0;
+    }
+    let angle = std::f64::consts::PI * normalized;
+    0.42 + 0.5 * angle.cos() + 0.08 * (2.0 * angle).cos()
+}
+
 /// Continuous PCM converter for a live capture stream. Unlike a packet-local
-/// resampler it carries the fractional source position and the final source
-/// frame across WASAPI packet boundaries, preventing a repeated/skipped sample
-/// at every callback. Voice mode selects one stable microphone input instead
-/// of averaging unrelated USB-interface or array channels together.
+/// resampler it carries the fractional source position and the surrounding
+/// source frames across WASAPI packet boundaries, preventing a repeated/skipped
+/// sample at every callback. Voice mode selects one stable microphone input
+/// instead of averaging unrelated USB-interface or array channels together.
 pub struct PcmStreamConverter {
     source_rate: u32,
     source_channels: u16,
@@ -109,6 +225,7 @@ pub struct PcmStreamConverter {
     target_channels: u16,
     voice: bool,
     voice_channel: VoiceChannelSelector,
+    resampler: Option<SincResampler>,
     source: VecDeque<i16>,
     source_start_frame: u64,
     source_frames_received: u64,
@@ -152,6 +269,8 @@ impl PcmStreamConverter {
             target_channels,
             voice,
             voice_channel: VoiceChannelSelector::default(),
+            resampler: (source_rate != target_rate)
+                .then(|| SincResampler::new(source_rate, target_rate)),
             source: VecDeque::new(),
             source_start_frame: 0,
             source_frames_received: 0,
@@ -227,27 +346,37 @@ impl PcmStreamConverter {
             .saturating_add(u64::from(chunk.frames));
         let first_output_frame = self.output_frames_emitted;
         let mut output = Vec::new();
-        loop {
-            let source_position = self
-                .output_frames_emitted
-                .saturating_mul(u64::from(self.source_rate));
-            let first_frame = source_position / u64::from(self.target_rate);
-            let second_frame = first_frame.saturating_add(1);
-            if second_frame >= self.source_frames_received {
-                break;
+        let mut emitted = self.output_frames_emitted;
+        {
+            let resampler = self
+                .resampler
+                .as_ref()
+                .ok_or_else(|| AudioError("resampler is unavailable".into()))?;
+            let lookahead = resampler.lookahead_frames();
+            loop {
+                let source_position = emitted.saturating_mul(u64::from(self.source_rate));
+                let first_frame = source_position / u64::from(self.target_rate);
+                // The kernel is centred on the interpolated position, so a
+                // frame can only be emitted once its trailing half has arrived.
+                if first_frame.saturating_add(lookahead) >= self.source_frames_received {
+                    break;
+                }
+                let phase = resampler.phase(
+                    source_position % u64::from(self.target_rate),
+                    self.target_rate,
+                );
+                let first_frame = i64::try_from(first_frame)
+                    .map_err(|_| AudioError("resampler source position overflow".into()))?;
+                for channel in 0..self.target_channels {
+                    let sample = resampler.interpolate(phase, first_frame, |frame| {
+                        self.buffered_sample(frame, channel)
+                    });
+                    output.extend_from_slice(&sample.to_le_bytes());
+                }
+                emitted = emitted.saturating_add(1);
             }
-            let fraction = source_position % u64::from(self.target_rate);
-            for channel in 0..self.target_channels {
-                let first = self.buffered_sample(first_frame, channel)?;
-                let second = self.buffered_sample(second_frame, channel)?;
-                let interpolated = (i64::from(first)
-                    * (i64::from(self.target_rate) - fraction as i64)
-                    + i64::from(second) * fraction as i64)
-                    / i64::from(self.target_rate);
-                output.extend_from_slice(&(interpolated as i16).to_le_bytes());
-            }
-            self.output_frames_emitted = self.output_frames_emitted.saturating_add(1);
         }
+        self.output_frames_emitted = emitted;
         self.discard_consumed_source();
         let frames = self
             .output_frames_emitted
@@ -323,26 +452,37 @@ impl PcmStreamConverter {
             .saturating_sub(frames_to_fade);
     }
 
-    fn buffered_sample(&self, frame: u64, channel: u16) -> Result<i16, AudioError> {
-        let frame = frame.checked_sub(self.source_start_frame).ok_or_else(|| {
-            AudioError("resampler discarded a source frame before consuming it".into())
-        })?;
-        let index = frame
+    /// Reads a buffered source frame, clamping to the edges of what the stream
+    /// has produced so far. The kernel deliberately reaches past both ends at
+    /// the start of an epoch; extending the edge sample there is inaudible,
+    /// whereas failing would tear down the whole capture pipeline.
+    fn buffered_sample(&self, frame: i64, channel: u16) -> i16 {
+        let last_frame = self.source_frames_received.saturating_sub(1);
+        let first_frame = self.source_start_frame.min(last_frame);
+        let clamped = u64::try_from(frame.max(0))
+            .unwrap_or_default()
+            .clamp(first_frame, last_frame);
+        let Some(relative) = clamped.checked_sub(self.source_start_frame) else {
+            return 0;
+        };
+        relative
             .checked_mul(u64::from(self.target_channels))
             .and_then(|index| index.checked_add(u64::from(channel)))
             .and_then(|index| usize::try_from(index).ok())
-            .ok_or_else(|| AudioError("resampler source index overflow".into()))?;
-        self.source
-            .get(index)
-            .copied()
-            .ok_or_else(|| AudioError("resampler source frame is unavailable".into()))
+            .and_then(|index| self.source.get(index).copied())
+            .unwrap_or_default()
     }
 
     fn discard_consumed_source(&mut self) {
+        let history = self
+            .resampler
+            .as_ref()
+            .map_or(0, SincResampler::history_frames);
         let next_position = self
             .output_frames_emitted
             .saturating_mul(u64::from(self.source_rate));
-        let keep_from = next_position / u64::from(self.target_rate);
+        // Keep the frames the next output frame's kernel still reaches back to.
+        let keep_from = (next_position / u64::from(self.target_rate)).saturating_sub(history);
         while self.source_start_frame < keep_from {
             for _ in 0..self.target_channels {
                 let _ = self.source.pop_front();
@@ -488,73 +628,6 @@ fn map_channels(
     mapped
 }
 
-pub fn adapt_pcm16(
-    chunk: Pcm16Chunk,
-    source_rate: u32,
-    source_channels: u16,
-    target_rate: u32,
-    target_channels: u16,
-) -> Result<Pcm16Chunk, AudioError> {
-    if source_rate == 0 || target_rate == 0 || source_channels == 0 || target_channels == 0 {
-        return Err(AudioError("PCM conversion format must not be empty".into()));
-    }
-    validate_pcm16(&chunk, source_channels)?;
-    if source_rate == target_rate && source_channels == target_channels {
-        return Ok(chunk);
-    }
-
-    let output_frames = u64::from(chunk.frames)
-        .saturating_mul(u64::from(target_rate))
-        .saturating_add(u64::from(source_rate / 2))
-        / u64::from(source_rate);
-    let output_frames = u32::try_from(output_frames)
-        .map_err(|_| AudioError("resampled audio packet is too large".into()))?;
-    let sample_count = usize::try_from(output_frames)
-        .ok()
-        .and_then(|frames| frames.checked_mul(usize::from(target_channels)))
-        .ok_or_else(|| AudioError("resampled audio packet size overflow".into()))?;
-    let mut output = Vec::with_capacity(
-        sample_count
-            .checked_mul(2)
-            .ok_or_else(|| AudioError("resampled audio byte size overflow".into()))?,
-    );
-    for output_frame in 0..output_frames {
-        let source_position = u64::from(output_frame).saturating_mul(u64::from(source_rate));
-        let first_frame = (source_position / u64::from(target_rate))
-            .min(u64::from(chunk.frames.saturating_sub(1))) as u32;
-        let second_frame = first_frame
-            .saturating_add(1)
-            .min(chunk.frames.saturating_sub(1));
-        let fraction = source_position % u64::from(target_rate);
-        for channel in 0..target_channels {
-            let first = mapped_sample(
-                &chunk.data,
-                first_frame,
-                source_channels,
-                channel,
-                target_channels,
-            );
-            let second = mapped_sample(
-                &chunk.data,
-                second_frame,
-                source_channels,
-                channel,
-                target_channels,
-            );
-            let interpolated = (i64::from(first) * (i64::from(target_rate) - fraction as i64)
-                + i64::from(second) * fraction as i64)
-                / i64::from(target_rate);
-            output.extend_from_slice(&(interpolated as i16).to_le_bytes());
-        }
-    }
-    Ok(Pcm16Chunk {
-        timestamp: chunk.timestamp,
-        frames: output_frames,
-        discontinuous: chunk.discontinuous,
-        data: output.into_boxed_slice(),
-    })
-}
-
 pub fn apply_gain_pcm16(
     chunk: &mut Pcm16Chunk,
     channels: u16,
@@ -628,18 +701,30 @@ fn read_sample(data: &[u8], frame: u32, channels: u16, channel: u16) -> i16 {
     i16::from_le_bytes([data[byte_index], data[byte_index + 1]])
 }
 
-fn mix_overlap(
+fn scale_pcm16(chunk: &mut Pcm16Chunk, numerator: i64, denominator: i64) {
+    if numerator == denominator || denominator == 0 {
+        return;
+    }
+    for sample in chunk.data.chunks_exact_mut(2) {
+        let value = i16::from_le_bytes([sample[0], sample[1]]);
+        let scaled = i64::from(value).saturating_mul(numerator) / denominator;
+        sample.copy_from_slice(&clamp_to_i16(scaled).to_le_bytes());
+    }
+}
+
+fn add_overlap(
     master: &mut Pcm16Chunk,
     auxiliary: &Pcm16Chunk,
     sample_rate: u32,
     channels: u16,
-    gain_percent: u16,
+    numerator: i64,
+    denominator: i64,
 ) {
     let overlap_start = master.timestamp.max(auxiliary.timestamp);
     let master_end = chunk_end(master, sample_rate);
     let auxiliary_end = chunk_end(auxiliary, sample_rate);
     let overlap_end = master_end.min(auxiliary_end);
-    if overlap_start >= overlap_end {
+    if overlap_start >= overlap_end || denominator == 0 {
         return;
     }
     let master_offset =
@@ -661,14 +746,16 @@ fn mix_overlap(
                 auxiliary.data[auxiliary_index],
                 auxiliary.data[auxiliary_index + 1],
             ]);
-            let microphone_weight = i64::from(gain_percent);
-            let denominator = 100 + microphone_weight;
-            let mixed =
-                (i64::from(base) * 100 + i64::from(microphone) * microphone_weight) / denominator;
-            let mixed = mixed as i16;
-            master.data[master_index..master_index + 2].copy_from_slice(&mixed.to_le_bytes());
+            let mixed = i64::from(base)
+                .saturating_add(i64::from(microphone).saturating_mul(numerator) / denominator);
+            master.data[master_index..master_index + 2]
+                .copy_from_slice(&clamp_to_i16(mixed).to_le_bytes());
         }
     }
+}
+
+fn clamp_to_i16(value: i64) -> i16 {
+    value.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
 }
 
 fn overlap_sample_indices(
@@ -730,31 +817,76 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn resamples_and_duplicates_mono_microphone_audio() {
-        let converted = adapt_pcm16(chunk(0, 1, &[0, 10_000]), 24_000, 1, 48_000, 2).unwrap();
+    fn tone(frames: usize, frequency: f64, sample_rate: f64) -> Vec<i16> {
+        (0..frames)
+            .map(|frame| {
+                let phase = 2.0 * std::f64::consts::PI * frequency * frame as f64 / sample_rate;
+                (phase.sin() * 12_000.0) as i16
+            })
+            .collect()
+    }
 
-        assert_eq!(converted.frames, 4);
-        assert_eq!(
-            samples(&converted),
-            [0, 0, 5_000, 5_000, 10_000, 10_000, 10_000, 10_000]
+    fn root_mean_square(samples: &[i16]) -> f64 {
+        if samples.is_empty() {
+            return 0.0;
+        }
+        let total = samples
+            .iter()
+            .map(|sample| f64::from(*sample) * f64::from(*sample))
+            .sum::<f64>();
+        (total / samples.len() as f64).sqrt()
+    }
+
+    /// The defect that made converted microphone audio sound gritty: linear
+    /// interpolation folded a 30 kHz component back to 18 kHz at nearly full
+    /// level instead of removing it.
+    #[test]
+    fn downsampling_removes_content_above_the_target_nyquist() {
+        let mut converter = PcmStreamConverter::new_voice(96_000, 1, 48_000, 1).unwrap();
+        let input = tone(9_600, 30_000.0, 96_000.0);
+
+        let converted = converter.push(chunk(0, 1, &input)).unwrap().unwrap();
+        let output = samples(&converted);
+        let settled = &output[output.len() / 4..output.len() * 3 / 4];
+
+        assert!(
+            root_mean_square(settled) < root_mean_square(&input) / 20.0,
+            "aliased energy survived: {} vs {}",
+            root_mean_square(settled),
+            root_mean_square(&input)
         );
     }
 
     #[test]
-    fn streaming_resampler_is_continuous_across_packet_edges() {
+    fn upsampling_preserves_an_in_band_tone() {
         let mut converter = PcmStreamConverter::new_voice(24_000, 1, 48_000, 1).unwrap();
-        let first = converter.push(chunk(0, 1, &[0, 10_000])).unwrap().unwrap();
-        let second = converter
-            .push(chunk(0, 1, &[20_000, 30_000]))
-            .unwrap()
-            .unwrap();
+        let input = tone(4_800, 1_000.0, 24_000.0);
 
-        assert_eq!(samples(&first), [0, 5_000]);
-        assert_eq!(samples(&second), [10_000, 15_000, 20_000, 25_000]);
+        let converted = converter.push(chunk(0, 1, &input)).unwrap().unwrap();
+        let output = samples(&converted);
+        let settled = &output[output.len() / 4..output.len() * 3 / 4];
+        let ratio = root_mean_square(settled) / root_mean_square(&input);
+
+        assert!((0.95..=1.05).contains(&ratio), "level drifted by {ratio}");
+    }
+
+    #[test]
+    fn streaming_resampler_is_continuous_across_packet_edges() {
+        let input = tone(2_400, 1_000.0, 24_000.0);
+        let mut whole = PcmStreamConverter::new_voice(24_000, 1, 48_000, 1).unwrap();
+        let mut split = PcmStreamConverter::new_voice(24_000, 1, 48_000, 1).unwrap();
+
+        let single = whole.push(chunk(0, 1, &input)).unwrap().unwrap();
+        let first = split.push(chunk(0, 1, &input[..1_200])).unwrap().unwrap();
+        let second = split.push(chunk(50, 1, &input[1_200..])).unwrap().unwrap();
+
+        let mut joined = samples(&first);
+        joined.extend(samples(&second));
+        assert_eq!(joined, samples(&single));
+        assert_eq!(first.timestamp, Duration::ZERO);
         assert_eq!(
             second.timestamp,
-            Duration::from_nanos(2 * 1_000_000_000 / 48_000)
+            Duration::from_nanos(u64::from(first.frames) * 1_000_000_000 / 48_000)
         );
     }
 
@@ -818,15 +950,13 @@ mod tests {
     #[test]
     fn stream_converter_starts_a_new_epoch_after_a_capture_gap() {
         let mut converter = PcmStreamConverter::new_voice(24_000, 1, 48_000, 1).unwrap();
-        let _ = converter.push(chunk(0, 1, &[0, 10_000])).unwrap();
-        let restarted = converter
-            .push(chunk(1_000, 1, &[20_000, 30_000]))
-            .unwrap()
-            .unwrap();
+        let input = tone(1_200, 1_000.0, 24_000.0);
+        let _ = converter.push(chunk(0, 1, &input)).unwrap();
+        let restarted = converter.push(chunk(1_000, 1, &input)).unwrap().unwrap();
 
         assert_eq!(restarted.timestamp, Duration::from_secs(1));
-        assert_eq!(samples(&restarted), [0, 104]);
         assert!(restarted.discontinuous);
+        assert_eq!(samples(&restarted)[0], 0);
     }
 
     #[test]
@@ -852,7 +982,20 @@ mod tests {
             .unwrap();
 
         let mixed = mixer.mix(chunk(0, 1, &[1_000, 10_000, 10_000])).unwrap();
-        assert_eq!(samples(&mixed), [1_000, 16_666, 10_000]);
+        assert_eq!(samples(&mixed), [333, 16_666, 9_999]);
+    }
+
+    /// Headroom used to be taken only from the frames a microphone packet
+    /// covered, so the desktop level jumped at the edge of every gap.
+    #[test]
+    fn desktop_level_does_not_step_at_a_microphone_gap() {
+        let mut mixer = PcmMixer::new(1_000, 1, 100).unwrap();
+        mixer
+            .push_auxiliary(chunk(2, 1, &[0, 0]), 1_000, 1)
+            .unwrap();
+
+        let mixed = mixer.mix(chunk(0, 1, &[10_000; 4])).unwrap();
+        assert_eq!(samples(&mixed), [5_000; 4]);
     }
 
     #[test]
