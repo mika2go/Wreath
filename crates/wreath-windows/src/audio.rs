@@ -160,6 +160,7 @@ pub struct MicrophoneCapture {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MicrophoneTarget {
     pub id: String,
+    pub name: String,
     pub default: bool,
 }
 
@@ -167,6 +168,7 @@ pub struct MicrophoneTarget {
 /// for the duration of the call and does not start an audio stream.
 #[cfg(target_os = "windows")]
 pub fn microphones() -> Result<Vec<MicrophoneTarget>, AudioError> {
+    use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
     use windows::Win32::Media::Audio::{
         DEVICE_STATE_ACTIVE, IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eConsole,
     };
@@ -174,9 +176,11 @@ pub fn microphones() -> Result<Vec<MicrophoneTarget>, AudioError> {
         CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
     };
 
-    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
-        .ok()
-        .map_err(|error| AudioError(error.to_string()))?;
+    let uninitialize = match unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok() {
+        Ok(()) => true,
+        Err(error) if error.code() == RPC_E_CHANGED_MODE => false,
+        Err(error) => return Err(AudioError(error.to_string())),
+    };
     let result = (|| -> Result<Vec<MicrophoneTarget>, AudioError> {
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
@@ -195,13 +199,36 @@ pub fn microphones() -> Result<Vec<MicrophoneTarget>, AudioError> {
             let id = device_id(&device)?;
             targets.push(MicrophoneTarget {
                 default: default_id.as_deref() == Some(id.as_str()),
+                name: device_name(&device).unwrap_or_else(|_| "Windows audio input".into()),
                 id,
             });
         }
         Ok(targets)
     })();
-    unsafe { CoUninitialize() };
+    if uninitialize {
+        unsafe { CoUninitialize() };
+    }
     result
+}
+
+#[cfg(target_os = "windows")]
+fn device_name(device: &windows::Win32::Media::Audio::IMMDevice) -> Result<String, AudioError> {
+    use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+    use windows::Win32::System::Com::STGM_READ;
+    use windows::Win32::System::Com::StructuredStorage::PropVariantToString;
+
+    let store = unsafe { device.OpenPropertyStore(STGM_READ) }
+        .map_err(|error| AudioError(error.to_string()))?;
+    let value = unsafe { store.GetValue(&PKEY_Device_FriendlyName) }
+        .map_err(|error| AudioError(error.to_string()))?;
+    let mut buffer = [0_u16; 256];
+    unsafe { PropVariantToString(&value, &mut buffer) }
+        .map_err(|error| AudioError(error.to_string()))?;
+    let length = buffer
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(buffer.len());
+    Ok(String::from_utf16_lossy(&buffer[..length]))
 }
 
 #[cfg(target_os = "windows")]

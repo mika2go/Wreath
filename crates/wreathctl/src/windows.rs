@@ -66,7 +66,8 @@ fn print_monitors() -> Result<(), String> {
 fn print_microphones() -> Result<(), String> {
     for microphone in wreath_windows::audio::microphones().map_err(|error| error.to_string())? {
         println!(
-            "{}{}",
+            "{}  {}{}",
+            microphone.name,
             microphone.id,
             if microphone.default { " [default]" } else { "" }
         );

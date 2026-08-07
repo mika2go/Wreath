@@ -1,18 +1,30 @@
+use std::collections::{HashMap, HashSet};
+use std::os::windows::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct2D::Common::{D2D_RECT_F, D2D_SIZE_U, D2D1_COLOR_F};
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT,
-    D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget,
+    D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_DRAW_TEXT_OPTIONS_NONE,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
+    D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap, ID2D1Factory,
+    ID2D1HwndRenderTarget,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
     DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat,
 };
-use windows::core::w;
+use windows::Win32::Graphics::Gdi::{DeleteObject, HPALETTE};
+use windows::Win32::Graphics::Imaging::{
+    CLSID_WICImagingFactory, IWICImagingFactory, WICBitmapUseAlpha,
+};
+use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IBindCtx};
+use windows::Win32::UI::Shell::{
+    IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK, SIIGBF_THUMBNAILONLY,
+};
+use windows::core::{PCWSTR, w};
 
 use crate::model::{Action, Page, SettingsSection, UiModel};
 
@@ -80,6 +92,9 @@ pub struct Renderer {
     body: IDWriteTextFormat,
     small: IDWriteTextFormat,
     hits: Vec<HitRegion>,
+    wic_factory: IWICImagingFactory,
+    thumbnails: HashMap<PathBuf, ID2D1Bitmap>,
+    unavailable_thumbnails: HashSet<PathBuf>,
 }
 
 impl Renderer {
@@ -95,6 +110,9 @@ impl Renderer {
         let section = text_format(&write_factory, 17.0, true)?;
         let body = text_format(&write_factory, 12.0, false)?;
         let small = text_format(&write_factory, 10.0, false)?;
+        let wic_factory =
+            unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
+                .map_err(|error| error.to_string())?;
         Ok(Self {
             d2d_factory,
             target: None,
@@ -104,6 +122,9 @@ impl Renderer {
             body,
             small,
             hits: Vec::new(),
+            wic_factory,
+            thumbnails: HashMap::new(),
+            unavailable_thumbnails: HashSet::new(),
         })
     }
 
@@ -152,6 +173,7 @@ impl Renderer {
         }
         unsafe { target.EndDraw(None, None) }.map_err(|error| {
             self.target = None;
+            self.thumbnails.clear();
             error.to_string()
         })
     }
@@ -416,15 +438,24 @@ impl Renderer {
             PRIMARY,
             Some(Action::CreateCollection),
         )?;
+        if model.active_collection.is_some() {
+            self.pill(
+                rect(left, 170.0, left + sidebar_width, 206.0),
+                SURFACE,
+                "Delete collection",
+                0xe58b8b,
+                Some(Action::DeleteActiveCollection),
+            )?;
+        }
         self.collection_row(
             "All clips",
             model.clips.len(),
             model.active_collection.is_none(),
-            rect(left, 184.0, left + sidebar_width, 226.0),
+            rect(left, 218.0, left + sidebar_width, 260.0),
             None,
         )?;
         for (index, collection) in model.collections.iter().take(8).enumerate() {
-            let top = 232.0 + index as f32 * 46.0;
+            let top = 266.0 + index as f32 * 46.0;
             self.collection_row(
                 &collection.name,
                 collection.clip_count,
@@ -561,6 +592,18 @@ impl Renderer {
                 )?;
             }
             SettingsSection::Audio => {
+                let microphone_name = model
+                    .config
+                    .audio
+                    .microphone_device
+                    .as_ref()
+                    .and_then(|id| {
+                        model
+                            .microphone_names
+                            .iter()
+                            .find(|(device_id, _)| device_id == id)
+                    })
+                    .map_or("Windows default", |(_, name)| name.as_str());
                 self.setting_row(
                     "Desktop audio",
                     on_off(model.config.audio.desktop),
@@ -581,12 +624,7 @@ impl Renderer {
                 )?;
                 self.setting_row(
                     "Input device",
-                    model
-                        .config
-                        .audio
-                        .microphone_device
-                        .as_deref()
-                        .unwrap_or("Windows default"),
+                    microphone_name,
                     "Cycle through active Windows input endpoints.",
                     left,
                     right,
@@ -774,13 +812,16 @@ impl Renderer {
                 STAGE,
                 7.0,
             )?;
-            self.text(
-                "▶",
-                rect(x + 14.0, y + 18.0, x + card_width, y + 44.0),
-                &self.section.clone(),
-                SECONDARY,
-            )?;
             let clip = &model.clips[*index];
+            let preview = rect(x + 6.0, y + 6.0, x + card_width - 6.0, y + 94.0);
+            if !self.draw_thumbnail(&clip.path, preview)? {
+                self.text(
+                    "▶",
+                    rect(x + 14.0, y + 18.0, x + card_width, y + 44.0),
+                    &self.section.clone(),
+                    SECONDARY,
+                )?;
+            }
             self.text(
                 &clip.title,
                 rect(x + 12.0, y + 104.0, x + card_width - 8.0, y + 124.0),
@@ -835,7 +876,7 @@ impl Renderer {
         )?;
         self.hits.push(HitRegion {
             rect: area,
-            action: index.map_or(Action::ClearSearch, |_| Action::Refresh),
+            action: Action::SelectCollection(index),
         });
         Ok(())
     }
@@ -960,6 +1001,60 @@ impl Renderer {
             )
         };
         Ok(())
+    }
+
+    fn draw_thumbnail(&mut self, path: &Path, destination: LogicalRect) -> Result<bool, String> {
+        if !self.thumbnails.contains_key(path) && !self.unavailable_thumbnails.contains(path) {
+            match self.load_thumbnail(path) {
+                Ok(bitmap) => {
+                    self.thumbnails.insert(path.to_path_buf(), bitmap);
+                }
+                Err(_) => {
+                    self.unavailable_thumbnails.insert(path.to_path_buf());
+                }
+            }
+        }
+        let Some(bitmap) = self.thumbnails.get(path) else {
+            return Ok(false);
+        };
+        let target = self.target.as_ref().expect("render target exists");
+        unsafe {
+            target.DrawBitmap(
+                bitmap,
+                Some(&destination.d2d()),
+                1.0,
+                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                None,
+            );
+        }
+        Ok(true)
+    }
+
+    fn load_thumbnail(&self, path: &Path) -> Result<ID2D1Bitmap, String> {
+        let path = path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let shell: IShellItemImageFactory =
+            unsafe { SHCreateItemFromParsingName(PCWSTR(path.as_ptr()), None::<&IBindCtx>) }
+                .map_err(|error| error.to_string())?;
+        let bitmap = unsafe {
+            shell.GetImage(
+                windows::Win32::Foundation::SIZE { cx: 640, cy: 360 },
+                SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK,
+            )
+        }
+        .map_err(|error| error.to_string())?;
+        let wic = unsafe {
+            self.wic_factory
+                .CreateBitmapFromHBITMAP(bitmap, HPALETTE::default(), WICBitmapUseAlpha)
+        }
+        .map_err(|error| error.to_string());
+        let _ = unsafe { DeleteObject(bitmap.into()) };
+        let wic = wic?;
+        let target = self.target.as_ref().expect("render target exists");
+        unsafe { target.CreateBitmapFromWicBitmap(&wic, None) }.map_err(|error| error.to_string())
     }
 }
 

@@ -18,6 +18,7 @@ windows = { version = "0.62.2", features = [
     "Graphics_DirectX",
     "Graphics_DirectX_Direct3D11",
     "Win32_Foundation",
+    "Win32_Devices_FunctionDiscovery",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
@@ -39,5 +40,6 @@ windows = { version = "0.62.2", features = [
     "Win32_System_WinRT_Graphics_Capture",
     "Win32_System_Variant",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
 ] }

@@ -2,6 +2,8 @@
 pub mod app;
 #[cfg(target_os = "windows")]
 pub mod autostart;
+#[cfg(target_os = "windows")]
+pub mod input_dialog;
 pub mod model;
 #[cfg(target_os = "windows")]
 pub mod player;

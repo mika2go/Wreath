@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM,
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT, UpdateWindow};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
@@ -9,12 +9,13 @@ use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CREATESTRUCTW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW,
-    GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowLongPtrW, MSG, PostQuitMessage,
+    AppendMenuW, CREATESTRUCTW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+    DestroyMenu, DispatchMessageW, FindWindowW, GWLP_USERDATA, GetClientRect, GetCursorPos,
+    GetMessageW, GetWindowLongPtrW, HMENU, MF_SEPARATOR, MF_STRING, MSG, PostQuitMessage,
     RegisterClassW, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOZORDER, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_CHAR,
-    WM_DESTROY, WM_KEYDOWN, WM_LBUTTONUP, WM_NCCREATE, WM_PAINT, WM_SIZE, WNDCLASSW, WS_CHILD,
-    WS_DISABLED, WS_OVERLAPPEDWINDOW,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
+    WINDOW_EX_STYLE, WM_CHAR, WM_COMMAND, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONUP, WM_NCCREATE,
+    WM_PAINT, WM_RBUTTONUP, WM_SIZE, WNDCLASSW, WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::config::Codec;
@@ -25,6 +26,10 @@ use crate::player::{PLAYER_EVENT, Player};
 use crate::renderer::{Renderer, player_bounds};
 
 const WINDOW_CLASS: windows::core::PCWSTR = w!("WreathApplicationWindow");
+const COMMAND_CLIP_RENAME: usize = 500;
+const COMMAND_CLIP_DELETE: usize = 501;
+const COMMAND_CLIP_MOVE_LIBRARY: usize = 502;
+const COMMAND_CLIP_MOVE_COLLECTION_BASE: usize = 600;
 
 struct AppState {
     model: UiModel,
@@ -33,6 +38,7 @@ struct AppState {
     height: u32,
     player: Option<Player>,
     video_window: Option<HWND>,
+    context_clip: Option<usize>,
 }
 
 pub fn run() -> Result<(), String> {
@@ -69,13 +75,16 @@ fn run_initialized() -> Result<(), String> {
         return Err(std::io::Error::last_os_error().to_string());
     }
 
+    let mut model = UiModel::load()?;
+    refresh_microphones(&mut model);
     let state = Box::new(AppState {
-        model: UiModel::load()?,
+        model,
         renderer: Renderer::new()?,
         width: 1280,
         height: 760,
         player: None,
         video_window: None,
+        context_clip: None,
     });
     let state = Box::into_raw(state);
     let window = unsafe {
@@ -207,6 +216,23 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        WM_RBUTTONUP => {
+            if let Some(state) = state_mut(window) {
+                let x = signed_low_word(lparam.0) as f32;
+                let y = signed_high_word(lparam.0) as f32;
+                if let Some(Action::OpenClip(index)) = state.renderer.hit_test(x, y) {
+                    state.context_clip = Some(index);
+                    show_clip_menu(window, &state.model);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_COMMAND => {
+            if let Some(state) = state_mut(window) {
+                handle_clip_command(window, state, wparam.0 & 0xffff);
+            }
+            LRESULT(0)
+        }
         WM_CHAR => {
             if let Some(state) = state_mut(window) {
                 handle_character(state, wparam.0 as u32);
@@ -330,11 +356,12 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         }
         Action::ChooseStorage => choose_storage(&mut state.model),
         Action::SaveSettings => save_settings(&mut state.model),
-        Action::CreateCollection => {
-            state.model.notice = Some("Type a collection name, then press Enter".into())
-        }
-        Action::DeleteActiveCollection => {
-            state.model.notice = Some("Collection deletion requires confirmation".into())
+        Action::CreateCollection => create_collection(window, &mut state.model),
+        Action::DeleteActiveCollection => delete_active_collection(window, &mut state.model),
+        Action::SelectCollection(index) => {
+            state.model.active_collection = index
+                .and_then(|index| state.model.collections.get(index))
+                .map(|collection| collection.path.clone());
         }
         Action::PlayPause => match state.player.as_ref().map(Player::toggle) {
             Some(Err(error)) => state.model.notice = Some(error),
@@ -343,6 +370,159 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         },
     }
     redraw(window);
+}
+
+fn create_collection(window: HWND, model: &mut UiModel) {
+    let name = match crate::input_dialog::prompt(window, "New collection", "Collection name", "") {
+        Ok(Some(name)) => name,
+        Ok(None) => return,
+        Err(error) => {
+            model.notice = Some(error);
+            return;
+        }
+    };
+    match wreath_core::clips::create_collection(&model.config.storage.directory, &name) {
+        Ok(path) => {
+            if let Err(error) = model.refresh() {
+                model.notice = Some(error);
+            } else {
+                model.active_collection = Some(path);
+                model.notice = Some("Collection created".into());
+            }
+        }
+        Err(error) => model.notice = Some(format!("Cannot create collection: {error}")),
+    }
+}
+
+fn delete_active_collection(window: HWND, model: &mut UiModel) {
+    let Some(collection) = model.active_collection.clone() else {
+        return;
+    };
+    if !confirm(
+        window,
+        "Delete this collection? Its clips will be moved back to Library.",
+    ) {
+        return;
+    }
+    match wreath_core::clips::delete_collection(
+        &model.config.storage.directory,
+        &collection,
+        &model.paths.thumbnail_dir,
+    ) {
+        Ok(()) => {
+            model.active_collection = None;
+            let result = model.refresh();
+            set_result(model, result, "Collection deleted; clips moved to Library");
+        }
+        Err(error) => model.notice = Some(format!("Cannot delete collection: {error}")),
+    }
+}
+
+fn show_clip_menu(window: HWND, model: &UiModel) {
+    let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
+        return;
+    };
+    append_menu_item(menu, COMMAND_CLIP_RENAME, "Rename");
+    append_menu_item(menu, COMMAND_CLIP_MOVE_LIBRARY, "Move to Library");
+    for (index, collection) in model.collections.iter().take(64).enumerate() {
+        append_menu_item(
+            menu,
+            COMMAND_CLIP_MOVE_COLLECTION_BASE + index,
+            &format!("Move to {}", collection.name),
+        );
+    }
+    let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, None) };
+    append_menu_item(menu, COMMAND_CLIP_DELETE, "Delete clip");
+    let mut point = POINT::default();
+    if unsafe { GetCursorPos(&mut point) }.is_ok() {
+        unsafe {
+            let _ = SetForegroundWindow(window);
+            let _ = TrackPopupMenu(menu, TPM_RIGHTBUTTON, point.x, point.y, None, window, None);
+        }
+    }
+    let _ = unsafe { DestroyMenu(menu) };
+}
+
+fn append_menu_item(menu: HMENU, command: usize, label: &str) {
+    let label = wide(label);
+    let _ = unsafe { AppendMenuW(menu, MF_STRING, command, PCWSTR(label.as_ptr())) };
+}
+
+fn handle_clip_command(window: HWND, state: &mut AppState, command: usize) {
+    let Some(index) = state.context_clip else {
+        return;
+    };
+    let Some(clip) = state.model.clips.get(index).cloned() else {
+        return;
+    };
+    let result = match command {
+        COMMAND_CLIP_RENAME => {
+            let name = match crate::input_dialog::prompt(
+                window,
+                "Rename clip",
+                "Clip name",
+                &clip.title,
+            ) {
+                Ok(Some(name)) => name,
+                Ok(None) => return,
+                Err(error) => {
+                    state.model.notice = Some(error);
+                    return;
+                }
+            };
+            wreath_core::clips::rename(&clip, &name, &state.model.paths.thumbnail_dir)
+                .map(|_| "Clip renamed")
+        }
+        COMMAND_CLIP_DELETE => {
+            if !confirm(window, "Delete this clip permanently?") {
+                return;
+            }
+            wreath_core::clips::delete(&clip, &state.model.paths.thumbnail_dir)
+                .map(|_| "Clip deleted")
+        }
+        COMMAND_CLIP_MOVE_LIBRARY => wreath_core::clips::move_to_library(
+            &clip,
+            &state.model.config.storage.directory,
+            &state.model.paths.thumbnail_dir,
+        )
+        .map(|_| "Clip moved to Library"),
+        command if command >= COMMAND_CLIP_MOVE_COLLECTION_BASE => {
+            let collection_index = command - COMMAND_CLIP_MOVE_COLLECTION_BASE;
+            let Some(collection) = state.model.collections.get(collection_index) else {
+                return;
+            };
+            wreath_core::clips::move_to_collection(
+                &clip,
+                &state.model.config.storage.directory,
+                &collection.path,
+                &state.model.paths.thumbnail_dir,
+            )
+            .map(|_| "Clip moved")
+        }
+        _ => return,
+    };
+    match result {
+        Ok(message) => {
+            let refresh = state.model.refresh();
+            set_result(&mut state.model, refresh, message);
+        }
+        Err(error) => state.model.notice = Some(error.to_string()),
+    }
+    state.context_clip = None;
+    redraw(window);
+}
+
+fn confirm(window: HWND, message: &str) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONWARNING, MB_YESNO, MessageBoxW};
+    let message = wide(message);
+    unsafe {
+        MessageBoxW(
+            Some(window),
+            PCWSTR(message.as_ptr()),
+            w!("Wreath"),
+            MB_YESNO | MB_ICONWARNING,
+        ) == IDYES
+    }
 }
 
 fn open_current_clip(state: &mut AppState) {
@@ -439,6 +619,10 @@ fn cycle_display(model: &mut UiModel) {
 fn cycle_microphone(model: &mut UiModel) {
     match wreath_windows::audio::microphones() {
         Ok(devices) if !devices.is_empty() => {
+            model.microphone_names = devices
+                .iter()
+                .map(|device| (device.id.clone(), device.name.clone()))
+                .collect();
             let current = model.config.audio.microphone_device.as_deref();
             let next = devices
                 .iter()
@@ -448,6 +632,15 @@ fn cycle_microphone(model: &mut UiModel) {
         }
         Ok(_) => model.notice = Some("Windows reported no microphones".into()),
         Err(error) => model.notice = Some(error.to_string()),
+    }
+}
+
+fn refresh_microphones(model: &mut UiModel) {
+    if let Ok(devices) = wreath_windows::audio::microphones() {
+        model.microphone_names = devices
+            .into_iter()
+            .map(|device| (device.id, device.name))
+            .collect();
     }
 }
 

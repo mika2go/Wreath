@@ -48,6 +48,7 @@ pub enum Action {
     SaveSettings,
     CreateCollection,
     DeleteActiveCollection,
+    SelectCollection(Option<usize>),
     PlayPause,
 }
 
@@ -65,6 +66,7 @@ pub struct UiModel {
     pub active_clip: Option<usize>,
     pub notice: Option<String>,
     pub hotkey_capture: bool,
+    pub microphone_names: Vec<(String, String)>,
 }
 
 impl UiModel {
@@ -85,6 +87,7 @@ impl UiModel {
             active_clip: None,
             notice: None,
             hotkey_capture: false,
+            microphone_names: Vec::new(),
         };
         model.refresh()?;
         Ok(model)
@@ -184,6 +187,7 @@ mod tests {
             active_clip: None,
             notice: None,
             hotkey_capture: false,
+            microphone_names: Vec::new(),
         }
     }
 
