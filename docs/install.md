@@ -13,6 +13,11 @@ shortcut settings with the command `wreathctl save`.
 | KDE Plasma Wayland | Direct monitor or portal | Plasma System Settings | systemd user service |
 | KDE Plasma X11 | Direct monitor | Plasma System Settings | systemd user service |
 | Other Wayland/X11 desktops | Recorder-discovered target or portal | Desktop-specific settings | systemd user service |
+| Windows 10/11 | Windows Graphics Capture | Native global hotkey | Optional per-user tray autostart |
+
+The Windows edition is still experimental. Build its per-user MSI on Windows
+using [the Windows build guide](windows.md). It installs only native binaries
+and keeps autostart opt-in in the tray menu.
 
 GPU Screen Recorder provides the replay engine. It supports AMD, Intel, and
 NVIDIA GPUs on X11 and Wayland. Direct monitor capture is preferred. The

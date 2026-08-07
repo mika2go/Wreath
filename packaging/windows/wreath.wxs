@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="Wreath"
+      Manufacturer="Wreath"
+      Version="$(var.Version)"
+      UpgradeCode="9A9519C9-EF4E-44BA-B86E-31D54B49F6E7"
+      Scope="perUser">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Wreath is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLFOLDER" Name="Wreath">
+        <Component Id="TrayComponent" Guid="*">
+          <File Id="WreathTrayExe" Source="$(var.BinDir)\wreath-win-ui.exe" KeyPath="yes">
+            <Shortcut
+                Id="WreathStartMenuShortcut"
+                Directory="ApplicationProgramsFolder"
+                Name="Wreath"
+                Description="Low-overhead instant replay recorder"
+                WorkingDirectory="INSTALLFOLDER" />
+          </File>
+          <RemoveRegistryValue
+              Id="RemoveWreathAutostart"
+              Root="HKCU"
+              Key="Software\Microsoft\Windows\CurrentVersion\Run"
+              Name="Wreath"
+              Action="removeOnUninstall" />
+        </Component>
+        <Component Id="DaemonComponent" Guid="*">
+          <File Id="WreathDaemonExe" Source="$(var.BinDir)\wreathd.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="ControlComponent" Guid="*">
+          <File Id="WreathControlExe" Source="$(var.BinDir)\wreathctl.exe" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="Wreath" />
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="Wreath" Level="1">
+      <ComponentRef Id="TrayComponent" />
+      <ComponentRef Id="DaemonComponent" />
+      <ComponentRef Id="ControlComponent" />
+    </Feature>
+  </Package>
+</Wix>

@@ -5,15 +5,16 @@
 
 # Wreath
 
-Wreath is a local instant replay recorder for Linux. It continuously keeps a
-short encoded buffer in memory and writes a video only when the save shortcut
-is pressed.
+Wreath is a local instant replay recorder for Linux and Windows. It continuously
+keeps a short encoded buffer in memory and writes a video only when the save
+shortcut is pressed.
 
 ![Wreath clip library](docs/assets/wreath-library.png)
 
 ## Platform support
 
-Wreath currently targets Arch Linux and CachyOS.
+The Arch Linux/Hyprland edition is the currently tested release path. A native,
+low-overhead Windows edition is under active development.
 
 | Desktop | Capture | Global shortcut |
 | --- | --- | --- |
@@ -21,6 +22,7 @@ Wreath currently targets Arch Linux and CachyOS.
 | KDE Plasma on Wayland | Direct monitor or desktop portal | Configured once in Plasma |
 | KDE Plasma on X11 | Direct monitor | Configured once in Plasma |
 | Other desktops | Targets reported by GPU Screen Recorder | Configured by the desktop |
+| Windows 10/11 | Windows Graphics Capture + hardware Media Foundation encoder | Native global hotkey |
 
 Hyprland remains the primary integration. Wreath uses its runtime API for the
 shortcut and focused-monitor metadata, without editing the Hyprland config.
@@ -63,6 +65,9 @@ It does not modify existing files in:
 
 See [the installation guide](docs/install.md) for the `PKGBUILD`, GPU drivers,
 portal packages, KDE setup, and troubleshooting.
+
+The experimental Windows MSI build is documented in
+[the Windows build guide](docs/windows.md).
 
 ## Shortcuts
 
@@ -139,11 +144,12 @@ cargo test --workspace
 cargo run -p wreath-ui
 ```
 
-The repository contains three binaries:
+The repository contains the Linux UI plus shared and platform-specific binaries:
 
 - `wreathd`: background recorder and replay buffer
 - `wreathctl`: local control client used by shortcuts
 - `wreath-ui`: clip library and settings
+- `wreath-win-ui`: lightweight native Windows tray UI
 
 See [the architecture notes](docs/architecture.md) for the process layout.
 
