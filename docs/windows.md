@@ -52,7 +52,26 @@ wreathctl config microphone off
 wreathctl config duration 30
 wreathctl config fps 60
 wreathctl config codec h264
+wreathctl config quality 60
 ```
+
+## Clip size
+
+The encoder runs peak-constrained variable bitrate, so a still menu costs a
+fraction of a fast pan. What sets the ceiling is resolution, frame rate,
+quality and codec. At the default quality a 30 second clip is roughly 37 MB at
+1080p60, 66 MB at 1440p60 and 149 MB at 2160p60.
+
+Three levers, in the order worth reaching for:
+
+- `wreathctl config codec hevc` — same picture in about a third fewer bits.
+  Plays everywhere Windows does, but some browsers and chat clients will not
+  preview it inline, so keep `h264` for clips you paste into a conversation.
+- `wreathctl config quality 50` — halves the target again. The default of 75
+  sits at the usual 0.08 to 0.10 bits per pixel; below about 40 fast motion
+  starts to smear.
+- `wreathctl config fps 30` or a shorter `duration` — both scale the size
+  directly.
 
 Use the endpoint ID printed by `wreathctl microphones` instead of `default` to
 pin capture to a specific microphone. Wreath opens the endpoint in WASAPI raw

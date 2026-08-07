@@ -41,13 +41,21 @@ impl ReplaySpec {
         }
     }
 
+    /// Bits per second the encoder is aimed at.
+    ///
+    /// The old constants asked for roughly twice what a hardware encoder needs
+    /// to look good: about 0.2 bits per pixel at the default quality, where
+    /// 0.08 to 0.10 is the usual operating point and what streaming services
+    /// ask for. A replay clip is a file people send to someone, so the default
+    /// sits at that operating point and the quality setting scales around it —
+    /// 100 still reaches most of the old headroom, 50 halves it again.
     pub fn target_bitrate_kbps(&self) -> u32 {
         let pixels_per_second =
             u64::from(self.width) * u64::from(self.height) * u64::from(self.frames_per_second);
         let bits_per_pixel_milli = match self.codec {
-            Codec::Auto | Codec::H264 => 160_u64,
-            Codec::Hevc => 115,
-            Codec::Av1 => 90,
+            Codec::Auto | Codec::H264 => 80_u64,
+            Codec::Hevc => 58,
+            Codec::Av1 => 45,
         };
         let quality_factor = 50_u64 + u64::from(self.quality);
         let bitrate = pixels_per_second
@@ -116,5 +124,46 @@ mod tests {
         assert!(replay.target_bitrate_kbps() >= 2_500);
         assert!(replay.estimated_buffer_bytes() > 0);
         assert!(replay.estimated_buffer_megabytes() < 100);
+    }
+
+    /// A 30 second clip is something people send to someone, so the defaults
+    /// have to land at a shareable size rather than at the encoder's ceiling.
+    #[test]
+    fn default_clips_stay_shareable_at_common_resolutions() {
+        let sizes = [(1920, 1080, 45), (2560, 1440, 75), (3840, 2160, 160)];
+
+        for (width, height, megabyte_limit) in sizes {
+            let replay = ReplaySpec {
+                width,
+                height,
+                ..spec()
+            };
+            let megabytes = replay.estimated_buffer_megabytes();
+            assert!(
+                megabytes < megabyte_limit,
+                "{width}x{height} needs {megabytes} MB for 30 s, over the {megabyte_limit} MB budget"
+            );
+        }
+    }
+
+    #[test]
+    fn quality_and_codec_both_scale_the_target() {
+        let baseline = spec().target_bitrate_kbps();
+        let half = ReplaySpec {
+            quality: 50,
+            ..spec()
+        }
+        .target_bitrate_kbps();
+        let hevc = ReplaySpec {
+            codec: Codec::Hevc,
+            ..spec()
+        }
+        .target_bitrate_kbps();
+
+        assert!(half < baseline, "lowering quality has to lower the target");
+        assert!(
+            hevc < baseline,
+            "hevc needs fewer bits for the same picture"
+        );
     }
 }
