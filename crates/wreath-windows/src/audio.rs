@@ -146,6 +146,18 @@ fn integer_to_i16(sample: &[u8]) -> i16 {
 /// lagging consumers lose old capture callbacks instead of growing memory.
 #[cfg(target_os = "windows")]
 pub struct LoopbackCapture {
+    stream: CaptureStream,
+}
+
+/// Event-driven WASAPI microphone capture using either the configured endpoint
+/// ID or the current default capture endpoint.
+#[cfg(target_os = "windows")]
+pub struct MicrophoneCapture {
+    stream: CaptureStream,
+}
+
+#[cfg(target_os = "windows")]
+struct CaptureStream {
     format: AudioFormat,
     receiver: crossbeam_channel::Receiver<PcmChunk>,
     stop_event: windows::Win32::Foundation::HANDLE,
@@ -155,8 +167,46 @@ pub struct LoopbackCapture {
 #[cfg(target_os = "windows")]
 impl LoopbackCapture {
     pub fn spawn() -> Result<Self, AudioError> {
+        CaptureStream::spawn(CaptureEndpoint::Loopback).map(|stream| Self { stream })
+    }
+
+    pub fn format(&self) -> AudioFormat {
+        self.stream.format
+    }
+
+    pub fn receiver(&self) -> &crossbeam_channel::Receiver<PcmChunk> {
+        &self.stream.receiver
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl MicrophoneCapture {
+    pub fn spawn(endpoint_id: Option<&str>) -> Result<Self, AudioError> {
+        CaptureStream::spawn(CaptureEndpoint::Microphone(endpoint_id.map(str::to_owned)))
+            .map(|stream| Self { stream })
+    }
+
+    pub fn format(&self) -> AudioFormat {
+        self.stream.format
+    }
+
+    pub fn receiver(&self) -> &crossbeam_channel::Receiver<PcmChunk> {
+        &self.stream.receiver
+    }
+}
+
+#[cfg(target_os = "windows")]
+enum CaptureEndpoint {
+    Loopback,
+    Microphone(Option<String>),
+}
+
+#[cfg(target_os = "windows")]
+impl CaptureStream {
+    fn spawn(endpoint: CaptureEndpoint) -> Result<Self, AudioError> {
         use std::sync::mpsc;
 
+        use windows::Win32::Foundation::CloseHandle;
         use windows::Win32::System::Threading::CreateEventW;
 
         let stop_event = unsafe { CreateEventW(None, false, false, None) }
@@ -164,17 +214,26 @@ impl LoopbackCapture {
         let stop_for_thread = stop_event.0 as usize;
         let (chunk_sender, chunk_receiver) = crossbeam_channel::bounded(8);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
-        let thread = std::thread::Builder::new()
-            .name("wreath-wasapi".into())
+        let thread_name = match endpoint {
+            CaptureEndpoint::Loopback => "wreath-wasapi-loopback",
+            CaptureEndpoint::Microphone(_) => "wreath-wasapi-microphone",
+        };
+        let thread = match std::thread::Builder::new()
+            .name(thread_name.into())
             .spawn(move || {
                 let stop_for_thread =
                     windows::Win32::Foundation::HANDLE(stop_for_thread as *mut std::ffi::c_void);
-                let result = capture_loop(stop_for_thread, chunk_sender, &ready_sender);
+                let result = capture_loop(stop_for_thread, endpoint, chunk_sender, &ready_sender);
                 if let Err(error) = result {
                     let _ = ready_sender.send(Err(error));
                 }
-            })
-            .map_err(|error| AudioError(error.to_string()))?;
+            }) {
+            Ok(thread) => thread,
+            Err(error) => {
+                let _ = unsafe { CloseHandle(stop_event) };
+                return Err(AudioError(error.to_string()));
+            }
+        };
         match ready_receiver.recv() {
             Ok(Ok(format)) => Ok(Self {
                 format,
@@ -184,29 +243,21 @@ impl LoopbackCapture {
             }),
             Ok(Err(error)) => {
                 let _ = thread.join();
-                unsafe { windows::Win32::Foundation::CloseHandle(stop_event) }
+                unsafe { CloseHandle(stop_event) }
                     .map_err(|close_error| AudioError(close_error.to_string()))?;
                 Err(error)
             }
             Err(error) => {
                 let _ = thread.join();
-                let _ = unsafe { windows::Win32::Foundation::CloseHandle(stop_event) };
+                let _ = unsafe { CloseHandle(stop_event) };
                 Err(AudioError(error.to_string()))
             }
         }
     }
-
-    pub fn format(&self) -> AudioFormat {
-        self.format
-    }
-
-    pub fn receiver(&self) -> &crossbeam_channel::Receiver<PcmChunk> {
-        &self.receiver
-    }
 }
 
 #[cfg(target_os = "windows")]
-impl Drop for LoopbackCapture {
+impl Drop for CaptureStream {
     fn drop(&mut self) {
         let _ = unsafe { windows::Win32::System::Threading::SetEvent(self.stop_event) };
         if let Some(thread) = self.thread.take() {
@@ -219,14 +270,15 @@ impl Drop for LoopbackCapture {
 #[cfg(target_os = "windows")]
 fn capture_loop(
     stop_event: windows::Win32::Foundation::HANDLE,
+    endpoint: CaptureEndpoint,
     sender: crossbeam_channel::Sender<PcmChunk>,
     ready: &std::sync::mpsc::SyncSender<Result<AudioFormat, AudioError>>,
 ) -> Result<(), AudioError> {
     use windows::Win32::Foundation::{CloseHandle, WAIT_FAILED, WAIT_OBJECT_0};
     use windows::Win32::Media::Audio::{
         AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
-        IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator, eConsole,
-        eRender,
+        IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator, eCapture,
+        eConsole, eRender,
     };
     use windows::Win32::System::Com::{
         CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
@@ -241,8 +293,33 @@ fn capture_loop(
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
                 .map_err(|error| AudioError(error.to_string()))?;
-        let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
-            .map_err(|error| AudioError(error.to_string()))?;
+        let (device, stream_flags) = match endpoint {
+            CaptureEndpoint::Loopback => (
+                unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
+                    .map_err(|error| AudioError(error.to_string()))?,
+                AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+            ),
+            CaptureEndpoint::Microphone(Some(endpoint_id)) => {
+                let wide_id = endpoint_id
+                    .encode_utf16()
+                    .chain(Some(0))
+                    .collect::<Vec<_>>();
+                (
+                    unsafe { enumerator.GetDevice(windows::core::PCWSTR(wide_id.as_ptr())) }
+                        .map_err(|error| {
+                            AudioError(format!(
+                                "configured microphone endpoint `{endpoint_id}` is unavailable: {error}"
+                            ))
+                        })?,
+                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                )
+            }
+            CaptureEndpoint::Microphone(None) => (
+                unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }
+                    .map_err(|error| AudioError(error.to_string()))?,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+            ),
+        };
         let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
             .map_err(|error| AudioError(error.to_string()))?;
         let mix_format =
@@ -256,7 +333,7 @@ fn capture_loop(
         let initialize_result = unsafe {
             client.Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                stream_flags,
                 0,
                 0,
                 mix_format,

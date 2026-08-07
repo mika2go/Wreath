@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod audio_encoder;
+pub mod audio_mixer;
 pub mod capture;
 pub mod control;
 pub mod conversion;
