@@ -152,9 +152,10 @@ pub struct LoopbackCapture {
     stream: CaptureStream,
 }
 
-/// Timer-driven WASAPI microphone capture. The endpoint is opened in its
-/// native shared mix format without a stream category, so Windows leaves the
-/// signal alone and Wreath does every conversion itself.
+/// Timer-driven WASAPI microphone capture. The endpoint is opened in raw mode
+/// so the driver's signal processing stays out of the recording, and as PCM16
+/// mono where the audio engine will convert, falling back through the
+/// processed and native layouts on drivers that refuse either.
 #[cfg(target_os = "windows")]
 pub struct MicrophoneCapture {
     stream: CaptureStream,
@@ -528,17 +529,20 @@ fn capture_loop(
     result
 }
 
-/// Opens the endpoint in its own shared mix format.
+/// Opens a capture endpoint, preferring the least processed stream it offers.
 ///
-/// Wreath deliberately requests neither a stream category nor engine-side PCM
-/// conversion. `AudioCategory_Communications` puts the endpoint into the
-/// Windows communications signal-processing mode, which runs the driver's VoIP
-/// APO chain — automatic gain control, noise suppression, echo cancellation and
-/// beamforming. That chain is tuned for 16 kHz speech intelligibility, not for
-/// recording: the gain control pumps the noise floor up between words and the
-/// suppressor leaves musical noise behind, so captured voice sounds hissy and
-/// gritty on every machine regardless of the microphone. Taking the untouched
-/// mix format and converting in-process avoids all of it.
+/// `AudioCategory_Communications` used to be requested here, which put the
+/// endpoint into the Windows communications signal-processing mode and ran the
+/// driver's VoIP APO chain — gain control, noise suppression, echo
+/// cancellation, beamforming — over the recording. Simply not asking for that
+/// mode still leaves the endpoint's default processing in place, and OEM
+/// chains from Realtek, Nahimic or Waves apply plenty of it there too.
+///
+/// `AUDCLNT_STREAMOPTIONS_RAW` is the actual opt-out: it bypasses all signal
+/// processing except the endpoint's always-on hardware and driver stages. It
+/// is not universally supported, so the microphone walks down a ladder — raw
+/// before processed, engine-converted mono before the native layout — and
+/// reports which rung it landed on.
 #[cfg(target_os = "windows")]
 fn initialize_capture_client(
     device: &windows::Win32::Media::Audio::IMMDevice,
@@ -554,33 +558,97 @@ fn initialize_capture_client(
     ),
     AudioError,
 > {
-    let (client, native_format, device_period_hns) = prepare_capture_client(device)?;
-    initialize_native_client(
-        client,
-        native_format,
-        device_period_hns,
-        stream_flags,
-        buffer_duration_hns,
-        if microphone {
-            CaptureFormatMode::NativeMicrophone
+    if !microphone {
+        let (client, native_format, device_period_hns) = prepare_capture_client(device, false)?;
+        return initialize_native_client(
+            client,
+            native_format,
+            device_period_hns,
+            stream_flags,
+            buffer_duration_hns,
+            CaptureFormatMode::NativeLoopback,
+        );
+    }
+
+    let mut last_error = None;
+    for mode in [
+        CaptureFormatMode::RawMono,
+        CaptureFormatMode::RawNative,
+        CaptureFormatMode::ProcessedMono,
+        CaptureFormatMode::ProcessedNative,
+    ] {
+        // Initialize cannot be retried on a client that has already rejected a
+        // format, so every rung activates a fresh one.
+        let prepared = match prepare_capture_client(device, mode.raw()) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                wreath_core::diagnostic!("Wreath microphone: {mode} unavailable: {}", error.0);
+                last_error = Some(error);
+                continue;
+            }
+        };
+        let (client, native_format, device_period_hns) = prepared;
+        let attempt = if mode.mono() {
+            initialize_mono_client(
+                client,
+                native_format,
+                device_period_hns,
+                stream_flags,
+                buffer_duration_hns,
+                mode,
+            )
         } else {
-            CaptureFormatMode::NativeLoopback
-        },
-    )
+            initialize_native_client(
+                client,
+                native_format,
+                device_period_hns,
+                stream_flags,
+                buffer_duration_hns,
+                mode,
+            )
+        };
+        match attempt {
+            Ok(ready) => return Ok(ready),
+            Err(error) => {
+                wreath_core::diagnostic!("Wreath microphone: {mode} unavailable: {}", error.0);
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        AudioError("the microphone endpoint offers no usable capture format".into())
+    }))
 }
 
 #[cfg(target_os = "windows")]
 #[derive(Clone, Copy)]
 enum CaptureFormatMode {
-    NativeMicrophone,
+    RawMono,
+    RawNative,
+    ProcessedMono,
+    ProcessedNative,
     NativeLoopback,
+}
+
+#[cfg(target_os = "windows")]
+impl CaptureFormatMode {
+    fn raw(self) -> bool {
+        matches!(self, Self::RawMono | Self::RawNative)
+    }
+
+    fn mono(self) -> bool {
+        matches!(self, Self::RawMono | Self::ProcessedMono)
+    }
 }
 
 #[cfg(target_os = "windows")]
 impl fmt::Display for CaptureFormatMode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::NativeMicrophone => "unprocessed native microphone",
+            Self::RawMono => "raw PCM16 mono",
+            Self::RawNative => "raw native layout",
+            Self::ProcessedMono => "processed PCM16 mono",
+            Self::ProcessedNative => "processed native layout",
             Self::NativeLoopback => "native loopback",
         })
     }
@@ -600,6 +668,7 @@ pub fn preferred_microphone_sample_rate(native_sample_rate: u32) -> u32 {
 #[cfg(target_os = "windows")]
 fn prepare_capture_client(
     device: &windows::Win32::Media::Audio::IMMDevice,
+    raw: bool,
 ) -> Result<
     (
         windows::Win32::Media::Audio::IAudioClient2,
@@ -608,11 +677,25 @@ fn prepare_capture_client(
     ),
     AudioError,
 > {
-    use windows::Win32::Media::Audio::IAudioClient2;
+    use windows::Win32::Media::Audio::{
+        AUDCLNT_STREAMOPTIONS_RAW, AudioCategory_Other, AudioClientProperties, IAudioClient2,
+    };
     use windows::Win32::System::Com::{CLSCTX_ALL, CoTaskMemFree};
 
     let client: IAudioClient2 = unsafe { device.Activate(CLSCTX_ALL, None) }
         .map_err(|error| AudioError(error.to_string()))?;
+    if raw {
+        let properties = AudioClientProperties {
+            cbSize: std::mem::size_of::<AudioClientProperties>() as u32,
+            bIsOffload: false.into(),
+            eCategory: AudioCategory_Other,
+            Options: AUDCLNT_STREAMOPTIONS_RAW,
+        };
+        unsafe { client.SetClientProperties(&properties) }
+            .map_err(|error| AudioError(format!("raw capture mode was refused: {error}")))?;
+    }
+    // Queried after the stream options, because raw mode can expose a
+    // different format than the processed path does.
     let mix_format =
         unsafe { client.GetMixFormat() }.map_err(|error| AudioError(error.to_string()))?;
     if mix_format.is_null() {
@@ -624,6 +707,71 @@ fn prepare_capture_client(
     unsafe { client.GetDevicePeriod(Some(&mut device_period_hns), None) }
         .map_err(|error| AudioError(error.to_string()))?;
     Ok((client, format, device_period_hns))
+}
+
+/// Asks the audio engine for packed PCM16 mono at an AAC-native rate.
+///
+/// This keeps the microphone out of Wreath's own channel selection and sample
+/// conversion entirely, and the engine's converter is asked for its better
+/// quality rather than its cheap one. A driver that will not let the engine
+/// convert simply fails here and the caller drops to the native layout.
+#[cfg(target_os = "windows")]
+fn initialize_mono_client(
+    client: windows::Win32::Media::Audio::IAudioClient2,
+    native_format: AudioFormat,
+    device_period_hns: i64,
+    stream_flags: u32,
+    buffer_duration_hns: i64,
+    mode: CaptureFormatMode,
+) -> Result<
+    (
+        windows::Win32::Media::Audio::IAudioClient2,
+        AudioFormat,
+        i64,
+        CaptureFormatMode,
+    ),
+    AudioError,
+> {
+    use windows::Win32::Media::Audio::{
+        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, WAVEFORMATEX,
+    };
+
+    let sample_rate = preferred_microphone_sample_rate(native_format.sample_rate);
+    let desired = WAVEFORMATEX {
+        wFormatTag: windows::Win32::Media::Audio::WAVE_FORMAT_PCM as u16,
+        nChannels: 1,
+        nSamplesPerSec: sample_rate,
+        nAvgBytesPerSec: sample_rate.saturating_mul(2),
+        nBlockAlign: 2,
+        wBitsPerSample: 16,
+        cbSize: 0,
+    };
+    unsafe {
+        client.Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            stream_flags
+                | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+            buffer_duration_hns,
+            0,
+            &desired,
+            None,
+        )
+    }
+    .map_err(|error| AudioError(error.to_string()))?;
+    Ok((
+        client,
+        AudioFormat {
+            sample_rate,
+            channels: 1,
+            bits_per_sample: 16,
+            block_align: 2,
+            floating_point: false,
+        },
+        device_period_hns,
+        mode,
+    ))
 }
 
 #[cfg(target_os = "windows")]

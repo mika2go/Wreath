@@ -55,13 +55,15 @@ wreathctl config codec h264
 ```
 
 Use the endpoint ID printed by `wreathctl microphones` instead of `default` to
-pin capture to a specific microphone. Wreath records the endpoint in its own
-shared mix format and does not put it into the Windows communications signal
-processing mode, so the driver's VoIP chain — automatic gain control, noise
-suppression, echo cancellation — stays out of the recording. Enable those per
-device under `Sound > Recording > Properties > Enhancements` if you want them;
-if you play desktop audio over speakers, expect some of it to reach the
-microphone.
+pin capture to a specific microphone. Wreath opens the endpoint in WASAPI raw
+mode, which bypasses every signal-processing stage except the always-on
+hardware and driver ones, so neither the Windows communications chain nor an
+OEM chain from Realtek, Nahimic or Waves — gain control, noise suppression,
+echo cancellation, beamforming — reaches the recording. It asks the audio
+engine for PCM16 mono at 44.1 or 48 kHz on top of that, and falls back through
+the processed and native layouts on drivers that refuse either. The log records
+which of those it got. If you play desktop audio over speakers, expect some of
+it to reach the microphone; there is no echo cancellation in this path.
 
 Wreath appends capture diagnostics to `%LOCALAPPDATA%\Wreath\wreath.log`: the
 endpoint format each stream negotiated, which Windows audio effects the driver
