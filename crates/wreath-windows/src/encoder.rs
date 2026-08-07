@@ -400,7 +400,6 @@ fn configure_rate_control(
         CODECAPI_AVEncCommonQualityVsSpeed, CODECAPI_AVEncCommonRateControlMode, ICodecAPI,
         eAVEncCommonRateControlMode_PeakConstrainedVBR,
     };
-    use windows::Win32::System::Variant::VARIANT;
     use windows::core::Interface;
 
     let codec = match transform.cast::<ICodecAPI>() {
@@ -416,7 +415,7 @@ fn configure_rate_control(
     // Headroom for complex frames without letting a single scene run away.
     let peak = mean.saturating_add(mean / 2);
     let apply = |name: &str, key: &windows::core::GUID, value: u32| {
-        let variant = VARIANT::from(value);
+        let variant = unsigned_variant(value);
         if let Err(error) = unsafe { codec.SetValue(key, &variant) } {
             wreath_core::diagnostic!("Wreath video encoder: {name} was refused ({error})");
         }
@@ -434,6 +433,24 @@ fn configure_rate_control(
     wreath_core::diagnostic!(
         "Wreath video encoder: peak-constrained VBR, mean {mean} bit/s, peak {peak} bit/s"
     );
+}
+
+/// Wraps an unsigned value the way `ICodecAPI` expects its settings.
+#[cfg(target_os = "windows")]
+fn unsigned_variant(value: u32) -> windows::Win32::System::Variant::VARIANT {
+    use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_UI4};
+
+    VARIANT {
+        Anonymous: VARIANT_0 {
+            Anonymous: std::mem::ManuallyDrop::new(VARIANT_0_0 {
+                vt: VT_UI4,
+                wReserved1: 0,
+                wReserved2: 0,
+                wReserved3: 0,
+                Anonymous: VARIANT_0_0_0 { ulVal: value },
+            }),
+        },
+    }
 }
 
 #[cfg(target_os = "windows")]
