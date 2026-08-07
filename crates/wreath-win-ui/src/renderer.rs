@@ -733,11 +733,22 @@ impl Renderer {
                         "Change the global shortcut; no Enter confirmation needed."
                     },
                     left,
-                    right,
+                    right - 54.0,
                     196.0,
                     Action::CaptureHotkey,
                     SettingControl::Button,
                 )?;
+                let clear = rect(right - 46.0, 213.0, right, 255.0);
+                self.fill(clear, SURFACE_HOVER, 9.0)?;
+                self.glyph(
+                    Glyph::Close,
+                    rect(right - 33.0, 226.0, right - 13.0, 246.0),
+                    SECONDARY,
+                )?;
+                self.hits.push(HitRegion {
+                    rect: clear,
+                    action: Action::ClearHotkey,
+                });
             }
             SettingsSection::Storage => {
                 self.setting_row(

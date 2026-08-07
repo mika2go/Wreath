@@ -72,6 +72,17 @@ impl TryFrom<&HotkeyConfig> for NativeHotkey {
         let bytes = hotkey.key.as_bytes();
         let virtual_key = match bytes {
             [key] if key.is_ascii_alphanumeric() => u32::from(key.to_ascii_uppercase()),
+            [b'F', digit] if digit.is_ascii_digit() && *digit != b'0' => {
+                0x70 + u32::from(*digit - b'1')
+            }
+            [b'F', first, second] if first.is_ascii_digit() && second.is_ascii_digit() => {
+                let number = u32::from(*first - b'0') * 10 + u32::from(*second - b'0');
+                if (10..=24).contains(&number) {
+                    0x70 + number - 1
+                } else {
+                    return Err(HotkeyError::UnsupportedKey(hotkey.key.clone()));
+                }
+            }
             _ => return Err(HotkeyError::UnsupportedKey(hotkey.key.clone())),
         };
         Ok(Self {
@@ -150,7 +161,7 @@ impl HotkeyListener {
             .spawn(move || {
                 let thread_id = unsafe { GetCurrentThreadId() };
                 let mut current_hotkey = hotkey;
-                let mut registration = match HotkeyRegistration::register(id, &current_hotkey) {
+                let mut registration = match register_optional(id, &current_hotkey) {
                     Ok(registration) => registration,
                     Err(error) => {
                         let _ = ready_sender.send(Err(error));
@@ -172,15 +183,15 @@ impl HotkeyListener {
                         let Ok(request) = rebind_receiver.try_recv() else {
                             continue;
                         };
-                        drop(registration);
-                        match HotkeyRegistration::register(id, &request.hotkey) {
+                        drop(registration.take());
+                        match register_optional(id, &request.hotkey) {
                             Ok(new_registration) => {
                                 current_hotkey = request.hotkey;
                                 registration = new_registration;
                                 let _ = request.reply.send(Ok(()));
                             }
                             Err(error) => {
-                                match HotkeyRegistration::register(id, &current_hotkey) {
+                                match register_optional(id, &current_hotkey) {
                                     Ok(previous_registration) => {
                                         registration = previous_registration;
                                         let _ = request.reply.send(Err(error));
@@ -217,7 +228,9 @@ impl HotkeyListener {
         use windows::Win32::Foundation::{LPARAM, WPARAM};
         use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
 
-        NativeHotkey::try_from(hotkey)?;
+        if hotkey.is_bound() {
+            NativeHotkey::try_from(hotkey)?;
+        }
         let (reply_sender, reply_receiver) = std::sync::mpsc::sync_channel(1);
         self.rebind
             .send(HotkeyRebind {
@@ -231,6 +244,17 @@ impl HotkeyListener {
             .recv()
             .map_err(|error| HotkeyError::Registration(error.to_string()))?
     }
+}
+
+#[cfg(target_os = "windows")]
+fn register_optional(
+    id: i32,
+    hotkey: &HotkeyConfig,
+) -> Result<Option<HotkeyRegistration>, HotkeyError> {
+    hotkey
+        .is_bound()
+        .then(|| HotkeyRegistration::register(id, hotkey))
+        .transpose()
 }
 
 #[cfg(target_os = "windows")]
@@ -285,6 +309,20 @@ mod tests {
             NativeHotkey::try_from(&hotkey),
             Err(HotkeyError::UnsupportedKey(key)) if key == "ENTER"
         ));
+    }
+
+    #[test]
+    fn translates_function_keys_with_or_without_modifiers() {
+        for (key, virtual_key) in [("F1", 0x70), ("F12", 0x7b), ("F24", 0x87)] {
+            let hotkey = HotkeyConfig {
+                modifiers: Vec::new(),
+                key: key.into(),
+            };
+            assert_eq!(
+                NativeHotkey::try_from(&hotkey).unwrap().virtual_key,
+                virtual_key
+            );
+        }
     }
 
     #[cfg(target_os = "windows")]

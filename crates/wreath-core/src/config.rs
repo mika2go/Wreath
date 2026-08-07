@@ -114,6 +114,9 @@ impl Default for HotkeyConfig {
 
 impl fmt::Display for HotkeyConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.is_bound() {
+            return formatter.write_str("Unbound");
+        }
         for modifier in &self.modifiers {
             write!(formatter, "{modifier}+")?;
         }
@@ -122,6 +125,17 @@ impl fmt::Display for HotkeyConfig {
 }
 
 impl HotkeyConfig {
+    pub fn unbound() -> Self {
+        Self {
+            modifiers: Vec::new(),
+            key: String::new(),
+        }
+    }
+
+    pub fn is_bound(&self) -> bool {
+        !self.key.is_empty()
+    }
+
     pub fn parse(value: &str) -> Result<Self, ConfigError> {
         let parts = value
             .split('+')
@@ -144,6 +158,9 @@ impl HotkeyConfig {
 
     fn validate(&self) -> Result<(), ConfigError> {
         const MODIFIERS: &[&str] = &["SUPER", "SHIFT", "CTRL", "ALT"];
+        if self.modifiers.is_empty() && self.key.is_empty() {
+            return Ok(());
+        }
         if self
             .modifiers
             .iter()
@@ -163,7 +180,7 @@ impl HotkeyConfig {
                 .all(|character| character.is_ascii_alphanumeric() || character == '_')
         {
             return Err(ConfigError::Invalid(
-                "hotkey must be an alphanumeric XKB key name".into(),
+                "hotkey must be an alphanumeric key name".into(),
             ));
         }
         Ok(())
@@ -302,6 +319,14 @@ mod tests {
     fn hotkey_parses_and_normalizes() {
         let hotkey = HotkeyConfig::parse("super + shift + r").unwrap();
         assert_eq!(hotkey.to_string(), "SUPER+SHIFT+R");
+    }
+
+    #[test]
+    fn hotkey_can_be_fully_unbound() {
+        let mut config = Config::default();
+        config.hotkey = HotkeyConfig::unbound();
+        assert!(config.validate().is_ok());
+        assert_eq!(config.hotkey.to_string(), "Unbound");
     }
 
     #[test]

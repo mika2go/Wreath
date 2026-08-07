@@ -46,6 +46,7 @@ pub enum Action {
     ChooseMicrophoneGain,
     ChooseStorageLimit,
     CaptureHotkey,
+    ClearHotkey,
     ChooseStorage,
     SaveSettings,
     CreateCollection,

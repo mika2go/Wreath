@@ -79,6 +79,9 @@ pub fn replace_replay_bind(
 }
 
 pub fn replay_bind_present(hotkey: &HotkeyConfig) -> Result<bool, HyprlandError> {
+    if !hotkey.is_bound() {
+        return Ok(false);
+    }
     #[derive(Deserialize)]
     struct Bind {
         #[serde(default)]
@@ -133,6 +136,9 @@ fn replay_bind_code(
             )
         })
         .unwrap_or_default();
+    if !hotkey.is_bound() {
+        return remove_previous.trim_end().to_owned();
+    }
     format!(
         "{remove_previous}hl.unbind(\"{}\"); \
          hl.bind(\"{}\", hl.dsp.exec_cmd(\"{}\"), \
@@ -179,6 +185,18 @@ mod tests {
         assert!(code.contains("hl.unbind(\"SUPER + SHIFT + R\")"));
         assert!(code.contains("hl.unbind(\"SUPER + ALT + C\")"));
         assert!(code.contains("hl.bind(\"SUPER + ALT + C\""));
+    }
+
+    #[test]
+    fn unbinding_only_removes_the_previous_replay_key() {
+        let previous = HotkeyConfig::parse("SUPER+SHIFT+R").unwrap();
+        let code = replay_bind_code(
+            Some(&previous),
+            &HotkeyConfig::unbound(),
+            "'/usr/bin/wreathctl' save",
+        );
+        assert_eq!(code, "hl.unbind(\"SUPER + SHIFT + R\");");
+        assert!(!code.contains("hl.bind"));
     }
 
     #[test]

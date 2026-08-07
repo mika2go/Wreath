@@ -416,7 +416,11 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         Action::ChooseStorageLimit => choose_storage_limit(window, &mut state.model),
         Action::CaptureHotkey => {
             state.model.hotkey_capture = true;
-            state.model.notice = Some("Press the new shortcut, or Escape to cancel".into());
+            state.model.notice = Some("Press F1–F24, or a modifier plus a letter or number".into());
+        }
+        Action::ClearHotkey => {
+            state.model.config.hotkey = wreath_core::config::HotkeyConfig::unbound();
+            save_settings(&mut state.model, "Save replay shortcut unbound");
         }
         Action::ChooseStorage => choose_storage(&mut state.model),
         Action::SaveSettings => {
@@ -454,7 +458,9 @@ fn capture_hotkey(model: &mut UiModel, virtual_key: u32) -> bool {
             false
         }
         0x10 | 0x11 | 0x12 | 0x5b | 0x5c => false,
-        key if key <= 0xff && (key as u8).is_ascii_alphanumeric() => {
+        key if (0x70..=0x87).contains(&key)
+            || (key <= 0xff && (key as u8).is_ascii_alphanumeric()) =>
+        {
             let mut modifiers = Vec::new();
             if key_pressed(0x5b) || key_pressed(0x5c) {
                 modifiers.push("SUPER".into());
@@ -468,11 +474,15 @@ fn capture_hotkey(model: &mut UiModel, virtual_key: u32) -> bool {
             if key_pressed(0x10) {
                 modifiers.push("SHIFT".into());
             }
+            let function_key = (0x70..=0x87)
+                .contains(&key)
+                .then(|| format!("F{}", key - 0x70 + 1));
             let hotkey = wreath_core::config::HotkeyConfig {
                 modifiers,
-                key: char::from(key as u8).to_ascii_uppercase().to_string(),
+                key: function_key
+                    .unwrap_or_else(|| char::from(key as u8).to_ascii_uppercase().to_string()),
             };
-            if hotkey.modifiers.is_empty() {
+            if hotkey.modifiers.is_empty() && !(0x70..=0x87).contains(&key) {
                 model.notice = Some("Hold at least one modifier with the key".into());
                 return false;
             }
@@ -487,7 +497,7 @@ fn capture_hotkey(model: &mut UiModel, virtual_key: u32) -> bool {
             true
         }
         _ => {
-            model.notice = Some("Use modifiers plus one letter or number".into());
+            model.notice = Some("Use F1–F24, or modifiers plus one letter or number".into());
             false
         }
     }
