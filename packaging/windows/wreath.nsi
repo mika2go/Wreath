@@ -27,6 +27,8 @@ VIAddVersionKey /LANG=1033 "FileDescription" "Wreath low-overhead replay recorde
 VIAddVersionKey /LANG=1033 "LegalCopyright" "Wreath contributors"
 
 !define MUI_ABORTWARNING
+!define MUI_FINISHPAGE_RUN "$INSTDIR\wreath-tray.exe"
+!define MUI_FINISHPAGE_RUN_TEXT "Start the Wreath background recorder"
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
@@ -47,6 +49,12 @@ Section "Wreath" MainSection
   File /oname=wreathd.exe "${BINDIR}\wreathd.exe"
   File /oname=wreathctl.exe "${BINDIR}\wreathctl.exe"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
+
+  ; Preserve an existing opt-in while migrating the old UI-based autostart.
+  ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Wreath"
+  StrCmp $0 "" autostart_migrated
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Wreath" '"$INSTDIR\wreath-tray.exe"'
+  autostart_migrated:
 
   CreateDirectory "$SMPROGRAMS\Wreath"
   CreateShortcut "$SMPROGRAMS\Wreath\Wreath.lnk" "$INSTDIR\wreath-win-ui.exe" "" "$INSTDIR\wreath-win-ui.exe" 0

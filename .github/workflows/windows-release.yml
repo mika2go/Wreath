@@ -6,7 +6,7 @@ on:
       version:
         description: Semantic version without the v prefix
         required: true
-        default: 0.1.1
+        default: 0.2.0
         type: string
 
 permissions:
@@ -68,4 +68,4 @@ jobs:
             --repo $env:GITHUB_REPOSITORY `
             --target $env:GITHUB_SHA `
             --title "Wreath $env:RELEASE_VERSION" `
-            --notes "Windows x64 NSIS preview installer. Native Windows build gates pass; the full AMD/Intel/NVIDIA Medal performance matrix is still pending."
+            --notes "Windows x64 NSIS preview installer with the full native Wreath application, independent low-overhead tray, local clip library and Media Foundation player. Native Windows build gates pass; the full AMD/Intel/NVIDIA Medal performance matrix is still pending."

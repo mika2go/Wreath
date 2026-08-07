@@ -71,14 +71,14 @@ Requirements on a Windows x64 build host:
 From the repository root:
 
 ```powershell
-./scripts/build-windows.ps1 -Version 0.1.0
+./scripts/build-windows.ps1 -Version 0.2.0
 ```
 
 The script runs the locked Windows-target test suite and Clippy with warnings as
 errors, builds only the four Windows executables in release mode, enforces small
 binary-size budgets, and writes
-`dist/windows/Wreath-0.1.0-x64-setup.exe`. A matching
-`Wreath-0.1.0-x64-build.json` records the SHA-256 hash and size of every binary
+`dist/windows/Wreath-0.2.0-x64-setup.exe`. A matching
+`Wreath-0.2.0-x64-build.json` records the SHA-256 hash and size of every binary
 and the setup executable, the exact Git commit, Windows build, architecture, and
 Rust/Cargo/NSIS versions. The script refuses non-Windows hosts and modified
 tracked source, so the evidence always identifies the native, reproducible

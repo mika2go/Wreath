@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.1.0",
+    [string]$Version = "0.2.0",
     [string]$Target = "x86_64-pc-windows-msvc"
 )
 
@@ -14,7 +14,7 @@ $Packages = @("wreath-core", "wreath-windows", "wreath-win-ui", "wreathd", "wrea
 $Executables = [ordered]@{
     "wreathd.exe" = 4MB
     "wreath-tray.exe" = 2MB
-    "wreath-win-ui.exe" = 2MB
+    "wreath-win-ui.exe" = 6MB
     "wreathctl.exe" = 2MB
 }
 

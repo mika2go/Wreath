@@ -149,7 +149,8 @@ The repository contains the Linux UI plus shared and platform-specific binaries:
 - `wreathd`: background recorder and replay buffer
 - `wreathctl`: local control client used by shortcuts
 - `wreath-ui`: clip library and settings
-- `wreath-win-ui`: lightweight native Windows tray UI
+- `wreath-win-ui`: full native Windows application (Direct2D/DirectWrite/WIC/Media Foundation)
+- `wreath-tray`: independent low-overhead Windows tray and autostart process
 
 See [the architecture notes](docs/architecture.md) for the process layout.
 
