@@ -1,4 +1,5 @@
 /target/
+/perf/windows/
 *.swp
 *.tmp
 .idea/

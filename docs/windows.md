@@ -57,3 +57,6 @@ development. Actual capture, hardware encoder selection, A/V synchronization,
 long-duration memory behavior, sleep/resume, multi-monitor behavior, and the
 Medal comparison must be measured on the Windows hardware matrix before a
 stable release.
+
+The exact matrix, comparison thresholds, and automated sampler are documented
+in [Windows performance and hardware validation](windows-performance.md).
