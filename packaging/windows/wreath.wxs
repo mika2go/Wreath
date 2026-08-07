@@ -20,12 +20,13 @@
                 Description="Low-overhead instant replay recorder"
                 WorkingDirectory="INSTALLFOLDER" />
           </File>
-          <RemoveRegistryValue
-              Id="RemoveWreathAutostart"
+          <RegistryValue
+              Id="WreathAutostartValue"
               Root="HKCU"
               Key="Software\Microsoft\Windows\CurrentVersion\Run"
               Name="Wreath"
-              Action="removeOnUninstall" />
+              Type="string"
+              Value="" />
         </Component>
         <Component Id="DaemonComponent" Guid="*">
           <File Id="WreathDaemonExe" Source="$(var.BinDir)\wreathd.exe" KeyPath="yes" />
