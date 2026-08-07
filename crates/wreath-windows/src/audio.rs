@@ -21,6 +21,7 @@ impl AudioFormat {
 pub struct PcmChunk {
     pub timestamp: std::time::Duration,
     pub frames: u32,
+    pub discontinuous: bool,
     pub data: Box<[u8]>,
 }
 
@@ -28,6 +29,7 @@ pub struct PcmChunk {
 pub struct Pcm16Chunk {
     pub timestamp: std::time::Duration,
     pub frames: u32,
+    pub discontinuous: bool,
     pub data: Box<[u8]>,
 }
 
@@ -111,6 +113,7 @@ pub fn normalize_to_pcm16(format: AudioFormat, chunk: PcmChunk) -> Result<Pcm16C
     Ok(Pcm16Chunk {
         timestamp: chunk.timestamp,
         frames: chunk.frames,
+        discontinuous: chunk.discontinuous,
         data: output.into_boxed_slice(),
     })
 }
@@ -365,7 +368,7 @@ fn capture_loop(
     sender: crossbeam_channel::Sender<PcmChunk>,
     ready: &std::sync::mpsc::SyncSender<Result<AudioFormat, AudioError>>,
 ) -> Result<(), AudioError> {
-    use windows::Win32::Foundation::{CloseHandle, WAIT_FAILED, WAIT_OBJECT_0};
+    use windows::Win32::Foundation::{CloseHandle, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
     use windows::Win32::Media::Audio::{
         AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
         AudioCategory_Communications, IAudioCaptureClient, IMMDeviceEnumerator, MMDeviceEnumerator,
@@ -376,8 +379,10 @@ fn capture_loop(
     };
     use windows::Win32::System::Threading::{
         AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, CreateEventW, INFINITE,
-        WaitForMultipleObjects,
+        WaitForMultipleObjects, WaitForSingleObject,
     };
+
+    const MICROPHONE_BUFFER_DURATION_HNS: i64 = 2_000_000;
 
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
         .ok()
@@ -389,12 +394,14 @@ fn capture_loop(
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
                 .map_err(|error| AudioError(error.to_string()))?;
-        let (device, stream_flags, category) = match endpoint {
+        let (device, stream_flags, category, buffer_duration_hns, timer_driven) = match endpoint {
             CaptureEndpoint::Loopback => (
                 unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
                     .map_err(|error| AudioError(error.to_string()))?,
                 AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                 None,
+                0,
+                false,
             ),
             CaptureEndpoint::Microphone {
                 endpoint_id: Some(endpoint_id),
@@ -410,46 +417,85 @@ fn capture_loop(
                                 "configured microphone endpoint `{endpoint_id}` is unavailable: {error}"
                             ))
                         })?,
-                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                    0,
                     Some(AudioCategory_Communications),
+                    MICROPHONE_BUFFER_DURATION_HNS,
+                    true,
                 )
             }
             CaptureEndpoint::Microphone { endpoint_id: None } => (
                 unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eCommunications) }
                     .map_err(|error| AudioError(error.to_string()))?,
-                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                0,
                 Some(AudioCategory_Communications),
+                MICROPHONE_BUFFER_DURATION_HNS,
+                true,
             ),
         };
-        let (client, format) = initialize_capture_client(&device, stream_flags, category)?;
-        let audio_event = unsafe { CreateEventW(None, false, false, None) }
-            .map_err(|error| AudioError(error.to_string()))?;
-        unsafe { client.SetEventHandle(audio_event) }
-            .map_err(|error| AudioError(error.to_string()))?;
+        let (client, format, device_period_hns) =
+            initialize_capture_client(&device, stream_flags, buffer_duration_hns, category)?;
+        let audio_event = if timer_driven {
+            None
+        } else {
+            let event = unsafe { CreateEventW(None, false, false, None) }
+                .map_err(|error| AudioError(error.to_string()))?;
+            unsafe { client.SetEventHandle(event) }
+                .map_err(|error| AudioError(error.to_string()))?;
+            Some(event)
+        };
         let capture: IAudioCaptureClient =
             unsafe { client.GetService() }.map_err(|error| AudioError(error.to_string()))?;
         unsafe { client.Start() }.map_err(|error| AudioError(error.to_string()))?;
         if ready.send(Ok(format)).is_err() {
             let _ = unsafe { client.Stop() };
-            let _ = unsafe { CloseHandle(audio_event) };
+            if let Some(audio_event) = audio_event {
+                let _ = unsafe { CloseHandle(audio_event) };
+            }
             return Ok(());
         }
 
-        let handles = [audio_event, stop_event];
-        loop {
-            let wait = unsafe { WaitForMultipleObjects(&handles, false, INFINITE) };
-            if wait == WAIT_FAILED {
-                let _ = unsafe { client.Stop() };
-                let _ = unsafe { CloseHandle(audio_event) };
-                return Err(AudioError(std::io::Error::last_os_error().to_string()));
+        let mut clock = CapturePacketClock::default();
+        let mut dropped_packet = false;
+        if timer_driven {
+            let poll_interval_ms = capture_poll_interval_ms(device_period_hns);
+            loop {
+                let wait = unsafe { WaitForSingleObject(stop_event, poll_interval_ms) };
+                if wait == WAIT_FAILED {
+                    let _ = unsafe { client.Stop() };
+                    return Err(AudioError(std::io::Error::last_os_error().to_string()));
+                }
+                if wait == WAIT_OBJECT_0 {
+                    break;
+                }
+                if wait == WAIT_TIMEOUT {
+                    read_available_packets(
+                        &capture,
+                        format,
+                        &sender,
+                        &mut clock,
+                        &mut dropped_packet,
+                    )?;
+                }
             }
-            if wait.0 == WAIT_OBJECT_0.0 + 1 {
-                break;
+        } else if let Some(audio_event) = audio_event {
+            let handles = [audio_event, stop_event];
+            loop {
+                let wait = unsafe { WaitForMultipleObjects(&handles, false, INFINITE) };
+                if wait == WAIT_FAILED {
+                    let _ = unsafe { client.Stop() };
+                    let _ = unsafe { CloseHandle(audio_event) };
+                    return Err(AudioError(std::io::Error::last_os_error().to_string()));
+                }
+                if wait.0 == WAIT_OBJECT_0.0 + 1 {
+                    break;
+                }
+                read_available_packets(&capture, format, &sender, &mut clock, &mut dropped_packet)?;
             }
-            read_available_packets(&capture, format, &sender)?;
         }
         let _ = unsafe { client.Stop() };
-        let _ = unsafe { CloseHandle(audio_event) };
+        if let Some(audio_event) = audio_event {
+            let _ = unsafe { CloseHandle(audio_event) };
+        }
         Ok(())
     })();
     if let Some(mmcss) = mmcss {
@@ -463,8 +509,16 @@ fn capture_loop(
 fn initialize_capture_client(
     device: &windows::Win32::Media::Audio::IMMDevice,
     stream_flags: u32,
+    buffer_duration_hns: i64,
     category: Option<windows::Win32::Media::Audio::AUDIO_STREAM_CATEGORY>,
-) -> Result<(windows::Win32::Media::Audio::IAudioClient2, AudioFormat), AudioError> {
+) -> Result<
+    (
+        windows::Win32::Media::Audio::IAudioClient2,
+        AudioFormat,
+        i64,
+    ),
+    AudioError,
+> {
     use windows::Win32::Media::Audio::{
         AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMOPTIONS_NONE, AudioClientProperties, IAudioClient2,
     };
@@ -489,11 +543,16 @@ fn initialize_capture_client(
         return Err(AudioError("WASAPI returned no mix format".into()));
     }
     let format = unsafe { describe_format(mix_format) };
+    let mut device_period_hns = 0_i64;
+    if let Err(error) = unsafe { client.GetDevicePeriod(Some(&mut device_period_hns), None) } {
+        unsafe { CoTaskMemFree(Some(mix_format.cast())) };
+        return Err(AudioError(error.to_string()));
+    }
     let initialized = unsafe {
         client.Initialize(
             AUDCLNT_SHAREMODE_SHARED,
             stream_flags,
-            0,
+            buffer_duration_hns,
             0,
             mix_format,
             None,
@@ -501,7 +560,41 @@ fn initialize_capture_client(
     };
     unsafe { CoTaskMemFree(Some(mix_format.cast())) };
     initialized.map_err(|error| AudioError(error.to_string()))?;
-    Ok((client, format))
+    Ok((client, format, device_period_hns))
+}
+
+#[cfg(target_os = "windows")]
+fn capture_poll_interval_ms(device_period_hns: i64) -> u32 {
+    let half_period_ms = device_period_hns.max(0) as u64 / 20_000;
+    u32::try_from(half_period_ms.clamp(2, 10)).unwrap_or(10)
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Default)]
+struct CapturePacketClock {
+    next_timestamp: Option<std::time::Duration>,
+}
+
+#[cfg(target_os = "windows")]
+impl CapturePacketClock {
+    fn timestamp(
+        &mut self,
+        qpc_position: u64,
+        frames: u32,
+        sample_rate: u32,
+        timestamp_error: bool,
+    ) -> std::time::Duration {
+        let reported = std::time::Duration::from_nanos(qpc_position.saturating_mul(100));
+        let timestamp = if timestamp_error {
+            self.next_timestamp.unwrap_or(reported)
+        } else {
+            reported
+        };
+        self.next_timestamp = Some(timestamp.saturating_add(std::time::Duration::from_nanos(
+            u64::from(frames).saturating_mul(1_000_000_000) / u64::from(sample_rate.max(1)),
+        )));
+        timestamp
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -537,8 +630,13 @@ fn read_available_packets(
     capture: &windows::Win32::Media::Audio::IAudioCaptureClient,
     format: AudioFormat,
     sender: &crossbeam_channel::Sender<PcmChunk>,
+    clock: &mut CapturePacketClock,
+    dropped_packet: &mut bool,
 ) -> Result<(), AudioError> {
-    use windows::Win32::Media::Audio::AUDCLNT_BUFFERFLAGS_SILENT;
+    use windows::Win32::Media::Audio::{
+        AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
+        AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR,
+    };
 
     loop {
         let packet_frames = unsafe { capture.GetNextPacketSize() }
@@ -564,6 +662,9 @@ fn read_available_packets(
             .bytes_for_frames(frames)
             .ok_or_else(|| AudioError("WASAPI packet size overflow".into()))?;
         let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
+        let timestamp_error = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 != 0;
+        let discontinuous =
+            *dropped_packet || flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0;
         let bytes = if silent {
             vec![0; length].into_boxed_slice()
         } else if data.is_null() {
@@ -576,14 +677,15 @@ fn read_available_packets(
         };
         unsafe { capture.ReleaseBuffer(frames) }.map_err(|error| AudioError(error.to_string()))?;
         let chunk = PcmChunk {
-            timestamp: std::time::Duration::from_nanos(qpc_position.saturating_mul(100)),
+            timestamp: clock.timestamp(qpc_position, frames, format.sample_rate, timestamp_error),
             frames,
+            discontinuous,
             data: bytes,
         };
         match sender.try_send(chunk) {
-            Ok(())
-            | Err(crossbeam_channel::TrySendError::Full(_))
-            | Err(crossbeam_channel::TrySendError::Disconnected(_)) => {}
+            Ok(()) => *dropped_packet = false,
+            Err(crossbeam_channel::TrySendError::Full(_)) => *dropped_packet = true,
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => return Ok(()),
         }
     }
 }
@@ -603,6 +705,25 @@ mod tests {
         };
 
         assert_eq!(format.bytes_for_frames(480), Some(3_840));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn microphone_polling_tracks_half_the_device_period_with_safe_bounds() {
+        assert_eq!(capture_poll_interval_ms(0), 2);
+        assert_eq!(capture_poll_interval_ms(100_000), 5);
+        assert_eq!(capture_poll_interval_ms(1_000_000), 10);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn uncertain_wasapi_timestamps_continue_from_the_previous_packet() {
+        let mut clock = CapturePacketClock::default();
+        let first = clock.timestamp(10_000, 480, 48_000, false);
+        let uncertain = clock.timestamp(1, 480, 48_000, true);
+
+        assert_eq!(first, std::time::Duration::from_millis(1));
+        assert_eq!(uncertain, std::time::Duration::from_millis(11));
     }
 
     #[test]
@@ -625,6 +746,7 @@ mod tests {
             PcmChunk {
                 timestamp: std::time::Duration::from_secs(2),
                 frames: 2,
+                discontinuous: true,
                 data,
             },
         )
@@ -638,6 +760,7 @@ mod tests {
         assert_eq!(samples, [i16::MIN, -16_384, 16_384, i16::MAX]);
         assert_eq!(normalized.timestamp, std::time::Duration::from_secs(2));
         assert_eq!(normalized.frames, 2);
+        assert!(normalized.discontinuous);
     }
 
     #[test]
@@ -669,6 +792,7 @@ mod tests {
                 PcmChunk {
                     timestamp: std::time::Duration::ZERO,
                     frames: 3,
+                    discontinuous: false,
                     data: data.into_boxed_slice(),
                 },
             )
@@ -695,6 +819,7 @@ mod tests {
         let chunk = PcmChunk {
             timestamp: std::time::Duration::ZERO,
             frames: 2,
+            discontinuous: false,
             data: vec![0; 7].into_boxed_slice(),
         };
         assert!(normalize_to_pcm16(base, chunk).is_err());
@@ -708,6 +833,7 @@ mod tests {
         let chunk = PcmChunk {
             timestamp: std::time::Duration::ZERO,
             frames: 1,
+            discontinuous: false,
             data: vec![0; 16].into_boxed_slice(),
         };
         assert!(normalize_to_pcm16(unsupported, chunk).is_err());

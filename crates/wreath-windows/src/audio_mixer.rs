@@ -114,6 +114,8 @@ pub struct PcmStreamConverter {
     output_frames_emitted: u64,
     epoch_timestamp: Option<Duration>,
     expected_source_timestamp: Option<Duration>,
+    restart_fade_frames_remaining: u32,
+    restart_fade_frames_total: u32,
 }
 
 impl PcmStreamConverter {
@@ -154,6 +156,8 @@ impl PcmStreamConverter {
             output_frames_emitted: 0,
             epoch_timestamp: None,
             expected_source_timestamp: None,
+            restart_fade_frames_remaining: 0,
+            restart_fade_frames_total: 0,
         })
     }
 
@@ -170,8 +174,10 @@ impl PcmStreamConverter {
 
     pub fn push(&mut self, chunk: Pcm16Chunk) -> Result<Option<Pcm16Chunk>, AudioError> {
         validate_pcm16(&chunk, self.source_channels)?;
-        if self.discontinuous_at(chunk.timestamp) {
-            self.reset(chunk.timestamp);
+        let restarted = self.epoch_timestamp.is_some()
+            && (chunk.discontinuous || self.discontinuous_at(chunk.timestamp));
+        if restarted {
+            self.reset(chunk.timestamp, true);
         }
         let source_end = chunk
             .timestamp
@@ -189,14 +195,16 @@ impl PcmStreamConverter {
             self.voice,
         );
         if self.source_rate == self.target_rate {
+            let mut data = mapped
+                .into_iter()
+                .flat_map(i16::to_le_bytes)
+                .collect::<Vec<_>>();
+            self.apply_restart_fade(&mut data, chunk.frames);
             return Ok(Some(Pcm16Chunk {
                 timestamp: chunk.timestamp,
                 frames: chunk.frames,
-                data: mapped
-                    .into_iter()
-                    .flat_map(i16::to_le_bytes)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
+                discontinuous: restarted,
+                data: data.into_boxed_slice(),
             }));
         }
 
@@ -238,10 +246,13 @@ impl PcmStreamConverter {
             .epoch_timestamp
             .unwrap_or(chunk.timestamp)
             .saturating_add(frames_duration_u64(first_output_frame, self.target_rate));
+        let frames = u32::try_from(frames)
+            .map_err(|_| AudioError("converted audio packet is too large".into()))?;
+        self.apply_restart_fade(&mut output, frames);
         Ok(Some(Pcm16Chunk {
             timestamp,
-            frames: u32::try_from(frames)
-                .map_err(|_| AudioError("converted audio packet is too large".into()))?,
+            frames,
+            discontinuous: restarted,
             data: output.into_boxed_slice(),
         }))
     }
@@ -252,13 +263,47 @@ impl PcmStreamConverter {
             .is_some_and(|expected| expected.abs_diff(timestamp) > RESET_THRESHOLD)
     }
 
-    fn reset(&mut self, timestamp: Duration) {
+    fn reset(&mut self, timestamp: Duration, fade_in: bool) {
         self.source.clear();
         self.source_start_frame = 0;
         self.source_frames_received = 0;
         self.output_frames_emitted = 0;
         self.epoch_timestamp = Some(timestamp);
         self.expected_source_timestamp = None;
+        if fade_in {
+            let frames = (self.target_rate / 200).max(2);
+            self.restart_fade_frames_remaining = frames;
+            self.restart_fade_frames_total = frames;
+        } else {
+            self.restart_fade_frames_remaining = 0;
+            self.restart_fade_frames_total = 0;
+        }
+    }
+
+    fn apply_restart_fade(&mut self, data: &mut [u8], frames: u32) {
+        if self.restart_fade_frames_remaining == 0 {
+            return;
+        }
+        let frames_to_fade = frames.min(self.restart_fade_frames_remaining);
+        let fade_start = self
+            .restart_fade_frames_total
+            .saturating_sub(self.restart_fade_frames_remaining);
+        let denominator = self.restart_fade_frames_total.saturating_sub(1).max(1);
+        for frame in 0..frames_to_fade {
+            let numerator = fade_start.saturating_add(frame).min(denominator);
+            for channel in 0..self.target_channels {
+                let index = (usize::try_from(frame).unwrap_or_default()
+                    * usize::from(self.target_channels)
+                    + usize::from(channel))
+                    * 2;
+                let sample = i16::from_le_bytes([data[index], data[index + 1]]);
+                let faded = i64::from(sample) * i64::from(numerator) / i64::from(denominator);
+                data[index..index + 2].copy_from_slice(&(faded as i16).to_le_bytes());
+            }
+        }
+        self.restart_fade_frames_remaining = self
+            .restart_fade_frames_remaining
+            .saturating_sub(frames_to_fade);
     }
 
     fn buffered_sample(&self, frame: u64, channel: u16) -> Result<i16, AudioError> {
@@ -387,6 +432,7 @@ pub fn adapt_pcm16(
     Ok(Pcm16Chunk {
         timestamp: chunk.timestamp,
         frames: output_frames,
+        discontinuous: chunk.discontinuous,
         data: output.into_boxed_slice(),
     })
 }
@@ -549,6 +595,7 @@ mod tests {
         Pcm16Chunk {
             timestamp: Duration::from_millis(timestamp_ms),
             frames: u32::try_from(samples.len() / usize::from(channels)).unwrap(),
+            discontinuous: false,
             data: samples
                 .iter()
                 .flat_map(|sample| sample.to_le_bytes())
@@ -622,7 +669,23 @@ mod tests {
             .unwrap();
 
         assert_eq!(restarted.timestamp, Duration::from_secs(1));
-        assert_eq!(samples(&restarted), [20_000, 25_000]);
+        assert_eq!(samples(&restarted), [0, 104]);
+        assert!(restarted.discontinuous);
+    }
+
+    #[test]
+    fn stream_converter_softens_an_explicit_wasapi_discontinuity() {
+        let mut converter = PcmStreamConverter::new_voice(48_000, 1, 48_000, 1).unwrap();
+        let _ = converter.push(chunk(0, 1, &[10_000; 480])).unwrap();
+        let mut interrupted = chunk(10, 1, &[20_000; 240]);
+        interrupted.discontinuous = true;
+
+        let restarted = converter.push(interrupted).unwrap().unwrap();
+        let restarted_samples = samples(&restarted);
+
+        assert_eq!(restarted_samples[0], 0);
+        assert_eq!(restarted_samples[239], 20_000);
+        assert!(restarted.discontinuous);
     }
 
     #[test]
