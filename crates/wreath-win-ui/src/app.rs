@@ -141,7 +141,12 @@ fn run_initialized() -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     unsafe {
         (*state).video_window = Some(video_window);
-        (*state).player = Some(Player::new(video_window, window));
+        match Player::new(video_window, window) {
+            Ok(player) => (*state).player = Some(player),
+            Err(error) => {
+                (*state).model.notice = Some(format!("Clip player unavailable: {error}"));
+            }
+        }
         (*state).dpi = GetDpiForWindow(window).max(96);
         let _ = SetTimer(Some(window), PLAYER_TIMER, 250, None);
     }

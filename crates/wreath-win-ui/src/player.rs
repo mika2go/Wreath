@@ -44,68 +44,92 @@ pub struct PlayerSnapshot {
 }
 
 pub struct Player {
-    window: HWND,
-    callback: IMFPMediaPlayerCallback,
-    media: Option<IMFPMediaPlayer>,
+    // Keep our callback COM object alive for exactly as long as the player.
+    _callback: IMFPMediaPlayerCallback,
+    media: IMFPMediaPlayer,
+    loaded: bool,
+    load_error: Option<String>,
     ready: bool,
 }
 
 impl Player {
-    pub fn new(window: HWND, owner: HWND) -> Self {
-        Self {
-            window,
-            callback: PlayerCallback { owner }.into(),
-            media: None,
-            ready: false,
+    pub fn new(window: HWND, owner: HWND) -> Result<Self, String> {
+        let callback: IMFPMediaPlayerCallback = PlayerCallback { owner }.into();
+        let mut media = None;
+        unsafe {
+            MFPCreateMediaPlayer(
+                PCWSTR::null(),
+                false,
+                MFP_OPTION_NONE,
+                &callback,
+                Some(window),
+                Some(&mut media),
+            )
         }
+        .map_err(|error| format!("Media Foundation player initialization failed: {error}"))?;
+        let media = media.ok_or_else(|| "Media Foundation returned no player".to_owned())?;
+
+        // These options only affect presentation. Some Windows Media Foundation
+        // implementations reject them until a media item is attached, so they
+        // must never decide whether the clip itself counts as loaded.
+        let _ = unsafe { media.SetAspectRatioMode(MFVideoARMode_PreservePicture.0 as u32) };
+        let _ = unsafe { media.SetBorderColor(COLORREF(0x0010_1012)) };
+
+        Ok(Self {
+            _callback: callback,
+            media,
+            loaded: false,
+            load_error: None,
+            ready: false,
+        })
     }
 
     pub fn open(&mut self, path: &Path) -> Result<(), String> {
-        self.shutdown();
+        self.ready = false;
+        self.loaded = false;
+        self.load_error = None;
         let path = path
             .as_os_str()
             .encode_wide()
             .chain(Some(0))
             .collect::<Vec<_>>();
-        let mut media = None;
-        unsafe {
-            MFPCreateMediaPlayer(
-                PCWSTR(path.as_ptr()),
-                false,
-                MFP_OPTION_NONE,
-                &self.callback,
-                Some(self.window),
-                Some(&mut media),
-            )
+        let result = (|| {
+            let _ = unsafe { self.media.Stop() };
+            let mut item = None;
+            unsafe {
+                self.media
+                    .CreateMediaItemFromURL(PCWSTR(path.as_ptr()), true, 0, Some(&mut item))
+            }
+            .map_err(|error| format!("Media Foundation cannot open the clip: {error}"))?;
+            let item = item.ok_or_else(|| "Media Foundation returned no media item".to_owned())?;
+            unsafe { self.media.SetMediaItem(&item) }
+                .map_err(|error| format!("Media Foundation cannot load the clip: {error}"))
+        })();
+        if let Err(error) = result {
+            self.load_error = Some(error.clone());
+            return Err(error);
         }
-        .map_err(|error| format!("Media Foundation cannot open the clip: {error}"))?;
-        let media = media.ok_or_else(|| "Media Foundation returned no player".to_owned())?;
-        unsafe {
-            media
-                .SetAspectRatioMode(MFVideoARMode_PreservePicture.0 as u32)
-                .map_err(|error| error.to_string())?;
-            media
-                .SetBorderColor(COLORREF(0x0010_1012))
-                .map_err(|error| error.to_string())?;
-        }
-        self.media = Some(media);
-        self.ready = false;
+        self.loaded = true;
         Ok(())
     }
 
     pub fn toggle(&self) -> Result<(), String> {
-        let Some(media) = &self.media else {
-            return Err("No clip is loaded".into());
-        };
+        if !self.loaded {
+            return Err(self
+                .load_error
+                .clone()
+                .unwrap_or_else(|| "No clip is loaded".into()));
+        }
         if !self.ready {
             return Ok(());
         }
         unsafe {
-            if media.GetState().map_err(|error| error.to_string())? == MFP_MEDIAPLAYER_STATE_PLAYING
+            if self.media.GetState().map_err(|error| error.to_string())?
+                == MFP_MEDIAPLAYER_STATE_PLAYING
             {
-                media.Pause()
+                self.media.Pause()
             } else {
-                media.Play()
+                self.media.Play()
             }
         }
         .map_err(|error| error.to_string())
@@ -113,15 +137,15 @@ impl Player {
 
     pub fn handle_event(&mut self, event_type: i32, result: i32) -> Result<(), String> {
         if result < 0 {
-            return Err(
-                windows::core::Error::from_hresult(windows::core::HRESULT(result)).to_string(),
-            );
+            self.ready = false;
+            let error =
+                windows::core::Error::from_hresult(windows::core::HRESULT(result)).to_string();
+            self.load_error = Some(error.clone());
+            return Err(error);
         }
         if event_type == MFP_EVENT_TYPE_MEDIAITEM_SET.0 {
             self.ready = true;
-            if let Some(media) = &self.media {
-                unsafe { media.Play() }.map_err(|error| error.to_string())?;
-            }
+            unsafe { self.media.Play() }.map_err(|error| error.to_string())?;
         } else if event_type == MFP_EVENT_TYPE_PLAYBACK_ENDED.0 {
             self.seek_fraction(0.0)?;
         }
@@ -129,32 +153,36 @@ impl Player {
     }
 
     pub fn snapshot(&self) -> PlayerSnapshot {
-        let Some(media) = &self.media else {
+        if !self.loaded {
             return PlayerSnapshot::default();
-        };
-        let playing =
-            unsafe { media.GetState() }.is_ok_and(|state| state == MFP_MEDIAPLAYER_STATE_PLAYING);
-        let position_seconds = time_value(unsafe { media.GetPosition(&MFP_POSITIONTYPE_100NS) });
-        let duration_seconds = time_value(unsafe { media.GetDuration(&MFP_POSITIONTYPE_100NS) });
+        }
+        let playing = unsafe { self.media.GetState() }
+            .is_ok_and(|state| state == MFP_MEDIAPLAYER_STATE_PLAYING);
+        let position_seconds =
+            time_value(unsafe { self.media.GetPosition(&MFP_POSITIONTYPE_100NS) });
+        let duration_seconds =
+            time_value(unsafe { self.media.GetDuration(&MFP_POSITIONTYPE_100NS) });
         let mut video_size = SIZE::default();
         let mut aspect_size = SIZE::default();
-        let aspect_ratio =
-            if unsafe { media.GetNativeVideoSize(Some(&mut video_size), Some(&mut aspect_size)) }
-                .is_ok()
-            {
-                let size = if aspect_size.cx > 0 && aspect_size.cy > 0 {
-                    aspect_size
-                } else {
-                    video_size
-                };
-                if size.cx > 0 && size.cy > 0 {
-                    size.cx as f32 / size.cy as f32
-                } else {
-                    16.0 / 9.0
-                }
+        let aspect_ratio = if unsafe {
+            self.media
+                .GetNativeVideoSize(Some(&mut video_size), Some(&mut aspect_size))
+        }
+        .is_ok()
+        {
+            let size = if aspect_size.cx > 0 && aspect_size.cy > 0 {
+                aspect_size
+            } else {
+                video_size
+            };
+            if size.cx > 0 && size.cy > 0 {
+                size.cx as f32 / size.cy as f32
             } else {
                 16.0 / 9.0
-            };
+            }
+        } else {
+            16.0 / 9.0
+        };
         PlayerSnapshot {
             ready: self.ready,
             playing,
@@ -165,30 +193,30 @@ impl Player {
     }
 
     pub fn seek_fraction(&self, fraction: f64) -> Result<(), String> {
-        let Some(media) = &self.media else {
-            return Err("No clip is loaded".into());
-        };
+        if !self.loaded {
+            return Err(self
+                .load_error
+                .clone()
+                .unwrap_or_else(|| "No clip is loaded".into()));
+        }
         if !self.ready {
             return Ok(());
         }
-        let duration = time_value(unsafe { media.GetDuration(&MFP_POSITIONTYPE_100NS) });
+        let duration = time_value(unsafe { self.media.GetDuration(&MFP_POSITIONTYPE_100NS) });
         let position = (duration * fraction.clamp(0.0, 1.0) * 10_000_000.0).round() as i64;
         let value = windows::Win32::System::Com::StructuredStorage::PROPVARIANT::from(position);
-        unsafe { media.SetPosition(&MFP_POSITIONTYPE_100NS, &value) }
+        unsafe { self.media.SetPosition(&MFP_POSITIONTYPE_100NS, &value) }
             .map_err(|error| error.to_string())
     }
 
     pub fn update_video(&self) {
-        if let Some(media) = &self.media {
-            let _ = unsafe { media.UpdateVideo() };
-        }
+        let _ = unsafe { self.media.UpdateVideo() };
     }
 
     pub fn shutdown(&mut self) {
         self.ready = false;
-        if let Some(media) = self.media.take() {
-            let _ = unsafe { media.Shutdown() };
-        }
+        self.loaded = false;
+        let _ = unsafe { self.media.Shutdown() };
     }
 }
 
