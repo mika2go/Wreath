@@ -23,6 +23,7 @@ BrandingText "Wreath"
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey /LANG=1033 "ProductName" "Wreath"
 VIAddVersionKey /LANG=1033 "ProductVersion" "${VERSION}"
+VIAddVersionKey /LANG=1033 "FileVersion" "${VERSION}"
 VIAddVersionKey /LANG=1033 "FileDescription" "Wreath low-overhead replay recorder installer"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "Wreath contributors"
 

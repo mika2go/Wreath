@@ -50,6 +50,29 @@ function Get-CommandOutput(
     return ($Output -join [Environment]::NewLine).Trim()
 }
 
+function Invoke-WaitProcess(
+    [string]$FilePath,
+    [string[]]$ArgumentList
+) {
+    $StartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $StartInfo.FileName = $FilePath
+    $StartInfo.UseShellExecute = $false
+    foreach ($Argument in $ArgumentList) {
+        [void]$StartInfo.ArgumentList.Add($Argument)
+    }
+
+    $Process = [System.Diagnostics.Process]::Start($StartInfo)
+    if ($null -eq $Process) {
+        throw "Failed to start $FilePath"
+    }
+    try {
+        $Process.WaitForExit()
+        return $Process.ExitCode
+    } finally {
+        $Process.Dispose()
+    }
+}
+
 $CargoCommand = Get-RequiredCommand "cargo"
 $RustcCommand = Get-RequiredCommand "rustc"
 $GitCommand = Get-RequiredCommand "git"
@@ -128,13 +151,14 @@ try {
     $SmokeUi = $null
     $SmokePassed = $false
     try {
-        $InstallProcess = Start-Process `
+        $InstallExitCode = Invoke-WaitProcess `
             -FilePath $Installer `
-            -ArgumentList "/S /D=`"$SmokeInstallDirectory`"" `
-            -Wait `
-            -PassThru
-        if ($InstallProcess.ExitCode -ne 0) {
-            throw "NSIS clean-install smoke test exited with $($InstallProcess.ExitCode)"
+            -ArgumentList @("/S", "/D=$SmokeInstallDirectory")
+        if ($InstallExitCode -ne 0) {
+            throw "NSIS clean-install smoke test exited with $InstallExitCode"
+        }
+        if (-not (Test-Path -LiteralPath $SmokeInstallDirectory -PathType Container)) {
+            throw "NSIS smoke install did not create $SmokeInstallDirectory"
         }
         foreach ($Executable in $Executables.Keys) {
             $InstalledPath = Join-Path $SmokeInstallDirectory $Executable
@@ -171,13 +195,11 @@ try {
         $LegacyAutostart = '"C:\Legacy Wreath\wreath-win-ui.exe"'
         Set-ItemProperty -Path $RunKey -Name "Wreath" -Value $LegacyAutostart
 
-        $UpgradeProcess = Start-Process `
+        $UpgradeExitCode = Invoke-WaitProcess `
             -FilePath $Installer `
-            -ArgumentList "/S /D=`"$SmokeInstallDirectory`"" `
-            -Wait `
-            -PassThru
-        if ($UpgradeProcess.ExitCode -ne 0) {
-            throw "NSIS running-upgrade smoke test exited with $($UpgradeProcess.ExitCode)"
+            -ArgumentList @("/S", "/D=$SmokeInstallDirectory")
+        if ($UpgradeExitCode -ne 0) {
+            throw "NSIS running-upgrade smoke test exited with $UpgradeExitCode"
         }
         Start-Sleep -Seconds 1
         $SmokeUi.Refresh()
@@ -209,13 +231,11 @@ try {
             -Name "wreath-win-ui", "wreath-tray", "wreathd" `
             -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
         if (Test-Path -LiteralPath $SmokeUninstaller -PathType Leaf) {
-            $UninstallProcess = Start-Process `
+            $UninstallExitCode = Invoke-WaitProcess `
                 -FilePath $SmokeUninstaller `
-                -ArgumentList "/S" `
-                -Wait `
-                -PassThru
-            if ($UninstallProcess.ExitCode -ne 0 -and $SmokePassed) {
-                throw "NSIS uninstall smoke test exited with $($UninstallProcess.ExitCode)"
+                -ArgumentList @("/S")
+            if ($UninstallExitCode -ne 0 -and $SmokePassed) {
+                throw "NSIS uninstall smoke test exited with $UninstallExitCode"
             }
         }
         if (Test-Path -LiteralPath $SmokeInstallDirectory) {
