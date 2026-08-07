@@ -6,6 +6,7 @@ settings. The default automated comparison gates define "materially fewer" as:
 
 - average combined Wreath working set at most 50% of the Medal process group;
 - average combined Wreath CPU at most 70% of the Medal process group;
+- average combined Wreath GPU-engine load at most 85% of Medal;
 - no more than 32 MiB working-set growth across a run;
 - native tray peak working set at most 64 MiB;
 - zero failed periodic replay saves.
@@ -16,33 +17,57 @@ matrix. They must not be loosened merely to make a failing build pass.
 ## Fair comparison protocol
 
 1. Reboot, install current GPU/audio drivers, and let Windows finish updates.
-2. Disable unrelated overlays and background capture tools. During a direct
-   comparison, Medal and Wreath must be the only active capture tools. Keep the
-   same game/application scene for every run.
+2. Disable unrelated overlays and background capture tools. Medal and Wreath
+   are measured in separate phases and the script rejects the other recorder if
+   it is running. Keep the same deterministic game/application scene for every
+   run.
 3. Configure both products to the same display, resolution, frame rate, codec,
    replay duration, cursor setting, desktop audio, and microphone setting.
-4. Run Medal first, then Wreath, or alternate the order between repetitions.
+4. Measure Medal first and retain its JSON summary, then completely close Medal
+   before measuring Wreath against that baseline.
 5. Discard the first warm-up run. Keep at least three 30-minute measured runs.
 6. Run the four-hour soak separately. Do not average it into the short runs.
 
-Build the release binaries, start Medal recording, then run from PowerShell:
+Build the release binaries, shut down Wreath, start Medal recording, and capture
+the isolated baseline from PowerShell. `ScenarioId` identifies the repeatable
+scene; `SettingsId` identifies the complete matching capture configuration:
+
+```powershell
+./scripts/measure-windows.ps1 `
+  -MeasureMedalOnly `
+  -DurationMinutes 30 `
+  -ScenarioId "game-scene-a" `
+  -SettingsId "1080p60-h264-30s-desktop-mic"
+```
+
+Close Medal, reproduce the same scene, and pass the resulting baseline JSON to
+the isolated Wreath phase:
 
 ```powershell
 ./scripts/measure-windows.ps1 `
   -BinDir target/x86_64-pc-windows-msvc/release `
   -DurationMinutes 30 `
   -SaveEverySeconds 60 `
-  -RequireMedal
+  -ScenarioId "game-scene-a" `
+  -SettingsId "1080p60-h264-30s-desktop-mic" `
+  -MedalBaselinePath perf/windows/medal-YYYYMMDD-HHMMSS.json
 ```
 
 The script starts Wreath if necessary and writes a timestamped CSV plus JSON
-summary below `perf/windows/`. It samples combined process CPU, working/private
-memory, GPU-engine counters, I/O counters, handles, and threads. The script exits
-nonzero when a gate fails. Install `ffprobe` from FFmpeg before running it: after
-the timed measurement has ended, every saved clip is checked for a video stream,
-the expected audio stream, minimum duration, keyframe-clean start, monotonic DTS,
-and bounded audio/video duration skew. Clip hashes and probe results are included
-in the JSON summary. Raw output belongs in test artifacts, not in Git.
+summary below `perf/windows/`. It rejects baseline reuse when the scenario,
+settings, duration, sample interval, Windows build, CPU, GPU, driver, logical CPU
+count, or installed RAM differs. The summary records system metadata, executable
+versions, and Wreath's complete TOML configuration. It samples combined process
+CPU, working/private memory, GPU-engine counters, I/O counters, handles, and
+threads. Relative Medal gates are evaluated only when a validated isolated
+baseline is supplied. A comparison also requires periodic replay saves; setting
+`SaveEverySeconds` to zero is rejected.
+
+Install `ffprobe` from FFmpeg before the Wreath phase. After the timed measurement
+has ended, every saved clip is checked for a video stream, the expected audio
+stream, minimum duration, keyframe-clean start, monotonic DTS, and bounded
+audio/video duration skew. Clip hashes and probe results are included in the JSON
+summary. Raw output belongs in test artifacts, not in Git.
 
 Use `-AllowVideoOnly` only for a matrix row whose Wreath configuration has both
 desktop and microphone audio disabled. The structural minimums can be adjusted
@@ -54,8 +79,7 @@ For a Wreath-only four-hour soak:
 ```powershell
 ./scripts/measure-windows.ps1 `
   -DurationMinutes 240 `
-  -SaveEverySeconds 300 `
-  -MedalProcessPattern "__not_running__"
+  -SaveEverySeconds 300
 ```
 
 The relative Medal gates are skipped when Medal is absent; memory growth, tray
