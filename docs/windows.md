@@ -63,6 +63,7 @@ Requirements on a Windows x64 build host:
 - the Rust `clippy` component for that toolchain;
 - Visual Studio Build Tools with the Windows SDK;
 - WiX Toolset 4 with `wix.exe` on `PATH`;
+- Git on `PATH` and no modified tracked files;
 - PowerShell 7 or Windows PowerShell 5.1.
 
 From the repository root:
@@ -75,7 +76,9 @@ The script runs the locked Windows-target test suite and Clippy with warnings as
 errors, builds only the three Windows executables in release mode, enforces small
 binary-size budgets, and writes `dist/windows/Wreath-0.1.0-x64.msi`. A matching
 `Wreath-0.1.0-x64-build.json` records the SHA-256 hash and size of every binary
-and the MSI.
+and the MSI, the exact Git commit, Windows build, architecture, and Rust/Cargo/WiX
+versions. The script refuses non-Windows hosts and modified tracked source, so
+the evidence always identifies the native, reproducible release input.
 The MSI installs per user below `%LOCALAPPDATA%\Wreath` and adds a Start-menu
 shortcut. Autostart remains opt-in from the tray menu.
 

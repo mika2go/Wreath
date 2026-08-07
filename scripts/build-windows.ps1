@@ -17,6 +17,9 @@ $Executables = [ordered]@{
     "wreathctl.exe" = 2MB
 }
 
+if ($env:OS -ne "Windows_NT") {
+    throw "The MSI release must be built natively on Windows"
+}
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "Version must contain exactly three numeric components"
 }
@@ -27,12 +30,47 @@ if (-not (Test-Path -LiteralPath $InstallerSource -PathType Leaf)) {
     throw "Missing WiX source: $InstallerSource"
 }
 
+function Get-RequiredCommand([string]$Name) {
+    $Command = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($null -eq $Command) {
+        throw "Required build command is unavailable: $Name"
+    }
+    return $Command.Source
+}
+
+function Get-CommandOutput(
+    [string]$Command,
+    [string[]]$Arguments
+) {
+    $Output = @(& $Command @Arguments 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Command $($Arguments -join ' ') failed"
+    }
+    return ($Output -join [Environment]::NewLine).Trim()
+}
+
+$CargoCommand = Get-RequiredCommand "cargo"
+$RustcCommand = Get-RequiredCommand "rustc"
+$GitCommand = Get-RequiredCommand "git"
+$WixCommand = Get-RequiredCommand "wix"
+$CargoVersion = Get-CommandOutput $CargoCommand @("--version")
+$RustcVersion = Get-CommandOutput $RustcCommand @("-Vv")
+$WixVersion = Get-CommandOutput $WixCommand @("--version")
+$TrackedChanges = @(Get-CommandOutput $GitCommand @(
+    "-C", $RepositoryRoot, "status", "--porcelain", "--untracked-files=no"
+))
+if ($TrackedChanges.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($TrackedChanges[0])) {
+    throw "Refusing to build release evidence from modified tracked files"
+}
+$GitCommit = Get-CommandOutput $GitCommand @("-C", $RepositoryRoot, "rev-parse", "HEAD")
+$OperatingSystem = Get-CimInstance Win32_OperatingSystem
+
 function Invoke-CargoPackageSet(
     [string[]]$Arguments,
     [string[]]$SelectedPackages
 ) {
     $PackageArguments = foreach ($Package in $SelectedPackages) { "-p"; $Package }
-    & cargo @Arguments @PackageArguments
+    & $CargoCommand @Arguments @PackageArguments
     if ($LASTEXITCODE -ne 0) {
         throw "cargo $($Arguments -join ' ') failed"
     }
@@ -45,7 +83,7 @@ try {
         -SelectedPackages $Packages
 
     $PackageArguments = foreach ($Package in $Packages) { "-p"; $Package }
-    & cargo clippy --locked --target $Target --all-targets @PackageArguments -- -D warnings
+    & $CargoCommand clippy --locked --target $Target --all-targets @PackageArguments -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "Windows clippy gate failed" }
 
     Invoke-CargoPackageSet `
@@ -69,7 +107,7 @@ try {
     }
 
     New-Item -ItemType Directory -Force -Path $DistributionDirectory | Out-Null
-    & wix build $InstallerSource `
+    & $WixCommand build $InstallerSource `
         -arch x64 `
         -d "Version=$Version" `
         -d "BinDir=$BinaryDirectory" `
@@ -82,8 +120,24 @@ try {
     $InstallerFile = Get-Item -LiteralPath $Installer
     if ($InstallerFile.Length -eq 0) { throw "WiX produced an empty MSI" }
     $Evidence = [ordered]@{
+        BuiltAtUtc = [DateTime]::UtcNow.ToString("o")
         Version = $Version
         Target = $Target
+        Source = [ordered]@{
+            GitCommit = $GitCommit
+            TrackedWorktreeClean = $true
+        }
+        Host = [ordered]@{
+            OsCaption = [string]$OperatingSystem.Caption
+            OsVersion = [string]$OperatingSystem.Version
+            OsBuild = [string]$OperatingSystem.BuildNumber
+            Architecture = [string]$OperatingSystem.OSArchitecture
+        }
+        Toolchain = [ordered]@{
+            Cargo = $CargoVersion
+            Rustc = $RustcVersion
+            Wix = $WixVersion
+        }
         Binaries = @($BinaryEvidence)
         Installer = [ordered]@{
             File = $InstallerFile.Name
