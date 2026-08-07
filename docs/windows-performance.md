@@ -38,7 +38,16 @@ Build the release binaries, start Medal recording, then run from PowerShell:
 The script starts Wreath if necessary and writes a timestamped CSV plus JSON
 summary below `perf/windows/`. It samples combined process CPU, working/private
 memory, GPU-engine counters, I/O counters, handles, and threads. The script exits
-nonzero when a gate fails. Raw output belongs in test artifacts, not in Git.
+nonzero when a gate fails. Install `ffprobe` from FFmpeg before running it: after
+the timed measurement has ended, every saved clip is checked for a video stream,
+the expected audio stream, minimum duration, keyframe-clean start, monotonic DTS,
+and bounded audio/video duration skew. Clip hashes and probe results are included
+in the JSON summary. Raw output belongs in test artifacts, not in Git.
+
+Use `-AllowVideoOnly` only for a matrix row whose Wreath configuration has both
+desktop and microphone audio disabled. The structural minimums can be adjusted
+for an explicit test row with `-MinClipDurationSeconds` and
+`-MaxAudioVideoSkewSeconds`; the resource gates remain unchanged.
 
 For a Wreath-only four-hour soak:
 
@@ -67,7 +76,9 @@ size, and replay saves remain hard gates.
 
 Every saved MP4 must be checked for playable video, audible selected sources,
 monotonic duration, A/V sync at the beginning and end, and a keyframe-clean
-start. A hardware encoder absence must be reported as an error; a CPU video
+start. The sampler automates the structural portion, but listening to selected
+audio sources and visually checking end-to-end A/V sync remain manual hardware
+checks. A hardware encoder absence must be reported as an error; a CPU video
 fallback is a release failure.
 
 ## Release evidence

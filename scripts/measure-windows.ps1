@@ -8,6 +8,10 @@ param(
     [double]$MaxRelativeCpu = 0.70,
     [double]$MaxMemoryGrowthMb = 32,
     [double]$MaxTrayWorkingSetMb = 64,
+    [string]$FfprobePath = "ffprobe",
+    [double]$MinClipDurationSeconds = 5,
+    [double]$MaxAudioVideoSkewSeconds = 0.50,
+    [switch]$AllowVideoOnly,
     [switch]$RequireMedal
 )
 
@@ -23,6 +27,8 @@ $SummaryPath = Join-Path $OutputDirectory "wreath-medal-$RunId.json"
 
 if ($DurationMinutes -le 0) { throw "DurationMinutes must be positive" }
 if ($SampleIntervalSeconds -lt 1) { throw "SampleIntervalSeconds must be at least one" }
+if ($MinClipDurationSeconds -le 0) { throw "MinClipDurationSeconds must be positive" }
+if ($MaxAudioVideoSkewSeconds -lt 0) { throw "MaxAudioVideoSkewSeconds cannot be negative" }
 if (-not (Test-Path $TrayExe)) { throw "Missing $TrayExe; build the Windows release first" }
 if (-not (Test-Path $ControlExe)) { throw "Missing $ControlExe; build the Windows release first" }
 
@@ -120,6 +126,92 @@ function Get-Average([object[]]$Rows, [string]$Property) {
     return [double](($Rows | Measure-Object -Property $Property -Average).Average)
 }
 
+function Convert-InvariantDouble([object]$Value, [string]$Description) {
+    $Parsed = 0.0
+    $Text = [string]$Value
+    if (-not [double]::TryParse(
+        $Text,
+        [System.Globalization.NumberStyles]::Float,
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        [ref]$Parsed
+    )) {
+        throw "ffprobe returned an invalid $Description value: '$Text'"
+    }
+    return $Parsed
+}
+
+function Test-ReplayClip([string]$Path, [string]$Ffprobe) {
+    $ResolvedPath = [System.IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $ResolvedPath -PathType Leaf)) {
+        throw "saved clip does not exist: $ResolvedPath"
+    }
+
+    $MetadataJson = @(& $Ffprobe -v error `
+        -show_entries "format=duration:stream=index,codec_name,codec_type,start_time,duration" `
+        -of json $ResolvedPath)
+    if ($LASTEXITCODE -ne 0) { throw "ffprobe could not read $ResolvedPath" }
+    $Metadata = ($MetadataJson -join [Environment]::NewLine) | ConvertFrom-Json
+    $Streams = @($Metadata.streams)
+    $Video = @($Streams | Where-Object { $_.codec_type -eq "video" })
+    $Audio = @($Streams | Where-Object { $_.codec_type -eq "audio" })
+    if ($Video.Count -ne 1) { throw "expected one video stream in $ResolvedPath; found $($Video.Count)" }
+    if (-not $AllowVideoOnly -and $Audio.Count -lt 1) {
+        throw "expected an audio stream in $ResolvedPath"
+    }
+    $Duration = Convert-InvariantDouble $Metadata.format.duration "container duration"
+    if ($Duration -lt $MinClipDurationSeconds) {
+        throw "clip duration $Duration seconds is below $MinClipDurationSeconds seconds"
+    }
+
+    $FirstPacketJson = @(& $Ffprobe -v error -select_streams v:0 `
+        -read_intervals "%+#1" -show_entries "packet=flags" -of json $ResolvedPath)
+    if ($LASTEXITCODE -ne 0) { throw "ffprobe could not inspect the first video packet" }
+    $FirstPacket = (($FirstPacketJson -join [Environment]::NewLine) | ConvertFrom-Json).packets | Select-Object -First 1
+    if ($null -eq $FirstPacket -or [string]$FirstPacket.flags -notmatch "K") {
+        throw "first video packet is not a keyframe"
+    }
+
+    $LastTimestamp = @{}
+    $PacketLines = @(& $Ffprobe -v error -show_entries "packet=stream_index,dts_time" `
+        -of "csv=p=0" $ResolvedPath)
+    if ($LASTEXITCODE -ne 0) { throw "ffprobe could not inspect packet timestamps" }
+    foreach ($Line in $PacketLines) {
+        $Parts = ([string]$Line).Split(",")
+        if ($Parts.Count -lt 2 -or $Parts[1] -eq "N/A") { continue }
+        $StreamIndex = [int]$Parts[0]
+        $Timestamp = Convert-InvariantDouble $Parts[1] "packet timestamp"
+        if ($LastTimestamp.ContainsKey($StreamIndex) -and $Timestamp -lt ([double]$LastTimestamp[$StreamIndex] - 0.000001)) {
+            throw "stream $StreamIndex has a non-monotonic DTS at $Timestamp seconds"
+        }
+        $LastTimestamp[$StreamIndex] = $Timestamp
+    }
+
+    if ($Audio.Count -gt 0) {
+        $VideoStart = Convert-InvariantDouble $Video[0].start_time "video start time"
+        $AudioStart = Convert-InvariantDouble $Audio[0].start_time "audio start time"
+        $VideoDuration = Convert-InvariantDouble $Video[0].duration "video duration"
+        $AudioDuration = Convert-InvariantDouble $Audio[0].duration "audio duration"
+        if ([Math]::Abs($VideoStart - $AudioStart) -gt $MaxAudioVideoSkewSeconds) {
+            throw "audio/video start delta exceeds $MaxAudioVideoSkewSeconds seconds"
+        }
+        if ([Math]::Abs($VideoDuration - $AudioDuration) -gt $MaxAudioVideoSkewSeconds) {
+            throw "audio/video duration delta exceeds $MaxAudioVideoSkewSeconds seconds"
+        }
+    }
+
+    return [pscustomobject]@{
+        Path = $ResolvedPath
+        Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ResolvedPath).Hash
+        Bytes = (Get-Item -LiteralPath $ResolvedPath).Length
+        DurationSeconds = [Math]::Round($Duration, 3)
+        VideoCodec = [string]$Video[0].codec_name
+        AudioStreams = $Audio.Count
+        AudioVideoSkewLimitSeconds = $MaxAudioVideoSkewSeconds
+        KeyframeStart = $true
+        MonotonicDts = $true
+    }
+}
+
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 if ((Get-ProcessesByName @("wreath-win-ui")).Count -eq 0) {
     Start-Process -FilePath $TrayExe -WorkingDirectory $ResolvedBinDir | Out-Null
@@ -148,6 +240,7 @@ $LastSampleSeconds = 0.0
 $NextSaveSeconds = [double]$SaveEverySeconds
 $SaveAttempts = 0
 $SaveFailures = 0
+$SavedClips = [System.Collections.Generic.List[string]]::new()
 $DurationSeconds = $DurationMinutes * 60.0
 
 while ($Stopwatch.Elapsed.TotalSeconds -lt $DurationSeconds) {
@@ -194,8 +287,17 @@ while ($Stopwatch.Elapsed.TotalSeconds -lt $DurationSeconds) {
 
     if ($SaveEverySeconds -gt 0 -and $NowSeconds -ge $NextSaveSeconds) {
         $SaveAttempts++
-        & $ControlExe save *> $null
-        if ($LASTEXITCODE -ne 0) { $SaveFailures++ }
+        $SaveOutput = @(& $ControlExe save 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+            $SaveFailures++
+        } else {
+            $SavedLine = $SaveOutput | Where-Object { [string]$_ -like "saved *" } | Select-Object -Last 1
+            if ($null -eq $SavedLine) {
+                $SaveFailures++
+            } else {
+                $SavedClips.Add(([string]$SavedLine).Substring(6))
+            }
+        }
         $NextSaveSeconds += $SaveEverySeconds
     }
 }
@@ -213,6 +315,22 @@ $PeakTrayRam = [double](($Rows | Measure-Object -Property TrayWorkingSetMb -Maxi
 $RamRatio = if ($AverageMedalRam -gt 0) { $AverageWreathRam / $AverageMedalRam } else { $null }
 $CpuRatio = if ($AverageMedalCpu -gt 0.01) { $AverageWreathCpu / $AverageMedalCpu } else { $null }
 $Failures = [System.Collections.Generic.List[string]]::new()
+$ClipValidations = [System.Collections.Generic.List[object]]::new()
+
+if ($SaveAttempts -gt 0) {
+    $Ffprobe = Get-Command $FfprobePath -ErrorAction SilentlyContinue
+    if ($null -eq $Ffprobe) {
+        $Failures.Add("ffprobe was not found at '$FfprobePath'")
+    } else {
+        foreach ($Clip in $SavedClips) {
+            try {
+                $ClipValidations.Add((Test-ReplayClip $Clip $Ffprobe.Source))
+            } catch {
+                $Failures.Add("clip validation failed for '$Clip': $($_.Exception.Message)")
+            }
+        }
+    }
+}
 
 if ($null -ne $RamRatio -and $RamRatio -gt $MaxRelativeRam) {
     $Failures.Add("Wreath RAM ratio $([Math]::Round($RamRatio, 3)) exceeds $MaxRelativeRam")
@@ -239,6 +357,8 @@ $Summary = [ordered]@{
     Samples = $Rows.Count
     SaveAttempts = $SaveAttempts
     SaveFailures = $SaveFailures
+    ValidatedClips = $ClipValidations.Count
+    ClipValidations = @($ClipValidations)
     AverageWreathWorkingSetMb = [Math]::Round($AverageWreathRam, 3)
     AverageMedalWorkingSetMb = [Math]::Round($AverageMedalRam, 3)
     WreathToMedalRamRatio = if ($null -eq $RamRatio) { $null } else { [Math]::Round($RamRatio, 4) }
