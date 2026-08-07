@@ -438,9 +438,12 @@ fn capture_loop(
             "desktop"
         };
         let endpoint_buffer_frames = unsafe { client.GetBufferSize() }.unwrap_or_default();
-        eprintln!(
+        wreath_core::diagnostic!(
             "Wreath {endpoint_name} capture: {format_mode}, {} Hz, {} channel(s), {}-bit, buffer {} frames",
-            format.sample_rate, format.channels, format.bits_per_sample, endpoint_buffer_frames
+            format.sample_rate,
+            format.channels,
+            format.bits_per_sample,
+            endpoint_buffer_frames
         );
         if timer_driven {
             log_audio_effects(&client);
@@ -675,17 +678,21 @@ fn log_audio_effects(client: &windows::Win32::Media::Audio::IAudioClient2) {
     use windows::Win32::System::Com::CoTaskMemFree;
 
     let Ok(manager) = (unsafe { client.GetService::<IAudioEffectsManager>() }) else {
-        eprintln!("Wreath microphone: Windows audio-effect enumeration is unavailable");
+        wreath_core::diagnostic!(
+            "Wreath microphone: Windows audio-effect enumeration is unavailable"
+        );
         return;
     };
     let mut effects = std::ptr::null_mut();
     let mut count = 0_u32;
     if let Err(error) = unsafe { manager.GetAudioEffects(&mut effects, &mut count) } {
-        eprintln!("Wreath microphone: cannot enumerate Windows audio effects: {error}");
+        wreath_core::diagnostic!(
+            "Wreath microphone: cannot enumerate Windows audio effects: {error}"
+        );
         return;
     }
     if effects.is_null() || count == 0 {
-        eprintln!("Wreath microphone: no endpoint audio effects reported");
+        wreath_core::diagnostic!("Wreath microphone: no endpoint audio effects reported");
         if !effects.is_null() {
             unsafe { CoTaskMemFree(Some(effects.cast())) };
         }
@@ -707,7 +714,7 @@ fn log_audio_effects(client: &windows::Win32::Media::Audio::IAudioClient2) {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    eprintln!("Wreath microphone Windows audio effects: {summary}");
+    wreath_core::diagnostic!("Wreath microphone Windows audio effects: {summary}");
     unsafe { CoTaskMemFree(Some(effects.cast())) };
 }
 
@@ -742,16 +749,23 @@ struct CaptureDiagnostics {
     discontinuities: u64,
     timestamp_errors: u64,
     queue_drops: u64,
+    resynchronizations: u64,
+    packets: u64,
 }
 
 #[cfg(target_os = "windows")]
 impl CaptureDiagnostics {
+    /// Roughly ten seconds of packets at a typical endpoint period.
+    const HEARTBEAT_PACKETS: u64 = 1_024;
+
     fn new(endpoint: &'static str) -> Self {
         Self {
             endpoint,
             discontinuities: 0,
             timestamp_errors: 0,
             queue_drops: 0,
+            resynchronizations: 0,
+            packets: 0,
         }
     }
 
@@ -775,39 +789,99 @@ impl CaptureDiagnostics {
         Self::record(self.endpoint, "queue drops", &mut self.queue_drops);
     }
 
+    fn resynchronization(&mut self) {
+        Self::record(
+            self.endpoint,
+            "capture clock resynchronizations",
+            &mut self.resynchronizations,
+        );
+    }
+
+    /// Periodic proof of how far the endpoint's own frame count has walked
+    /// away from the wall clock. A healthy endpoint stays within a few
+    /// milliseconds; anything larger points at dropped or duplicated packets.
+    fn packet(&mut self, sample_clock: std::time::Duration, wall_clock: std::time::Duration) {
+        self.packets = self.packets.saturating_add(1);
+        if self.packets.is_multiple_of(Self::HEARTBEAT_PACKETS) {
+            let endpoint = self.endpoint;
+            let packets = self.packets;
+            let behind = wall_clock.saturating_sub(sample_clock).as_micros();
+            let ahead = sample_clock.saturating_sub(wall_clock).as_micros();
+            wreath_core::diagnostic!(
+                "Wreath {endpoint} capture health: packets={packets}, sample clock {}{} us from the wall clock, discontinuities={}, timestamp errors={}, queue drops={}, resyncs={}",
+                if ahead > 0 { "+" } else { "-" },
+                if ahead > 0 { ahead } else { behind },
+                self.discontinuities,
+                self.timestamp_errors,
+                self.queue_drops,
+                self.resynchronizations
+            );
+        }
+    }
+
     fn record(endpoint: &str, label: &str, counter: &mut u64) {
         *counter = counter.saturating_add(1);
         if counter.is_power_of_two() {
-            eprintln!("Wreath {endpoint} capture diagnostics: {label}={counter}");
+            wreath_core::diagnostic!("Wreath {endpoint} capture diagnostics: {label}={counter}");
         }
     }
 }
 
-#[cfg(target_os = "windows")]
+/// Turns WASAPI's per-packet wall-clock readings into a sample-accurate
+/// capture timeline.
+///
+/// `pu64QPCPosition` is the performance-counter value taken when the endpoint
+/// reported its position, so it carries driver and scheduler jitter and drifts
+/// against the device's own crystal. The number of frames in the packet, by
+/// contrast, is exact. Stamping packets with the raw wall clock therefore
+/// hands the AAC encoder a timeline that wobbles against the payload it
+/// describes — the encoder derives its output timestamps from the input ones,
+/// and the muxer then lays out samples whose spacing disagrees with their
+/// 1024-frame contents. That is heard as a continuous rough, gritty edge
+/// rather than as an occasional click.
+///
+/// The frame count drives the timeline. The wall clock is consulted only to
+/// start an epoch and to recover after a real gap, so long recordings still
+/// track real time instead of free-running on the device crystal.
+#[cfg(any(target_os = "windows", test))]
 #[derive(Default)]
 struct CapturePacketClock {
     next_timestamp: Option<std::time::Duration>,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 impl CapturePacketClock {
+    /// How far the sample timeline may sit from the wall clock before the
+    /// endpoint is assumed to have skipped rather than merely jittered.
+    const RESYNC_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(50);
+
+    /// Returns the packet timestamp, the wall-clock reading it was compared
+    /// against, and whether the sample timeline had to be resynchronized.
     fn timestamp(
         &mut self,
         qpc_position: u64,
         frames: u32,
         sample_rate: u32,
         timestamp_error: bool,
-    ) -> std::time::Duration {
+        discontinuous: bool,
+    ) -> (std::time::Duration, std::time::Duration, bool) {
         let reported = std::time::Duration::from_nanos(qpc_position.saturating_mul(100));
-        let timestamp = if timestamp_error {
-            self.next_timestamp.unwrap_or(reported)
-        } else {
-            reported
+        let (timestamp, resynchronized) = match self.next_timestamp {
+            // An unusable reading leaves the sample timeline as the only
+            // source; a reported gap is exactly when the wall clock has to win.
+            Some(expected) if timestamp_error => (expected, false),
+            Some(expected)
+                if !discontinuous && expected.abs_diff(reported) <= Self::RESYNC_THRESHOLD =>
+            {
+                (expected, false)
+            }
+            Some(_) => (reported, true),
+            None => (reported, false),
         };
         self.next_timestamp = Some(timestamp.saturating_add(std::time::Duration::from_nanos(
             u64::from(frames).saturating_mul(1_000_000_000) / u64::from(sample_rate.max(1)),
         )));
-        timestamp
+        (timestamp, reported, resynchronized)
     }
 }
 
@@ -897,8 +971,19 @@ fn read_available_packets(
                 .into_boxed_slice()
         };
         unsafe { capture.ReleaseBuffer(frames) }.map_err(|error| AudioError(error.to_string()))?;
+        let (timestamp, wall_clock, resynchronized) = clock.timestamp(
+            qpc_position,
+            frames,
+            format.sample_rate,
+            timestamp_error,
+            discontinuous,
+        );
+        if resynchronized {
+            diagnostics.resynchronization();
+        }
+        diagnostics.packet(timestamp, wall_clock);
         let chunk = PcmChunk {
-            timestamp: clock.timestamp(qpc_position, frames, format.sample_rate, timestamp_error),
+            timestamp,
             frames,
             discontinuous,
             data: bytes,
@@ -946,15 +1031,61 @@ mod tests {
         assert_eq!(capture_poll_interval_ms(1_000_000), 10);
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
     fn uncertain_wasapi_timestamps_continue_from_the_previous_packet() {
         let mut clock = CapturePacketClock::default();
-        let first = clock.timestamp(10_000, 480, 48_000, false);
-        let uncertain = clock.timestamp(1, 480, 48_000, true);
+        let (first, _, _) = clock.timestamp(10_000, 480, 48_000, false, false);
+        let (uncertain, _, _) = clock.timestamp(1, 480, 48_000, true, false);
 
         assert_eq!(first, std::time::Duration::from_millis(1));
         assert_eq!(uncertain, std::time::Duration::from_millis(11));
+    }
+
+    /// The wall clock jitters against the frame count it is supposed to
+    /// describe; letting that reach the encoder is what roughens the audio.
+    #[test]
+    fn wall_clock_jitter_never_reaches_the_capture_timeline() {
+        let mut clock = CapturePacketClock::default();
+        let start = 10_000_u64;
+        let mut stamps = Vec::new();
+        // Ten contiguous 10 ms packets whose reported time wanders by ±3 ms.
+        for packet in 0..10_u64 {
+            let jitter = [0_i64, 30_000, -20_000, 12_000, -28_000][packet as usize % 5];
+            let reported = (start as i64 + (packet as i64 * 100_000) + jitter) as u64;
+            stamps.push(clock.timestamp(reported, 480, 48_000, false, false).0);
+        }
+
+        for (packet, stamp) in stamps.iter().enumerate() {
+            let expected = std::time::Duration::from_millis(1)
+                + std::time::Duration::from_millis(10 * packet as u64);
+            assert_eq!(
+                *stamp, expected,
+                "packet {packet} drifted with the wall clock"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reported_gap_resynchronizes_to_the_wall_clock() {
+        let mut clock = CapturePacketClock::default();
+        let _ = clock.timestamp(10_000, 480, 48_000, false, false);
+        // The endpoint skipped half a second and says so.
+        let (resumed, _, resynchronized) = clock.timestamp(5_010_000, 480, 48_000, false, true);
+
+        assert_eq!(resumed, std::time::Duration::from_millis(501));
+        assert!(resynchronized);
+    }
+
+    #[test]
+    fn a_silent_drift_beyond_the_threshold_also_resynchronizes() {
+        let mut clock = CapturePacketClock::default();
+        let _ = clock.timestamp(10_000, 480, 48_000, false, false);
+        // No discontinuity flag, but the endpoint is 200 ms away from where
+        // its own frame count says it should be.
+        let (resumed, _, resynchronized) = clock.timestamp(2_110_000, 480, 48_000, false, false);
+
+        assert_eq!(resumed, std::time::Duration::from_millis(211));
+        assert!(resynchronized);
     }
 
     #[test]

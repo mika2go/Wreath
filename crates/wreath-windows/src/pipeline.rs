@@ -270,6 +270,16 @@ impl PipelineAudio {
             })
             .transpose()?;
         let encoder = crate::audio_encoder::AacEncoder::initialize(settings)?;
+        wreath_core::diagnostic!(
+            "Wreath audio pipeline: master {} Hz/{} ch -> encoder {} Hz/{} ch at {} B/s, microphone mixer {}, gain {}%",
+            format.sample_rate,
+            format.channels,
+            output_sample_rate,
+            output_channels,
+            settings.bytes_per_second,
+            if mixer.is_some() { "on" } else { "off" },
+            config.microphone_gain_percent
+        );
         Ok(Some(Self {
             master,
             auxiliary_microphone,

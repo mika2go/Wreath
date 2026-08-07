@@ -61,7 +61,18 @@ processing mode, so the driver's VoIP chain — automatic gain control, noise
 suppression, echo cancellation — stays out of the recording. Enable those per
 device under `Sound > Recording > Properties > Enhancements` if you want them;
 if you play desktop audio over speakers, expect some of it to reach the
-microphone. `wreathctl config` prints the complete
+microphone.
+
+Wreath appends capture diagnostics to `%LOCALAPPDATA%\Wreath\wreath.log`: the
+endpoint format each stream negotiated, which Windows audio effects the driver
+still applies, the encoder's input and output format, and a periodic health
+line with the endpoint's clock offset plus discontinuity, timestamp-error,
+queue-drop and resynchronization counters. The tray and player are linked for
+the GUI subsystem and have no console, so this file is the only place those
+numbers appear. Attach it when reporting an audio problem. It is restarted once
+it passes 1 MB.
+
+`wreathctl config` prints the complete
 current configuration. `wreathctl codecs` lists only hardware video encoders
 reported by Media Foundation; `wreathctl status` reports which one the live
 pipeline selected, the exact D3D11 adapter name and PCI vendor/device IDs used

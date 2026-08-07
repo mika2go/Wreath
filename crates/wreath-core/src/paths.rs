@@ -15,6 +15,7 @@ pub struct AppPaths {
     pub legacy_config_files: Vec<PathBuf>,
     pub cache_dir: PathBuf,
     pub thumbnail_dir: PathBuf,
+    pub log_file: PathBuf,
     pub control_endpoint: ControlEndpoint,
 }
 
@@ -56,6 +57,7 @@ impl AppPaths {
             legacy_config_files: ["trace", "riftclip"]
                 .map(|name| config_root.join(name).join("config.toml"))
                 .into(),
+            log_file: config_dir.join("wreath.log"),
             config_dir,
             thumbnail_dir: cache_dir.join("thumbnails"),
             cache_dir,
@@ -78,6 +80,7 @@ impl AppPaths {
             legacy_config_files: ["Trace", "Riftclip"]
                 .map(|name| local_app_data.join(name).join("config.toml"))
                 .into(),
+            log_file: config_dir.join("wreath.log"),
             config_dir,
             thumbnail_dir: cache_dir.join("thumbnails"),
             cache_dir,
@@ -93,6 +96,7 @@ impl AppPaths {
             legacy_config_files: Vec::new(),
             thumbnail_dir: root.join("cache").join("thumbnails"),
             cache_dir: root.join("cache"),
+            log_file: root.join("wreath.log"),
             config_dir: root,
             control_endpoint: if cfg!(target_os = "windows") {
                 ControlEndpoint::NamedPipe(r"\\.\pipe\wreath".into())

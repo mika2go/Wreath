@@ -562,7 +562,7 @@ impl VoiceChannelSelector {
         self.selected = candidate;
         self.locked = true;
         self.clear_candidate();
-        eprintln!(
+        wreath_core::diagnostic!(
             "Wreath microphone: selected input channel {} from {} native channels",
             self.selected + 1,
             channels

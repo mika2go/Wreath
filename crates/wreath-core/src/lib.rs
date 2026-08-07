@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod clips;
 pub mod config;
+pub mod diagnostics;
 pub mod display;
 #[cfg(target_os = "linux")]
 pub mod engine;
