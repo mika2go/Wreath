@@ -9,31 +9,13 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::config::{Codec, Config};
-use crate::display::Monitor;
+use crate::config::Codec;
 use crate::paths::AppPaths;
+use crate::replay::{ReplayBackend, ReplayRecorder, ReplaySpec};
 
 const SAVE_TIMEOUT: Duration = Duration::from_secs(15);
 const STOP_TIMEOUT: Duration = Duration::from_secs(3);
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReplaySpec {
-    pub monitor: String,
-    pub width: u32,
-    pub height: u32,
-    pub frames_per_second: u16,
-    pub duration_seconds: u16,
-    pub codec: Codec,
-    pub quality: u8,
-    pub cursor: bool,
-    pub desktop_audio: bool,
-    pub microphone_audio: bool,
-    pub microphone_device: Option<String>,
-    pub microphone_gain_percent: u16,
-    pub output_directory: PathBuf,
-    pub portal_session_token_file: Option<PathBuf>,
-}
 
 #[derive(Debug)]
 pub enum EngineError {
@@ -74,111 +56,81 @@ impl From<io::Error> for EngineError {
     }
 }
 
-impl ReplaySpec {
-    pub fn from_config(config: &Config, monitor: &Monitor) -> Self {
-        Self {
-            monitor: monitor.name.clone(),
-            width: monitor.width,
-            height: monitor.height,
-            frames_per_second: config.capture.frames_per_second,
-            duration_seconds: config.capture.duration_seconds,
-            codec: config.capture.codec,
-            quality: config.capture.quality,
-            cursor: config.capture.cursor,
-            desktop_audio: config.audio.desktop,
-            microphone_audio: config.audio.microphone,
-            microphone_device: config.audio.microphone_device.clone(),
-            microphone_gain_percent: config.audio.microphone_gain_percent,
-            output_directory: config.storage.directory.clone(),
-            portal_session_token_file: monitor
-                .uses_portal()
-                .then(|| AppPaths::discover().cache_dir.join("portal-session-token")),
-        }
+fn recorder_arguments(
+    spec: &ReplaySpec,
+    portal_session_token_file: Option<&std::path::Path>,
+) -> Vec<OsString> {
+    let mut arguments = vec![
+        "-w".into(),
+        spec.monitor.clone().into(),
+        "-f".into(),
+        spec.frames_per_second.to_string().into(),
+        "-r".into(),
+        spec.duration_seconds.to_string().into(),
+        "-c".into(),
+        "mp4".into(),
+        "-bm".into(),
+        "cbr".into(),
+        "-q".into(),
+        spec.target_bitrate_kbps().to_string().into(),
+        "-df".into(),
+        "no".into(),
+        "-fm".into(),
+        "vfr".into(),
+        "-tune".into(),
+        "performance".into(),
+        "-fallback-cpu-encoding".into(),
+        "no".into(),
+        "-cursor".into(),
+        if spec.cursor { "yes" } else { "no" }.into(),
+        "-o".into(),
+        spec.output_directory.as_os_str().to_owned(),
+    ];
+    match spec.codec {
+        Codec::Auto => {}
+        Codec::H264 => arguments.extend(["-k".into(), "h264".into()]),
+        Codec::Hevc => arguments.extend(["-k".into(), "hevc".into()]),
+        Codec::Av1 => arguments.extend(["-k".into(), "av1".into()]),
     }
-
-    pub fn arguments(&self) -> Vec<OsString> {
-        let mut arguments = vec![
-            "-w".into(),
-            self.monitor.clone().into(),
-            "-f".into(),
-            self.frames_per_second.to_string().into(),
-            "-r".into(),
-            self.duration_seconds.to_string().into(),
-            "-c".into(),
-            "mp4".into(),
-            "-bm".into(),
-            "cbr".into(),
-            "-q".into(),
-            self.target_bitrate_kbps().to_string().into(),
-            "-df".into(),
-            "no".into(),
-            "-fm".into(),
-            "vfr".into(),
-            "-tune".into(),
-            "performance".into(),
-            "-fallback-cpu-encoding".into(),
-            "no".into(),
-            "-cursor".into(),
-            if self.cursor { "yes" } else { "no" }.into(),
-            "-o".into(),
-            self.output_directory.as_os_str().to_owned(),
-        ];
-        match self.codec {
-            Codec::Auto => {}
-            Codec::H264 => arguments.extend(["-k".into(), "h264".into()]),
-            Codec::Hevc => arguments.extend(["-k".into(), "hevc".into()]),
-            Codec::Av1 => arguments.extend(["-k".into(), "av1".into()]),
-        }
-        let microphone = self
-            .microphone_audio
-            .then(|| self.microphone_device.as_deref().unwrap_or("default_input"));
-        let audio_source = match (self.desktop_audio, microphone) {
-            (true, Some(microphone)) => Some(format!("default_output|{microphone}")),
-            (true, None) => Some("default_output".into()),
-            (false, Some(microphone)) => Some(microphone.into()),
-            (false, None) => None,
-        };
-        if let Some(audio_source) = audio_source {
-            arguments.extend(["-a".into(), audio_source.into(), "-ac".into(), "aac".into()]);
-        }
-        if let Some(token_file) = &self.portal_session_token_file {
-            arguments.extend([
-                "-restore-portal-session".into(),
-                "yes".into(),
-                "-portal-session-token-filepath".into(),
-                token_file.as_os_str().to_owned(),
-            ]);
-        }
-        arguments
+    let microphone = spec
+        .microphone_audio
+        .then(|| spec.microphone_device.as_deref().unwrap_or("default_input"));
+    let audio_source = match (spec.desktop_audio, microphone) {
+        (true, Some(microphone)) => Some(format!("default_output|{microphone}")),
+        (true, None) => Some("default_output".into()),
+        (false, Some(microphone)) => Some(microphone.into()),
+        (false, None) => None,
+    };
+    if let Some(audio_source) = audio_source {
+        arguments.extend(["-a".into(), audio_source.into(), "-ac".into(), "aac".into()]);
     }
-
-    pub fn target_bitrate_kbps(&self) -> u32 {
-        let pixels_per_second =
-            u64::from(self.width) * u64::from(self.height) * u64::from(self.frames_per_second);
-        let bits_per_pixel_milli = match self.codec {
-            Codec::Auto | Codec::H264 => 160_u64,
-            Codec::Hevc => 115,
-            Codec::Av1 => 90,
-        };
-        let quality_factor = 50_u64 + u64::from(self.quality);
-        let bitrate = pixels_per_second
-            .saturating_mul(bits_per_pixel_milli)
-            .saturating_mul(quality_factor)
-            / 125_000_000;
-        u32::try_from(bitrate.clamp(2_500, 80_000)).unwrap_or(80_000)
+    if let Some(token_file) = portal_session_token_file {
+        arguments.extend([
+            "-restore-portal-session".into(),
+            "yes".into(),
+            "-portal-session-token-filepath".into(),
+            token_file.as_os_str().to_owned(),
+        ]);
     }
-
-    pub fn estimated_buffer_megabytes(&self) -> u64 {
-        u64::from(self.target_bitrate_kbps()).saturating_mul(u64::from(self.duration_seconds))
-            / 8
-            / 1_024
-    }
+    arguments
 }
 
 pub struct GpuScreenRecorder {
     child: Child,
     saved_paths: Receiver<PathBuf>,
     microphone_gain_source: Option<MicrophoneGainSource>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GpuScreenRecorderBackend;
+
+impl ReplayBackend for GpuScreenRecorderBackend {
+    type Error = EngineError;
+    type Recorder = GpuScreenRecorder;
+
+    fn start(&self, spec: &ReplaySpec) -> Result<Self::Recorder, Self::Error> {
+        GpuScreenRecorder::start(spec)
+    }
 }
 
 struct MicrophoneGainSource {
@@ -296,10 +248,11 @@ impl GpuScreenRecorder {
         executable: impl AsRef<std::ffi::OsStr>,
     ) -> Result<Self, EngineError> {
         fs::create_dir_all(&spec.output_directory)?;
-        if let Some(parent) = spec
-            .portal_session_token_file
-            .as_ref()
-            .and_then(|path| path.parent())
+        let portal_session_token_file = (spec.monitor == "portal")
+            .then(|| AppPaths::discover().cache_dir.join("portal-session-token"));
+        if let Some(parent) = portal_session_token_file
+            .as_deref()
+            .and_then(std::path::Path::parent)
         {
             fs::create_dir_all(parent)?;
         }
@@ -320,7 +273,10 @@ impl GpuScreenRecorder {
             recorder_spec.microphone_device = Some(source.name.clone());
         }
         let mut child = Command::new(executable)
-            .args(recorder_spec.arguments())
+            .args(recorder_arguments(
+                &recorder_spec,
+                portal_session_token_file.as_deref(),
+            ))
             .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -389,6 +345,22 @@ impl GpuScreenRecorder {
         }
         self.microphone_gain_source.take();
         Ok(())
+    }
+}
+
+impl ReplayRecorder for GpuScreenRecorder {
+    type Error = EngineError;
+
+    fn is_running(&mut self) -> Result<bool, Self::Error> {
+        GpuScreenRecorder::is_running(self)
+    }
+
+    fn save(&mut self) -> Result<PathBuf, Self::Error> {
+        GpuScreenRecorder::save(self)
+    }
+
+    fn stop(&mut self) -> Result<(), Self::Error> {
+        GpuScreenRecorder::stop(self)
     }
 }
 
@@ -493,14 +465,12 @@ mod tests {
             microphone_device: None,
             microphone_gain_percent: 100,
             output_directory: PathBuf::from("/tmp/wreath-test"),
-            portal_session_token_file: None,
         }
     }
 
     #[test]
     fn command_uses_direct_monitor_and_replay_mode() {
-        let arguments = spec()
-            .arguments()
+        let arguments = recorder_arguments(&spec(), None)
             .into_iter()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
@@ -525,8 +495,7 @@ mod tests {
         let mut replay = spec();
         replay.microphone_audio = true;
         replay.microphone_device = Some("alsa_input.usb-shure".into());
-        let arguments = replay
-            .arguments()
+        let arguments = recorder_arguments(&replay, None)
             .into_iter()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
@@ -548,9 +517,8 @@ mod tests {
     fn portal_capture_restores_the_users_session_choice() {
         let mut replay = spec();
         replay.monitor = "portal".into();
-        replay.portal_session_token_file = Some(PathBuf::from("/tmp/wreath-portal-token"));
-        let arguments = replay
-            .arguments()
+        let token_file = PathBuf::from("/tmp/wreath-portal-token");
+        let arguments = recorder_arguments(&replay, Some(&token_file))
             .into_iter()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
@@ -565,14 +533,6 @@ mod tests {
                 .windows(2)
                 .any(|pair| pair == ["-portal-session-token-filepath", "/tmp/wreath-portal-token"])
         );
-    }
-
-    #[test]
-    fn buffer_estimate_is_bounded_and_nonzero() {
-        let replay = spec();
-        assert!(replay.target_bitrate_kbps() >= 2_500);
-        assert!(replay.estimated_buffer_megabytes() > 0);
-        assert!(replay.estimated_buffer_megabytes() < 100);
     }
 
     #[test]

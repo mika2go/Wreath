@@ -6,4 +6,5 @@ pub mod engine;
 pub mod hyprland;
 pub mod ipc;
 pub mod paths;
+pub mod replay;
 pub mod shortcuts;

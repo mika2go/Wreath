@@ -11,6 +11,7 @@ use wreath_core::display;
 use wreath_core::engine;
 use wreath_core::ipc::{Request, Response};
 use wreath_core::paths::AppPaths;
+use wreath_core::replay::ReplaySpec;
 use wreath_core::shortcuts::{self, ShortcutInstall};
 use wreath_core::{config::Codec, config::Config, config::HotkeyConfig};
 
@@ -210,7 +211,7 @@ fn doctor() -> Result<(), String> {
     );
     println!(
         "buffer   ok · about {} MiB for {} seconds",
-        engine::ReplaySpec::from_config(&config, monitor).estimated_buffer_megabytes(),
+        ReplaySpec::from_config(&config, monitor).estimated_buffer_megabytes(),
         config.capture.duration_seconds
     );
     let capabilities = engine::recorder_capabilities().map_err(|error| error.to_string())?;

@@ -9,9 +9,10 @@ use std::time::{Duration, Instant};
 
 use wreath_core::config::Config;
 use wreath_core::display;
-use wreath_core::engine::{GpuScreenRecorder, ReplaySpec};
+use wreath_core::engine::{GpuScreenRecorder, GpuScreenRecorderBackend};
 use wreath_core::ipc::{DaemonState, Request, Response};
 use wreath_core::paths::AppPaths;
+use wreath_core::replay::{ReplayBackend, ReplaySpec};
 use wreath_core::shortcuts;
 
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(250);
@@ -24,6 +25,7 @@ struct Daemon {
     state: DaemonState,
     monitor: Option<String>,
     replay: Option<ReplaySpec>,
+    backend: GpuScreenRecorderBackend,
     recorder: Option<GpuScreenRecorder>,
     capture_requested: bool,
     capture_started_at: Option<Instant>,
@@ -77,6 +79,7 @@ fn run() -> Result<(), String> {
         state: DaemonState::Starting,
         monitor,
         replay,
+        backend: GpuScreenRecorderBackend,
         recorder: None,
         capture_requested: true,
         capture_started_at: None,
@@ -168,7 +171,7 @@ impl Daemon {
             self.fail("no active capture target found".into());
             return;
         };
-        match GpuScreenRecorder::start(spec) {
+        match self.backend.start(spec) {
             Ok(recorder) => {
                 eprintln!(
                     "wreathd: recording {} at {} fps (estimated buffer {} MiB)",
