@@ -13,8 +13,11 @@ shortcut is pressed.
 
 ## Platform support
 
-The Arch Linux/Hyprland edition is the currently tested release path. A native,
-low-overhead Windows edition is under active development.
+The Arch Linux/Hyprland edition is the currently tested release path. The
+Windows edition is a separate native implementation rather than a port: it uses
+Windows Graphics Capture, D3D11 conversion, hardware-only Media Foundation
+encoding and WASAPI capture directly, and shares only the configuration, replay
+buffer and control protocol with Linux.
 
 | Desktop | Capture | Global shortcut |
 | --- | --- | --- |
@@ -31,16 +34,24 @@ shell.
 
 ## Features
 
-- Hardware encoding on AMD, Intel, and NVIDIA through GPU Screen Recorder
+- Hardware encoding on AMD, Intel, and NVIDIA — through GPU Screen Recorder on
+  Linux, through Media Foundation on Windows, with no CPU fallback on either
 - H.264, HEVC, and AV1
-- Configurable replay length, frame rate, quality, cursor capture, and output
-  directory
+- Configurable replay length, quality, cursor capture, and output directory, at
+  up to 60 fps
 - Desktop audio and an optional microphone with an independent recording level
+- Unprocessed microphone capture on Windows: the endpoint is opened in WASAPI
+  raw mode, so the driver's gain control, noise suppression and echo
+  cancellation stay out of the recording
 - Quiet confirmation sound and a desktop notification after a clip is saved
 - GTK4 clip library with playback, search, rename, delete, and collections
 - Direct monitor capture with a desktop portal fallback
 - Optional Quickshell/Pywal colors with standalone defaults
 - No account, telemetry, uploads, or network client
+
+Capture is capped at 60 fps. Hardware encoders could not sustain more at the
+resolutions people record at, so the higher settings only dropped frames and
+doubled clip size.
 
 ## Install
 
@@ -167,3 +178,22 @@ configuration, and clip management stay local.
 ## License
 
 MIT
+
+---
+
+## Testers
+
+Some bugs only exist for the person patient enough to keep hearing them. The
+Windows audio path was taken apart and rebuilt from the capture flags up — raw
+WASAPI instead of the communications chain, a sample-accurate timeline instead
+of wall-clock stamps, a band-limited resampler instead of linear interpolation —
+because one tester kept coming back with *"better, but still scratchy"* until
+there was nothing left to find.
+
+<div align="center">
+
+### Nev
+
+**Heard it first. Every single time.**
+
+</div>

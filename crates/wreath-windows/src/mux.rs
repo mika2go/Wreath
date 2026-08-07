@@ -90,7 +90,8 @@ pub fn write_mp4<'a>(
     };
     unsafe { writer.BeginWriting() }.map_err(initialization_error)?;
 
-    for packet in packets {
+    let durations = presented_durations(&packets);
+    for (packet, duration) in packets.iter().zip(durations) {
         let stream = match packet.track {
             TrackKind::Video => video_stream,
             TrackKind::Audio => {
@@ -100,9 +101,22 @@ pub fn write_mp4<'a>(
                 stream
             }
         };
-        let sample = packet_to_sample(packet, first_timestamp)?;
+        let sample = packet_to_sample(packet, first_timestamp, duration)?;
         unsafe { writer.WriteSample(stream, &sample) }.map_err(initialization_error)?;
     }
+    let span = packets
+        .last()
+        .map(|packet| packet.end_timestamp().saturating_sub(first_timestamp))
+        .unwrap_or_default();
+    let video_frames = packets
+        .iter()
+        .filter(|packet| packet.track == TrackKind::Video)
+        .count();
+    wreath_core::diagnostic!(
+        "Wreath clip: {} s written from {} packets, {video_frames} video frames",
+        span.as_secs_f32(),
+        packets.len()
+    );
     unsafe { writer.Finalize() }.map_err(initialization_error)
 }
 
@@ -117,6 +131,38 @@ fn ordered_packets<'a>(packets: impl Iterator<Item = &'a EncodedPacket>) -> Vec<
     packets
 }
 
+/// How long each sample is actually on screen, taken from the gap to the next
+/// sample on its own track.
+///
+/// Every encoded video packet claims the nominal frame duration, but Windows
+/// Graphics Capture only delivers a frame when the picture changes and the
+/// pipeline skips frames the encoder is not ready for. The muxer builds the
+/// track from these durations, so a clip whose frames were sparse came out
+/// proportionally shorter than the span it covered - a 30 second replay saved
+/// as 24. Stretching a sample until its successor arrives holds the picture,
+/// which is what actually happened, and keeps the track as long as the capture.
+#[cfg(any(target_os = "windows", test))]
+fn presented_durations(packets: &[&EncodedPacket]) -> Vec<std::time::Duration> {
+    let mut durations = vec![std::time::Duration::ZERO; packets.len()];
+    let mut next_video: Option<std::time::Duration> = None;
+    let mut next_audio: Option<std::time::Duration> = None;
+    for (index, packet) in packets.iter().enumerate().rev() {
+        let next = match packet.track {
+            TrackKind::Video => next_video,
+            TrackKind::Audio => next_audio,
+        };
+        durations[index] = next
+            .and_then(|next| next.checked_sub(packet.timestamp))
+            .filter(|gap| !gap.is_zero())
+            .unwrap_or(packet.duration);
+        match packet.track {
+            TrackKind::Video => next_video = Some(packet.timestamp),
+            TrackKind::Audio => next_audio = Some(packet.timestamp),
+        }
+    }
+    durations
+}
+
 #[cfg(any(target_os = "windows", test))]
 fn track_order(track: TrackKind) -> u8 {
     match track {
@@ -129,6 +175,7 @@ fn track_order(track: TrackKind) -> u8 {
 fn packet_to_sample(
     packet: &EncodedPacket,
     first_timestamp: std::time::Duration,
+    duration: std::time::Duration,
 ) -> Result<windows::Win32::Media::MediaFoundation::IMFSample, VideoError> {
     use windows::Win32::Media::MediaFoundation::{
         MFCreateMemoryBuffer, MFCreateSample, MFSampleExtension_CleanPoint,
@@ -164,7 +211,7 @@ fn packet_to_sample(
             sample.SetSampleTime(duration_to_hns(
                 packet.timestamp.saturating_sub(first_timestamp),
             ))?;
-            sample.SetSampleDuration(duration_to_hns(packet.duration))?;
+            sample.SetSampleDuration(duration_to_hns(duration))?;
             if packet.keyframe {
                 sample.SetUINT32(&MFSampleExtension_CleanPoint, 1)?;
             }
@@ -218,6 +265,52 @@ mod tests {
         assert_eq!(first.file_name().unwrap(), "wreath-1234.mp4");
         assert_eq!(second.file_name().unwrap(), "wreath-1234-2.mp4");
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// A 30 second replay saved as 24 because sparse frames each claimed the
+    /// nominal frame duration, so the track was as long as the frames it had
+    /// rather than as long as the capture it covered.
+    #[test]
+    fn a_held_frame_stretches_until_its_successor_instead_of_shortening_the_clip() {
+        let packets = [
+            packet(TrackKind::Video, 0),
+            packet(TrackKind::Video, 250),
+            packet(TrackKind::Video, 500),
+        ];
+        let ordered = ordered_packets(packets.iter());
+
+        let durations = presented_durations(&ordered);
+
+        // Each frame claims 10 ms, but a quarter of a second passed between
+        // them; the covered span has to survive into the track.
+        assert_eq!(durations[0], std::time::Duration::from_millis(250));
+        assert_eq!(durations[1], std::time::Duration::from_millis(250));
+        // The last sample has no successor and keeps its own duration.
+        assert_eq!(durations[2], std::time::Duration::from_millis(10));
+        assert_eq!(
+            durations.iter().sum::<std::time::Duration>(),
+            std::time::Duration::from_millis(510)
+        );
+    }
+
+    #[test]
+    fn each_track_is_stretched_against_its_own_successor() {
+        let packets = [
+            packet(TrackKind::Video, 0),
+            packet(TrackKind::Audio, 20),
+            packet(TrackKind::Video, 100),
+            packet(TrackKind::Audio, 120),
+        ];
+        let ordered = ordered_packets(packets.iter());
+        let durations = presented_durations(&ordered);
+
+        for (packet, duration) in ordered.iter().zip(&durations) {
+            if packet.timestamp < std::time::Duration::from_millis(100) {
+                assert_eq!(*duration, std::time::Duration::from_millis(100));
+            } else {
+                assert_eq!(*duration, std::time::Duration::from_millis(10));
+            }
+        }
     }
 
     #[test]
