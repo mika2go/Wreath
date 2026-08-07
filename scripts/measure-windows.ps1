@@ -10,6 +10,7 @@ param(
     [double]$MaxRelativeGpu = 0.85,
     [double]$MaxMemoryGrowthMb = 32,
     [double]$MaxTrayWorkingSetMb = 64,
+    [double]$MaxSaveLatencySeconds = 10,
     [string]$FfprobePath = "ffprobe",
     [double]$MinClipDurationSeconds = 5,
     [double]$MaxAudioVideoSkewSeconds = 0.50,
@@ -51,6 +52,7 @@ if ($SampleIntervalSeconds -lt 1) { throw "SampleIntervalSeconds must be at leas
 if ($SaveEverySeconds -lt 0) { throw "SaveEverySeconds cannot be negative" }
 if ($MinClipDurationSeconds -le 0) { throw "MinClipDurationSeconds must be positive" }
 if ($MaxAudioVideoSkewSeconds -lt 0) { throw "MaxAudioVideoSkewSeconds cannot be negative" }
+if ($MaxSaveLatencySeconds -le 0) { throw "MaxSaveLatencySeconds must be positive" }
 if (-not $MeasureMedalOnly -and -not (Test-Path $TrayExe)) {
     throw "Missing $TrayExe; build the Windows release first"
 }
@@ -233,6 +235,53 @@ function Invoke-WreathControl([string]$Control, [string]$Command) {
         throw "wreathctl $Command failed: $($Output -join ' ')"
     }
     return $Output -join [Environment]::NewLine
+}
+
+function Invoke-WreathSaveProcess([string]$Control, [double]$StartedAtSeconds) {
+    $StandardOutput = [System.IO.Path]::GetTempFileName()
+    $StandardError = [System.IO.Path]::GetTempFileName()
+    try {
+        $Process = Start-Process `
+            -FilePath $Control `
+            -ArgumentList "save" `
+            -NoNewWindow `
+            -PassThru `
+            -RedirectStandardOutput $StandardOutput `
+            -RedirectStandardError $StandardError
+        return [pscustomobject]@{
+            Process = $Process
+            StandardOutput = $StandardOutput
+            StandardError = $StandardError
+            StartedAtSeconds = $StartedAtSeconds
+        }
+    } catch {
+        Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $StandardOutput, $StandardError
+        throw
+    }
+}
+
+function Complete-WreathSave([object]$Pending, [double]$CompletedAtSeconds) {
+    try {
+        $Pending.Process.WaitForExit()
+        $Output = @(Get-Content -ErrorAction SilentlyContinue -LiteralPath $Pending.StandardOutput)
+        $ErrorOutput = @(Get-Content -ErrorAction SilentlyContinue -LiteralPath $Pending.StandardError)
+        $SavedLine = $Output | Where-Object { [string]$_ -like "saved *" } | Select-Object -Last 1
+        $Success = $Pending.Process.ExitCode -eq 0 -and $null -ne $SavedLine
+        return [pscustomobject]@{
+            Success = $Success
+            Clip = if ($Success) { ([string]$SavedLine).Substring(6) } else { $null }
+            DurationMs = [Math]::Max(
+                0,
+                1000.0 * ($CompletedAtSeconds - [double]$Pending.StartedAtSeconds)
+            )
+            Error = if ($Success) { $null } else { ($ErrorOutput + $Output) -join " " }
+        }
+    } finally {
+        Remove-Item `
+            -Force `
+            -ErrorAction SilentlyContinue `
+            -LiteralPath $Pending.StandardOutput, $Pending.StandardError
+    }
 }
 
 function Get-WreathStatusCodec([string]$Status) {
@@ -513,9 +562,12 @@ $NextSaveSeconds = [double]$EffectiveSaveEverySeconds
 $SaveAttempts = 0
 $SaveFailures = 0
 $ShortReplaySaves = 0
+$SlowReplaySaves = 0
 $SavedClips = [System.Collections.Generic.List[string]]::new()
+$SaveDurationsMs = [System.Collections.Generic.List[double]]::new()
 $ObservedReplayBytes = [System.Collections.Generic.List[long]]::new()
 if (-not $MeasureMedalOnly) { $ObservedReplayBytes.Add($InitialReplayBytes) }
+$PendingSave = $null
 $DurationSeconds = $DurationMinutes * 60.0
 
 while ($Stopwatch.Elapsed.TotalSeconds -lt $DurationSeconds) {
@@ -578,31 +630,61 @@ while ($Stopwatch.Elapsed.TotalSeconds -lt $DurationSeconds) {
         MedalThreads = $Medal.Threads
     })
 
-    if ($EffectiveSaveEverySeconds -gt 0 -and $NowSeconds -ge $NextSaveSeconds) {
-        $SaveAttempts++
-        try {
-            $StatusBeforeSave = Invoke-WreathControl $ControlExe "status"
-            $BufferedSeconds = Get-WreathStatusBuffer $StatusBeforeSave
-            $ObservedReplayBytes.Add((Get-WreathStatusReplaySize $StatusBeforeSave))
-            if ($BufferedSeconds + $ReplayDurationToleranceSeconds -lt $ConfiguredReplaySeconds) {
-                $ShortReplaySaves++
-            }
-        } catch {
-            $ShortReplaySaves++
-        }
-        $SaveOutput = @(& $ControlExe save 2>&1)
-        if ($LASTEXITCODE -ne 0) {
+    if ($null -ne $PendingSave -and $PendingSave.Process.HasExited) {
+        $SaveResult = Complete-WreathSave $PendingSave $NowSeconds
+        $SaveDurationsMs.Add([double]$SaveResult.DurationMs)
+        if (-not $SaveResult.Success) {
             $SaveFailures++
         } else {
-            $SavedLine = $SaveOutput | Where-Object { [string]$_ -like "saved *" } | Select-Object -Last 1
-            if ($null -eq $SavedLine) {
+            $SavedClips.Add([string]$SaveResult.Clip)
+        }
+        if ($SaveResult.DurationMs -gt 1000.0 * $MaxSaveLatencySeconds) {
+            $SlowReplaySaves++
+        }
+        $PendingSave = $null
+    }
+
+    if ($EffectiveSaveEverySeconds -gt 0 `
+        -and $NextSaveSeconds -lt $DurationSeconds `
+        -and $NowSeconds -ge $NextSaveSeconds) {
+        $SaveAttempts++
+        if ($null -ne $PendingSave) {
+            $SaveFailures++
+        } else {
+            try {
+                $StatusBeforeSave = Invoke-WreathControl $ControlExe "status"
+                $BufferedSeconds = Get-WreathStatusBuffer $StatusBeforeSave
+                $ObservedReplayBytes.Add((Get-WreathStatusReplaySize $StatusBeforeSave))
+                if ($BufferedSeconds + $ReplayDurationToleranceSeconds -lt $ConfiguredReplaySeconds) {
+                    $ShortReplaySaves++
+                }
+            } catch {
+                $ShortReplaySaves++
+            }
+            try {
+                $PendingSave = Invoke-WreathSaveProcess $ControlExe $NowSeconds
+            } catch {
                 $SaveFailures++
-            } else {
-                $SavedClips.Add(([string]$SavedLine).Substring(6))
             }
         }
         $NextSaveSeconds += $EffectiveSaveEverySeconds
     }
+}
+
+if ($null -ne $PendingSave) {
+    $PendingSave.Process.WaitForExit()
+    $CompletedAtSeconds = $Stopwatch.Elapsed.TotalSeconds
+    $SaveResult = Complete-WreathSave $PendingSave $CompletedAtSeconds
+    $SaveDurationsMs.Add([double]$SaveResult.DurationMs)
+    if (-not $SaveResult.Success) {
+        $SaveFailures++
+    } else {
+        $SavedClips.Add([string]$SaveResult.Clip)
+    }
+    if ($SaveResult.DurationMs -gt 1000.0 * $MaxSaveLatencySeconds) {
+        $SlowReplaySaves++
+    }
+    $PendingSave = $null
 }
 
 if ($Rows.Count -lt 2) {
@@ -671,6 +753,11 @@ $PeakEncodedReplayBytes = if ($ObservedReplayBytes.Count -eq 0) {
     [long](($ObservedReplayBytes | Measure-Object -Maximum).Maximum)
 }
 $PeakEncodedReplayMb = [double]$PeakEncodedReplayBytes / 1MB
+$PeakSaveDurationMs = if ($SaveDurationsMs.Count -eq 0) {
+    0.0
+} else {
+    [double](($SaveDurationsMs | Measure-Object -Maximum).Maximum)
+}
 
 if (-not $MeasureMedalOnly -and $SaveAttempts -gt 0) {
     $Ffprobe = Get-Command $FfprobePath -ErrorAction SilentlyContinue
@@ -719,6 +806,9 @@ if (-not $MeasureMedalOnly -and $SaveFailures -gt 0) {
 if (-not $MeasureMedalOnly -and $ShortReplaySaves -gt 0) {
     $Failures.Add("$ShortReplaySaves of $SaveAttempts replay saves started before the configured buffer duration was available")
 }
+if (-not $MeasureMedalOnly -and $SlowReplaySaves -gt 0) {
+    $Failures.Add("$SlowReplaySaves of $SaveAttempts replay saves exceeded $MaxSaveLatencySeconds seconds")
+}
 if (-not $MeasureMedalOnly -and $null -ne $Baseline -and $SaveAttempts -eq 0) {
     $Failures.Add("Medal comparison completed without a replay save attempt")
 }
@@ -750,6 +840,7 @@ $Summary = [ordered]@{
         MaxMemoryGrowthMb = $MaxMemoryGrowthMb
         MaxTrayWorkingSetMb = $MaxTrayWorkingSetMb
         MaxEncodedReplayMb = $MaxEncodedReplayMb
+        MaxSaveLatencySeconds = $MaxSaveLatencySeconds
         MinClipDurationSeconds = $EffectiveMinClipDurationSeconds
         ReplayDurationToleranceSeconds = $ReplayDurationToleranceSeconds
         MaxAudioVideoSkewSeconds = $MaxAudioVideoSkewSeconds
@@ -758,6 +849,9 @@ $Summary = [ordered]@{
     SaveAttempts = $SaveAttempts
     SaveFailures = $SaveFailures
     ShortReplaySaves = $ShortReplaySaves
+    SlowReplaySaves = $SlowReplaySaves
+    SaveDurationsMs = @($SaveDurationsMs | ForEach-Object { [Math]::Round($_, 3) })
+    PeakSaveDurationMs = [Math]::Round($PeakSaveDurationMs, 3)
     PeakEncodedReplayMb = [Math]::Round($PeakEncodedReplayMb, 3)
     ValidatedClips = $ClipValidations.Count
     ClipValidations = @($ClipValidations)

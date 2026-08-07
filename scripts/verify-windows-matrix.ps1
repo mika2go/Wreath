@@ -70,7 +70,8 @@ foreach ($File in $Files) {
     $RequiredProperties = @(
         "RunId", "Product", "Passed", "MatrixTags", "System", "AvailableHardwareCodecs",
         "ActiveHardwareCodec", "RelativeGatesEvaluated", "DurationMinutes", "SaveAttempts",
-        "ConfiguredReplaySeconds", "ShortReplaySaves", "PeakEncodedReplayMb", "Gates"
+        "ConfiguredReplaySeconds", "ShortReplaySaves", "SlowReplaySaves",
+        "PeakSaveDurationMs", "PeakEncodedReplayMb", "Gates"
     )
     $MissingProperties = @($RequiredProperties | Where-Object {
         $null -eq $Summary.PSObject.Properties[$_]
@@ -91,7 +92,8 @@ foreach ($File in $Files) {
         continue
     }
     $RequiredGateProperties = @(
-        "MaxEncodedReplayMb", "MinClipDurationSeconds", "ReplayDurationToleranceSeconds"
+        "MaxEncodedReplayMb", "MaxSaveLatencySeconds", "MinClipDurationSeconds",
+        "ReplayDurationToleranceSeconds"
     )
     $MissingGateProperties = @($RequiredGateProperties | Where-Object {
         $null -eq $Summary.Gates.PSObject.Properties[$_]
@@ -129,6 +131,12 @@ foreach ($File in $Files) {
     }
     if ([int]$Summary.ShortReplaySaves -ne 0) {
         $Failures.Add("$($File.Name): one or more saves used an incomplete replay buffer")
+    }
+    if ([int]$Summary.SlowReplaySaves -ne 0 -or
+        [double]$Summary.PeakSaveDurationMs -le 0 -or
+        [double]$Summary.PeakSaveDurationMs -gt 10000.0 -or
+        [double]$Summary.Gates.MaxSaveLatencySeconds -gt 10.0) {
+        $Failures.Add("$($File.Name): replay save latency evidence violates the release limit")
     }
     if ([double]$Summary.PeakEncodedReplayMb -le 0 -or
         [double]$Summary.PeakEncodedReplayMb -gt 512.0 -or

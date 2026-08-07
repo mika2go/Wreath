@@ -11,6 +11,7 @@ settings. The default automated comparison gates define "materially fewer" as:
 - no more than 32 MiB working-set growth across a run;
 - native tray peak working set at most 64 MiB;
 - encoded replay payload never above the fixed 512 MiB process limit;
+- each replay save completes within ten seconds;
 - zero failed periodic replay saves.
 
 These thresholds can be tightened after measurements from the first hardware
@@ -66,7 +67,9 @@ active codec must remain stable and appear in that hardware inventory. It sample
 combined process CPU, average and peak working/private memory, GPU-engine
 counters, I/O counters, handles, and threads. Relative Medal gates are evaluated
 only when a validated isolated baseline is supplied. A comparison also requires
-periodic replay saves; setting `SaveEverySeconds` to zero is rejected.
+periodic replay saves; setting `SaveEverySeconds` to zero is rejected. Saves run
+under observation instead of blocking the sampler, so mux-time CPU, I/O, and the
+temporary shared replay snapshot are included in the reported peaks.
 
 Install `ffprobe` from FFmpeg before the Wreath phase. After the timed measurement
 has ended, every saved clip is checked for a video stream, the expected audio
