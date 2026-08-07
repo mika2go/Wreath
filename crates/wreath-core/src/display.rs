@@ -1,9 +1,11 @@
 use std::fmt;
 use std::io;
+#[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(target_os = "linux")]
 use crate::hyprland;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -33,6 +35,7 @@ pub enum DisplayError {
     Io(io::Error),
     Recorder(String),
     NoCaptureTargets,
+    UnsupportedPlatform,
 }
 
 impl fmt::Display for DisplayError {
@@ -54,12 +57,16 @@ impl fmt::Display for DisplayError {
                 formatter,
                 "no recordable display found; verify your GPU driver and desktop portal"
             ),
+            Self::UnsupportedPlatform => {
+                formatter.write_str("display discovery is not implemented on this platform yet")
+            }
         }
     }
 }
 
 impl std::error::Error for DisplayError {}
 
+#[cfg(target_os = "linux")]
 pub fn monitors() -> Result<Vec<Monitor>, DisplayError> {
     if hyprland::session_active()
         && let Ok(monitors) = hyprland::monitors()
@@ -68,6 +75,11 @@ pub fn monitors() -> Result<Vec<Monitor>, DisplayError> {
         return Ok(monitors);
     }
     recorder_monitors()
+}
+
+#[cfg(target_os = "windows")]
+pub fn monitors() -> Result<Vec<Monitor>, DisplayError> {
+    Err(DisplayError::UnsupportedPlatform)
 }
 
 pub fn resolve_monitor<'a>(
@@ -85,6 +97,7 @@ pub fn resolve_monitor<'a>(
         .or_else(|| monitors.first())
 }
 
+#[cfg(target_os = "linux")]
 fn recorder_monitors() -> Result<Vec<Monitor>, DisplayError> {
     let output = Command::new("gpu-screen-recorder")
         .arg("--info")
@@ -108,6 +121,7 @@ fn recorder_monitors() -> Result<Vec<Monitor>, DisplayError> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn parse_capture_options(output: &str) -> Vec<Monitor> {
     let mut section = "";
     let mut direct = Vec::new();
@@ -166,12 +180,13 @@ fn parse_capture_options(output: &str) -> Vec<Monitor> {
     direct
 }
 
+#[cfg(target_os = "linux")]
 fn parse_dimensions(value: &str) -> Option<(u32, u32)> {
     let (width, height) = value.split_once('x')?;
     Some((width.parse().ok()?, height.parse().ok()?))
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

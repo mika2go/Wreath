@@ -326,18 +326,18 @@ where
 }
 
 fn send(paths: &AppPaths, request: &Request) -> Result<Response, String> {
-    let mut stream = match UnixStream::connect(&paths.socket_file) {
+    let mut stream = match UnixStream::connect(paths.socket_file()) {
         Ok(stream) => stream,
         Err(first_error) if matches!(request, Request::Save) => {
             start_daemon().map_err(|start_error| {
                 format!(
                     "cannot connect to {}: {first_error}; could not start recorder: {start_error}",
-                    paths.socket_file.display()
+                    paths.socket_file().display()
                 )
             })?;
             let deadline = Instant::now() + DAEMON_START_TIMEOUT;
             loop {
-                match UnixStream::connect(&paths.socket_file) {
+                match UnixStream::connect(paths.socket_file()) {
                     Ok(stream) => break stream,
                     Err(_) if Instant::now() < deadline => {
                         thread::sleep(DAEMON_CONNECT_INTERVAL);
@@ -345,7 +345,7 @@ fn send(paths: &AppPaths, request: &Request) -> Result<Response, String> {
                     Err(error) => {
                         return Err(format!(
                             "recorder started but cannot connect to {} after {}s: {error}",
-                            paths.socket_file.display(),
+                            paths.socket_file().display(),
                             DAEMON_START_TIMEOUT.as_secs()
                         ));
                     }
@@ -355,7 +355,7 @@ fn send(paths: &AppPaths, request: &Request) -> Result<Response, String> {
         Err(error) => {
             return Err(format!(
                 "cannot connect to {}: {error}",
-                paths.socket_file.display()
+                paths.socket_file().display()
             ));
         }
     };

@@ -188,16 +188,24 @@ impl Default for AudioConfig {
 
 impl Default for StorageConfig {
     fn default() -> Self {
-        let directory = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("Videos")
-            .join("Wreath");
+        let directory = default_video_directory();
         Self {
             directory,
             max_megabytes: 10_240,
         }
     }
+}
+
+fn default_video_directory() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    let home = std::env::var_os("USERPROFILE");
+    #[cfg(not(target_os = "windows"))]
+    let home = std::env::var_os("HOME");
+
+    home.map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Videos")
+        .join("Wreath")
 }
 
 impl Config {

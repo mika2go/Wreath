@@ -60,17 +60,17 @@ fn run() -> Result<(), String> {
         .as_ref()
         .map(|monitor| ReplaySpec::from_config(&config, monitor));
 
-    if let Some(parent) = paths.socket_file.parent() {
+    if let Some(parent) = paths.socket_file().parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    if paths.socket_file.exists() {
-        fs::remove_file(&paths.socket_file).map_err(|error| error.to_string())?;
+    if paths.socket_file().exists() {
+        fs::remove_file(paths.socket_file()).map_err(|error| error.to_string())?;
     }
-    let listener = UnixListener::bind(&paths.socket_file).map_err(|error| error.to_string())?;
+    let listener = UnixListener::bind(paths.socket_file()).map_err(|error| error.to_string())?;
     listener
         .set_nonblocking(true)
         .map_err(|error| error.to_string())?;
-    fs::set_permissions(&paths.socket_file, fs::Permissions::from_mode(0o600))
+    fs::set_permissions(paths.socket_file(), fs::Permissions::from_mode(0o600))
         .map_err(|error| error.to_string())?;
 
     let mut daemon = Daemon {
@@ -90,7 +90,7 @@ fn run() -> Result<(), String> {
         shutdown: false,
     };
     daemon.start_capture();
-    eprintln!("wreathd: ready on {}", daemon.paths.socket_file.display());
+    eprintln!("wreathd: ready on {}", daemon.paths.socket_file().display());
 
     while !daemon.shutdown {
         loop {
@@ -115,7 +115,7 @@ fn run() -> Result<(), String> {
             thread::sleep(HEALTH_CHECK_INTERVAL);
         }
     }
-    let _ = fs::remove_file(&daemon.paths.socket_file);
+    let _ = fs::remove_file(daemon.paths.socket_file());
     Ok(())
 }
 

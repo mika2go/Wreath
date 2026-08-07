@@ -1,6 +1,8 @@
 use std::io;
+#[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
 
+#[cfg(target_os = "linux")]
 use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,6 +12,7 @@ pub struct Microphone {
     pub is_default: bool,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Deserialize)]
 struct PulseSource {
     name: String,
@@ -18,6 +21,7 @@ struct PulseSource {
     monitor_source: String,
 }
 
+#[cfg(target_os = "linux")]
 pub fn microphones() -> io::Result<Vec<Microphone>> {
     let output = Command::new("pactl")
         .args(["-f", "json", "list", "sources"])
@@ -38,6 +42,15 @@ pub fn microphones() -> io::Result<Vec<Microphone>> {
     parse_sources(&output.stdout, default.as_deref())
 }
 
+#[cfg(target_os = "windows")]
+pub fn microphones() -> io::Result<Vec<Microphone>> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Windows microphone discovery is not implemented yet",
+    ))
+}
+
+#[cfg(target_os = "linux")]
 fn parse_sources(bytes: &[u8], default: Option<&str>) -> io::Result<Vec<Microphone>> {
     let sources: Vec<PulseSource> = serde_json::from_slice(bytes)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -66,7 +79,7 @@ fn parse_sources(bytes: &[u8], default: Option<&str>) -> io::Result<Vec<Micropho
     Ok(microphones)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

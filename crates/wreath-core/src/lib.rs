@@ -2,9 +2,12 @@ pub mod audio;
 pub mod clips;
 pub mod config;
 pub mod display;
+#[cfg(target_os = "linux")]
 pub mod engine;
+#[cfg(target_os = "linux")]
 pub mod hyprland;
 pub mod ipc;
 pub mod paths;
 pub mod replay;
+#[cfg(target_os = "linux")]
 pub mod shortcuts;
