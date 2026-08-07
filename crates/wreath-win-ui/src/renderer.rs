@@ -20,11 +20,11 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 use windows::Win32::Graphics::Gdi::{DeleteObject, HPALETTE};
 use windows::Win32::Graphics::Imaging::{
-    CLSID_WICImagingFactory, IWICImagingFactory, WICBitmapUseAlpha,
+    CLSID_WICImagingFactory, IWICImagingFactory, WICBitmapIgnoreAlpha,
 };
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IBindCtx};
 use windows::Win32::UI::Shell::{
-    IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK, SIIGBF_THUMBNAILONLY,
+    IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK,
 };
 use windows::core::{PCWSTR, w};
 use windows_numerics::Vector2;
@@ -186,6 +186,10 @@ impl Renderer {
             self.target = None;
             self.thumbnails.clear();
         }
+    }
+
+    pub fn retry_unavailable_thumbnails(&mut self) {
+        self.unavailable_thumbnails.clear();
     }
 
     pub fn hit_test(&self, x: f32, y: f32) -> Option<Action> {
@@ -1415,13 +1419,16 @@ impl Renderer {
         let bitmap = unsafe {
             shell.GetImage(
                 windows::Win32::Foundation::SIZE { cx: 640, cy: 360 },
-                SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK,
+                SIIGBF_BIGGERSIZEOK,
             )
         }
         .map_err(|error| error.to_string())?;
         let wic = unsafe {
-            self.wic_factory
-                .CreateBitmapFromHBITMAP(bitmap, HPALETTE::default(), WICBitmapUseAlpha)
+            self.wic_factory.CreateBitmapFromHBITMAP(
+                bitmap,
+                HPALETTE::default(),
+                WICBitmapIgnoreAlpha,
+            )
         }
         .map_err(|error| error.to_string());
         let _ = unsafe { DeleteObject(bitmap.into()) };

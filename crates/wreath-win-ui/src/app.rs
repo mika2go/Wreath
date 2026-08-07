@@ -198,6 +198,9 @@ unsafe extern "system" fn window_proc(
         wreath_windows::feedback::CLIP_SAVED_MESSAGE => {
             if let Some(state) = state_mut(window) {
                 let result = state.model.refresh();
+                if result.is_ok() {
+                    state.renderer.retry_unavailable_thumbnails();
+                }
                 set_result(&mut state.model, result, "Clip added to Library");
                 redraw(window);
             }
@@ -367,7 +370,17 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
     state.model.notice = None;
     match action {
         Action::Navigate(page) => {
+            if state.model.page == crate::model::Page::Player && page != crate::model::Page::Player
+            {
+                stop_player(state);
+            }
             state.model.navigate(page);
+            if matches!(
+                page,
+                crate::model::Page::Library | crate::model::Page::Collections
+            ) {
+                state.renderer.retry_unavailable_thumbnails();
+            }
             update_player_window(state);
         }
         Action::SettingsSection(section) => state.model.settings_section = section,
@@ -376,16 +389,24 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             open_current_clip(state);
         }
         Action::Back => {
+            stop_player(state);
             state.model.navigate(state.model.previous_page);
+            state.renderer.retry_unavailable_thumbnails();
             update_player_window(state);
         }
         Action::Refresh => {
             let result = state.model.refresh();
+            if result.is_ok() {
+                state.renderer.retry_unavailable_thumbnails();
+            }
             set_result(&mut state.model, result, "Library refreshed");
         }
         Action::SaveReplay => match send(Request::Save) {
             Ok(Response::Saved { path }) => {
                 let result = state.model.refresh();
+                if result.is_ok() {
+                    state.renderer.retry_unavailable_thumbnails();
+                }
                 set_result(
                     &mut state.model,
                     result,
@@ -677,6 +698,15 @@ fn open_current_clip(state: &mut AppState) {
     {
         state.model.notice = Some(error);
     }
+}
+
+fn stop_player(state: &mut AppState) {
+    if let Some(player) = &state.player
+        && let Err(error) = player.stop()
+    {
+        state.model.notice = Some(format!("Cannot stop clip playback: {error}"));
+    }
+    sync_player_state(state);
 }
 
 fn update_player_window(state: &mut AppState) {

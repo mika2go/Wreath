@@ -135,6 +135,13 @@ impl Player {
         .map_err(|error| error.to_string())
     }
 
+    pub fn stop(&self) -> Result<(), String> {
+        if !self.loaded {
+            return Ok(());
+        }
+        unsafe { self.media.Stop() }.map_err(|error| error.to_string())
+    }
+
     pub fn handle_event(&mut self, event_type: i32, result: i32) -> Result<(), String> {
         if result < 0 {
             self.ready = false;
