@@ -183,17 +183,5 @@ MIT
 
 ## Testers
 
-Some bugs only exist for the person patient enough to keep hearing them. The
-Windows audio path was taken apart and rebuilt from the capture flags up — raw
-WASAPI instead of the communications chain, a sample-accurate timeline instead
-of wall-clock stamps, a band-limited resampler instead of linear interpolation —
-because one tester kept coming back with *"better, but still scratchy"* until
-there was nothing left to find.
-
-<div align="center">
-
-### Nev
-
-**Heard it first. Every single time.**
-
-</div>
+**Nev** — tested every build and found basically all of the Windows audio and
+clip bugs. Thanks man.
