@@ -20,6 +20,26 @@ the current UI executable to
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`; it requires no service
 and no administrator rights.
 
+The optional CLI can discover the exact Windows device identifiers and update
+the configuration without hand-editing TOML. Changes are validated, written
+atomically, and reloaded by a running recorder. If the live pipeline rejects a
+change, the previous configuration is restored:
+
+```powershell
+wreathctl monitors
+wreathctl microphones
+wreathctl config monitor \\.\DISPLAY1
+wreathctl config microphone default
+wreathctl config microphone off
+wreathctl config duration 30
+wreathctl config fps 60
+wreathctl config codec h264
+```
+
+Use the endpoint ID printed by `wreathctl microphones` instead of `default` to
+pin capture to a specific microphone. `wreathctl config` prints the complete
+current configuration.
+
 ## Build an MSI
 
 Requirements on a Windows x64 build host:

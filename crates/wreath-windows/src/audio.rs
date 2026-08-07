@@ -157,6 +157,64 @@ pub struct MicrophoneCapture {
 }
 
 #[cfg(target_os = "windows")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MicrophoneTarget {
+    pub id: String,
+    pub default: bool,
+}
+
+/// Lists active WASAPI capture endpoints. This performs COM discovery only
+/// for the duration of the call and does not start an audio stream.
+#[cfg(target_os = "windows")]
+pub fn microphones() -> Result<Vec<MicrophoneTarget>, AudioError> {
+    use windows::Win32::Media::Audio::{
+        DEVICE_STATE_ACTIVE, IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eConsole,
+    };
+    use windows::Win32::System::Com::{
+        CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+    };
+
+    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
+        .ok()
+        .map_err(|error| AudioError(error.to_string()))?;
+    let result = (|| -> Result<Vec<MicrophoneTarget>, AudioError> {
+        let enumerator: IMMDeviceEnumerator =
+            unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
+                .map_err(|error| AudioError(error.to_string()))?;
+        let default_id = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }
+            .ok()
+            .and_then(|device| device_id(&device).ok());
+        let collection = unsafe { enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE) }
+            .map_err(|error| AudioError(error.to_string()))?;
+        let count =
+            unsafe { collection.GetCount() }.map_err(|error| AudioError(error.to_string()))?;
+        let mut targets = Vec::with_capacity(count as usize);
+        for index in 0..count {
+            let device =
+                unsafe { collection.Item(index) }.map_err(|error| AudioError(error.to_string()))?;
+            let id = device_id(&device)?;
+            targets.push(MicrophoneTarget {
+                default: default_id.as_deref() == Some(id.as_str()),
+                id,
+            });
+        }
+        Ok(targets)
+    })();
+    unsafe { CoUninitialize() };
+    result
+}
+
+#[cfg(target_os = "windows")]
+fn device_id(device: &windows::Win32::Media::Audio::IMMDevice) -> Result<String, AudioError> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+
+    let pointer = unsafe { device.GetId() }.map_err(|error| AudioError(error.to_string()))?;
+    let id = unsafe { pointer.to_string() }.map_err(|error| AudioError(error.to_string()));
+    unsafe { CoTaskMemFree(Some(pointer.0.cast())) };
+    id
+}
+
+#[cfg(target_os = "windows")]
 struct CaptureStream {
     format: AudioFormat,
     receiver: crossbeam_channel::Receiver<PcmChunk>,

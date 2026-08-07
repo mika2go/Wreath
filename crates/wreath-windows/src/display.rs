@@ -27,7 +27,7 @@ pub struct NativeDisplay {
 
 #[cfg(target_os = "windows")]
 pub fn select_display(configured: Option<&str>) -> Result<NativeDisplay, crate::video::VideoError> {
-    let displays = enumerate_displays()?;
+    let displays = enumerate_native_displays()?;
     let targets = displays
         .iter()
         .map(|display| display.target.clone())
@@ -45,7 +45,13 @@ pub fn select_display(configured: Option<&str>) -> Result<NativeDisplay, crate::
 }
 
 #[cfg(target_os = "windows")]
-fn enumerate_displays() -> Result<Vec<NativeDisplay>, crate::video::VideoError> {
+pub fn displays() -> Result<Vec<DisplayTarget>, crate::video::VideoError> {
+    enumerate_native_displays()
+        .map(|displays| displays.into_iter().map(|display| display.target).collect())
+}
+
+#[cfg(target_os = "windows")]
+fn enumerate_native_displays() -> Result<Vec<NativeDisplay>, crate::video::VideoError> {
     use std::mem::size_of;
 
     use windows::Win32::Foundation::{LPARAM, TRUE};
