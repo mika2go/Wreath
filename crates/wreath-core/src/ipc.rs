@@ -53,6 +53,8 @@ pub enum Response {
     Status {
         state: DaemonState,
         monitor: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        codec: Option<String>,
         buffered_seconds: u16,
         error: Option<String>,
     },
@@ -123,6 +125,7 @@ mod tests {
         let response = Response::Status {
             state: DaemonState::Recording,
             monitor: Some("DISPLAY-1".into()),
+            codec: Some("h264".into()),
             buffered_seconds: 30,
             error: None,
         };
@@ -131,6 +134,24 @@ mod tests {
 
         let mut reader = BufReader::new(Cursor::new(bytes));
         assert_eq!(read_response(&mut reader).unwrap(), response);
+    }
+
+    #[test]
+    fn status_without_codec_remains_backward_compatible() {
+        let legacy = br#"{"result":"status","state":"recording","monitor":"DISPLAY-1","buffered_seconds":30,"error":null}
+"#;
+        let mut reader = BufReader::new(Cursor::new(legacy));
+
+        assert_eq!(
+            read_response(&mut reader).unwrap(),
+            Response::Status {
+                state: DaemonState::Recording,
+                monitor: Some("DISPLAY-1".into()),
+                codec: None,
+                buffered_seconds: 30,
+                error: None,
+            }
+        );
     }
 
     #[test]

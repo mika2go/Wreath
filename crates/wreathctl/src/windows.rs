@@ -10,6 +10,7 @@ pub fn run() -> Result<(), String> {
     match command {
         "monitors" => return print_monitors(),
         "microphones" => return print_microphones(),
+        "codecs" => return print_hardware_codecs(),
         "config" => return configure(&arguments[1..]),
         _ => {}
     }
@@ -30,6 +31,22 @@ pub fn run() -> Result<(), String> {
     let response = wreath_windows::control::send_request(paths.pipe_name(), &request)
         .map_err(|error| error.to_string())?;
     print_response(response)
+}
+
+fn print_hardware_codecs() -> Result<(), String> {
+    let runtime =
+        wreath_windows::video::VideoRuntime::initialize().map_err(|error| error.to_string())?;
+    let support = runtime.support();
+    for (name, available) in [
+        ("h264", support.h264),
+        ("hevc", support.hevc),
+        ("av1", support.av1),
+    ] {
+        if available {
+            println!("{name}");
+        }
+    }
+    Ok(())
 }
 
 fn print_monitors() -> Result<(), String> {
@@ -182,11 +199,13 @@ fn print_response(response: Response) -> Result<(), String> {
         Response::Status {
             state,
             monitor,
+            codec,
             buffered_seconds,
             error,
         } => {
             println!("state    {state:?}");
             println!("monitor  {}", monitor.as_deref().unwrap_or("none"));
+            println!("codec    {}", codec.as_deref().unwrap_or("none"));
             println!("buffer   {buffered_seconds}s");
             if let Some(error) = error {
                 println!("error    {error}");
@@ -206,7 +225,8 @@ fn print_help() {
     println!(
         "wreathctl <command>\n\n\
          commands:\n  monitors     list active displays\n  microphones  list active microphone endpoint IDs\n  \
-         config       show or change local settings\n  status       show daemon state\n  save         save the replay buffer\n  \
+         codecs       list available hardware video encoders\n  config       show or change local settings\n  \
+         status       show daemon state\n  save         save the replay buffer\n  \
          pause     pause capture\n  resume    resume capture\n  reload    reload configuration\n  \
          shutdown  stop the daemon\n\n\
          examples:\n  wreathctl config monitor \\\\.\\DISPLAY1\n  \

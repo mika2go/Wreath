@@ -220,6 +220,7 @@ impl Daemon {
         Response::Status {
             state: self.state,
             monitor: self.monitor.clone(),
+            codec: None,
             buffered_seconds: self
                 .capture_started_at
                 .map(|started| {

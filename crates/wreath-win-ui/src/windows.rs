@@ -223,6 +223,7 @@ fn refresh_status(window: HWND) {
         Ok(Response::Status {
             state,
             monitor,
+            codec,
             buffered_seconds,
             error,
         }) => {
@@ -235,8 +236,9 @@ fn refresh_status(window: HWND) {
                     DaemonState::Paused => "Paused",
                     DaemonState::Error => "Error",
                 };
+                let codec = codec.as_deref().unwrap_or("no codec");
                 format!(
-                    "Wreath — {state} — {}s — {}",
+                    "Wreath — {state} — {codec} — {}s — {}",
                     buffered_seconds,
                     monitor.as_deref().unwrap_or("no display")
                 )

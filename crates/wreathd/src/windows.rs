@@ -42,6 +42,7 @@ pub fn run() -> Result<(), String> {
                         PipelineRunState::Error => DaemonState::Error,
                     },
                     monitor: status.monitor,
+                    codec: status.codec.map(|codec| codec.as_str().to_owned()),
                     buffered_seconds: status.buffered_seconds,
                     error: status.error,
                 }

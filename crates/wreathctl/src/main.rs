@@ -131,6 +131,7 @@ fn run() -> Result<(), String> {
         Response::Status {
             state,
             monitor,
+            codec,
             buffered_seconds,
             error,
         } => {
@@ -139,6 +140,9 @@ fn run() -> Result<(), String> {
                 monitor.as_deref().unwrap_or("none"),
                 buffered_seconds
             );
+            if let Some(codec) = codec {
+                println!("codec: {codec}");
+            }
             if let Some(error) = error {
                 println!("error: {error}");
             }

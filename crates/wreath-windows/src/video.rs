@@ -9,6 +9,16 @@ pub enum HardwareCodec {
     Av1,
 }
 
+impl HardwareCodec {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::H264 => "h264",
+            Self::Hevc => "hevc",
+            Self::Av1 => "av1",
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 impl HardwareCodec {
     pub(crate) fn media_subtype(self) -> windows::core::GUID {
@@ -279,5 +289,12 @@ mod tests {
     #[test]
     fn empty_support_never_selects_a_cpu_fallback() {
         assert_eq!(HardwareEncoderSupport::default().select(Codec::Auto), None);
+    }
+
+    #[test]
+    fn hardware_codec_names_are_stable_evidence_values() {
+        assert_eq!(HardwareCodec::H264.as_str(), "h264");
+        assert_eq!(HardwareCodec::Hevc.as_str(), "hevc");
+        assert_eq!(HardwareCodec::Av1.as_str(), "av1");
     }
 }

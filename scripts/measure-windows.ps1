@@ -216,6 +216,14 @@ function Invoke-WreathControl([string]$Control, [string]$Command) {
     return $Output -join [Environment]::NewLine
 }
 
+function Get-WreathStatusCodec([string]$Status) {
+    $Match = [regex]::Match($Status, '(?m)^codec\s+(h264|hevc|av1)\s*$')
+    if (-not $Match.Success) {
+        throw "Wreath status did not report an active hardware codec"
+    }
+    return $Match.Groups[1].Value
+}
+
 function Test-MedalBaseline(
     [object]$Baseline,
     [string]$Scenario,
@@ -417,6 +425,21 @@ $InitialWreathStatus = if ($MeasureMedalOnly) { $null } else {
 if (-not $MeasureMedalOnly -and $InitialWreathStatus -notmatch "(?m)^state\s+Recording\s*$") {
     throw "Wreath is not recording at the start of the measurement"
 }
+$AvailableHardwareCodecs = if ($MeasureMedalOnly) {
+    @()
+} else {
+    @((Invoke-WreathControl $ControlExe "codecs") -split '\r?\n' | Where-Object {
+        $_ -match '^(h264|hevc|av1)$'
+    })
+}
+$ActiveHardwareCodec = if ($MeasureMedalOnly) {
+    $null
+} else {
+    Get-WreathStatusCodec $InitialWreathStatus
+}
+if (-not $MeasureMedalOnly -and $AvailableHardwareCodecs -notcontains $ActiveHardwareCodec) {
+    throw "active codec '$ActiveHardwareCodec' is absent from the hardware encoder inventory"
+}
 
 $PreviousWreathCpu = @{}
 $PreviousMedalCpu = @{}
@@ -548,6 +571,10 @@ if (-not $MeasureMedalOnly) {
         if ($FinalWreathStatus -notmatch "(?m)^state\s+Recording\s*$") {
             $Failures.Add("Wreath was not recording at the end of the measurement")
         }
+        $FinalActiveHardwareCodec = Get-WreathStatusCodec $FinalWreathStatus
+        if ($FinalActiveHardwareCodec -ne $ActiveHardwareCodec) {
+            $Failures.Add("active hardware codec changed during the measurement")
+        }
         $FinalWreathConfiguration = Invoke-WreathControl $ControlExe "config"
         if ($FinalWreathConfiguration -ne $WreathConfiguration) {
             $Failures.Add("Wreath configuration changed during the measurement")
@@ -606,6 +633,8 @@ $Summary = [ordered]@{
     System = $SystemMetadata
     Processes = $TargetProcessInventory
     WreathConfiguration = $WreathConfiguration
+    AvailableHardwareCodecs = @($AvailableHardwareCodecs)
+    ActiveHardwareCodec = $ActiveHardwareCodec
     FinalWreathConfiguration = $FinalWreathConfiguration
     InitialWreathStatus = $InitialWreathStatus
     FinalWreathStatus = $FinalWreathStatus

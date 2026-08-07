@@ -32,6 +32,7 @@ change, the previous configuration is restored:
 ```powershell
 wreathctl monitors
 wreathctl microphones
+wreathctl codecs
 wreathctl config monitor \\.\DISPLAY1
 wreathctl config microphone default
 wreathctl config microphone off
@@ -42,9 +43,11 @@ wreathctl config codec h264
 
 Use the endpoint ID printed by `wreathctl microphones` instead of `default` to
 pin capture to a specific microphone. `wreathctl config` prints the complete
-current configuration. `Reload settings` also rebuilds a pipeline in the error
-state, so a corrected display mode or temporarily lost device can be recovered
-without restarting the tray application.
+current configuration. `wreathctl codecs` lists only hardware video encoders
+reported by Media Foundation; `wreathctl status` reports which one the live
+pipeline selected. `Reload settings` also rebuilds a pipeline in the error state,
+so a corrected display mode or temporarily lost device can be recovered without
+restarting the tray application.
 
 ## Build an MSI
 

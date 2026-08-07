@@ -57,11 +57,13 @@ The script starts Wreath if necessary and writes a timestamped CSV plus JSON
 summary below `perf/windows/`. It rejects baseline reuse when the scenario,
 settings, duration, sample interval, Windows build, CPU, GPU, driver, logical CPU
 count, or installed RAM differs. The summary records system metadata, executable
-versions, and Wreath's complete TOML configuration. It samples combined process
-CPU, working/private memory, GPU-engine counters, I/O counters, handles, and
-threads. Relative Medal gates are evaluated only when a validated isolated
-baseline is supplied. A comparison also requires periodic replay saves; setting
-`SaveEverySeconds` to zero is rejected.
+versions, Wreath's complete TOML configuration, the hardware codecs exposed by
+Media Foundation, and the codec actually selected by the running pipeline. The
+active codec must remain stable and appear in that hardware inventory. It samples
+combined process CPU, working/private memory, GPU-engine counters, I/O counters,
+handles, and threads. Relative Medal gates are evaluated only when a validated
+isolated baseline is supplied. A comparison also requires periodic replay saves;
+setting `SaveEverySeconds` to zero is rejected.
 
 Install `ffprobe` from FFmpeg before the Wreath phase. After the timed measurement
 has ended, every saved clip is checked for a video stream, the expected audio
