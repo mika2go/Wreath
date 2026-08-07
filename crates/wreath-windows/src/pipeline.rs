@@ -204,6 +204,9 @@ struct PipelineAudio {
     master: AudioCaptureSource,
     auxiliary_microphone: Option<crate::audio::MicrophoneCapture>,
     mixer: Option<crate::audio_mixer::PcmMixer>,
+    master_converter: Option<crate::audio_mixer::PcmStreamConverter>,
+    output_sample_rate: u32,
+    output_channels: u16,
     master_gain_percent: u16,
     pending_master: std::collections::VecDeque<crate::audio::Pcm16Chunk>,
     microphone_watermark: Option<std::time::Duration>,
@@ -217,14 +220,10 @@ impl PipelineAudio {
     ) -> Result<Option<Self>, crate::audio::AudioError> {
         let (master, auxiliary_microphone) = if config.desktop {
             let desktop = crate::audio::LoopbackCapture::spawn()?;
-            let desktop_sample_rate = desktop.format().sample_rate;
             let microphone = config
                 .microphone
                 .then(|| {
-                    crate::audio::MicrophoneCapture::spawn_at_sample_rate(
-                        config.microphone_device.as_deref(),
-                        desktop_sample_rate,
-                    )
+                    crate::audio::MicrophoneCapture::spawn(config.microphone_device.as_deref())
                 })
                 .transpose()?;
             (AudioCaptureSource::Desktop(desktop), microphone)
@@ -239,16 +238,36 @@ impl PipelineAudio {
             return Ok(None);
         };
         let format = master.format();
+        let (output_sample_rate, output_channels, master_converter) =
+            if matches!(&master, AudioCaptureSource::Microphone(_)) {
+                let output_sample_rate = if format.sample_rate == 44_100 {
+                    44_100
+                } else {
+                    48_000
+                };
+                (
+                    output_sample_rate,
+                    1,
+                    Some(crate::audio_mixer::PcmStreamConverter::new_voice(
+                        format.sample_rate,
+                        format.channels,
+                        output_sample_rate,
+                        1,
+                    )?),
+                )
+            } else {
+                (format.sample_rate, format.channels, None)
+            };
         let settings = crate::audio_encoder::AudioEncoderSettings::for_capture(
-            format.sample_rate,
-            format.channels,
+            output_sample_rate,
+            output_channels,
         )?;
         let mixer = auxiliary_microphone
             .as_ref()
             .map(|_| {
                 crate::audio_mixer::PcmMixer::new(
-                    format.sample_rate,
-                    format.channels,
+                    output_sample_rate,
+                    output_channels,
                     config.microphone_gain_percent,
                 )
             })
@@ -258,6 +277,9 @@ impl PipelineAudio {
             master,
             auxiliary_microphone,
             mixer,
+            master_converter,
+            output_sample_rate,
+            output_channels,
             master_gain_percent: if config.desktop {
                 100
             } else {
@@ -284,11 +306,19 @@ impl PipelineAudio {
         chunk: crate::audio::PcmChunk,
     ) -> Result<Vec<wreath_core::replay_buffer::EncodedPacket>, crate::audio::AudioError> {
         let format = self.master.format();
-        let mut normalized = crate::audio::normalize_to_pcm16(format, chunk)?;
+        let normalized = crate::audio::normalize_to_pcm16(format, chunk)?;
+        let mut normalized = if let Some(converter) = &mut self.master_converter {
+            let Some(converted) = converter.push(normalized)? else {
+                return Ok(Vec::new());
+            };
+            converted
+        } else {
+            normalized
+        };
         if self.master_gain_percent != 100 {
             crate::audio_mixer::apply_gain_pcm16(
                 &mut normalized,
-                format.channels,
+                self.output_channels,
                 self.master_gain_percent,
             )?;
         }
@@ -326,7 +356,7 @@ impl PipelineAudio {
         const MAX_PENDING_MASTER_CHUNKS: usize = 12;
         let mut packets = Vec::new();
         while let Some(master) = self.pending_master.front() {
-            let master_end = pcm_chunk_end(master, self.master.format().sample_rate);
+            let master_end = pcm_chunk_end(master, self.output_sample_rate);
             if !synchronized_master_ready(
                 master_end,
                 self.microphone_watermark,

@@ -12,6 +12,7 @@ pub struct PcmMixer {
     sample_rate: u32,
     channels: u16,
     gain_percent: u16,
+    microphone_converter: Option<PcmStreamConverter>,
     auxiliary: VecDeque<Pcm16Chunk>,
 }
 
@@ -27,6 +28,7 @@ impl PcmMixer {
             sample_rate,
             channels,
             gain_percent,
+            microphone_converter: None,
             auxiliary: VecDeque::with_capacity(MAX_AUXILIARY_CHUNKS),
         })
     }
@@ -37,13 +39,23 @@ impl PcmMixer {
         sample_rate: u32,
         channels: u16,
     ) -> Result<(), AudioError> {
-        let converted = adapt_pcm16(
-            chunk,
-            sample_rate,
-            channels,
-            self.sample_rate,
-            self.channels,
-        )?;
+        let converter = match &mut self.microphone_converter {
+            Some(converter) => {
+                converter.ensure_source_format(sample_rate, channels)?;
+                converter
+            }
+            None => self
+                .microphone_converter
+                .insert(PcmStreamConverter::new_voice(
+                    sample_rate,
+                    channels,
+                    self.sample_rate,
+                    self.channels,
+                )?),
+        };
+        let Some(converted) = converter.push(chunk)? else {
+            return Ok(());
+        };
         if self.auxiliary.len() == MAX_AUXILIARY_CHUNKS {
             self.auxiliary.pop_front();
         }
@@ -83,6 +95,234 @@ impl PcmMixer {
     fn queued_chunks(&self) -> usize {
         self.auxiliary.len()
     }
+}
+
+/// Continuous PCM converter for a live capture stream. Unlike a packet-local
+/// resampler it carries the fractional source position and the final source
+/// frame across WASAPI packet boundaries, preventing a repeated/skipped sample
+/// at every callback. The voice mode downmixes microphone arrays to one clean
+/// voice channel before duplicating it into the output layout.
+pub struct PcmStreamConverter {
+    source_rate: u32,
+    source_channels: u16,
+    target_rate: u32,
+    target_channels: u16,
+    voice: bool,
+    source: VecDeque<i16>,
+    source_start_frame: u64,
+    source_frames_received: u64,
+    output_frames_emitted: u64,
+    epoch_timestamp: Option<Duration>,
+    expected_source_timestamp: Option<Duration>,
+}
+
+impl PcmStreamConverter {
+    pub fn new_voice(
+        source_rate: u32,
+        source_channels: u16,
+        target_rate: u32,
+        target_channels: u16,
+    ) -> Result<Self, AudioError> {
+        Self::new(
+            source_rate,
+            source_channels,
+            target_rate,
+            target_channels,
+            true,
+        )
+    }
+
+    fn new(
+        source_rate: u32,
+        source_channels: u16,
+        target_rate: u32,
+        target_channels: u16,
+        voice: bool,
+    ) -> Result<Self, AudioError> {
+        if source_rate == 0 || target_rate == 0 || source_channels == 0 || target_channels == 0 {
+            return Err(AudioError("PCM stream format must not be empty".into()));
+        }
+        Ok(Self {
+            source_rate,
+            source_channels,
+            target_rate,
+            target_channels,
+            voice,
+            source: VecDeque::new(),
+            source_start_frame: 0,
+            source_frames_received: 0,
+            output_frames_emitted: 0,
+            epoch_timestamp: None,
+            expected_source_timestamp: None,
+        })
+    }
+
+    pub fn ensure_source_format(&self, sample_rate: u32, channels: u16) -> Result<(), AudioError> {
+        if self.source_rate == sample_rate && self.source_channels == channels {
+            Ok(())
+        } else {
+            Err(AudioError(format!(
+                "microphone format changed from {} Hz/{} channels to {sample_rate} Hz/{channels} channels",
+                self.source_rate, self.source_channels
+            )))
+        }
+    }
+
+    pub fn push(&mut self, chunk: Pcm16Chunk) -> Result<Option<Pcm16Chunk>, AudioError> {
+        validate_pcm16(&chunk, self.source_channels)?;
+        if self.discontinuous_at(chunk.timestamp) {
+            self.reset(chunk.timestamp);
+        }
+        let source_end = chunk
+            .timestamp
+            .saturating_add(frames_duration(chunk.frames, self.source_rate));
+        self.expected_source_timestamp = Some(source_end);
+        if self.epoch_timestamp.is_none() {
+            self.epoch_timestamp = Some(chunk.timestamp);
+        }
+
+        let mapped = map_channels(
+            &chunk.data,
+            chunk.frames,
+            self.source_channels,
+            self.target_channels,
+            self.voice,
+        );
+        if self.source_rate == self.target_rate {
+            return Ok(Some(Pcm16Chunk {
+                timestamp: chunk.timestamp,
+                frames: chunk.frames,
+                data: mapped
+                    .into_iter()
+                    .flat_map(i16::to_le_bytes)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            }));
+        }
+
+        self.source.extend(mapped);
+        self.source_frames_received = self
+            .source_frames_received
+            .saturating_add(u64::from(chunk.frames));
+        let first_output_frame = self.output_frames_emitted;
+        let mut output = Vec::new();
+        loop {
+            let source_position = self
+                .output_frames_emitted
+                .saturating_mul(u64::from(self.source_rate));
+            let first_frame = source_position / u64::from(self.target_rate);
+            let second_frame = first_frame.saturating_add(1);
+            if second_frame >= self.source_frames_received {
+                break;
+            }
+            let fraction = source_position % u64::from(self.target_rate);
+            for channel in 0..self.target_channels {
+                let first = self.buffered_sample(first_frame, channel)?;
+                let second = self.buffered_sample(second_frame, channel)?;
+                let interpolated = (i64::from(first)
+                    * (i64::from(self.target_rate) - fraction as i64)
+                    + i64::from(second) * fraction as i64)
+                    / i64::from(self.target_rate);
+                output.extend_from_slice(&(interpolated as i16).to_le_bytes());
+            }
+            self.output_frames_emitted = self.output_frames_emitted.saturating_add(1);
+        }
+        self.discard_consumed_source();
+        let frames = self
+            .output_frames_emitted
+            .saturating_sub(first_output_frame);
+        if frames == 0 {
+            return Ok(None);
+        }
+        let timestamp = self
+            .epoch_timestamp
+            .unwrap_or(chunk.timestamp)
+            .saturating_add(frames_duration_u64(first_output_frame, self.target_rate));
+        Ok(Some(Pcm16Chunk {
+            timestamp,
+            frames: u32::try_from(frames)
+                .map_err(|_| AudioError("converted audio packet is too large".into()))?,
+            data: output.into_boxed_slice(),
+        }))
+    }
+
+    fn discontinuous_at(&self, timestamp: Duration) -> bool {
+        const RESET_THRESHOLD: Duration = Duration::from_millis(100);
+        self.expected_source_timestamp
+            .is_some_and(|expected| expected.abs_diff(timestamp) > RESET_THRESHOLD)
+    }
+
+    fn reset(&mut self, timestamp: Duration) {
+        self.source.clear();
+        self.source_start_frame = 0;
+        self.source_frames_received = 0;
+        self.output_frames_emitted = 0;
+        self.epoch_timestamp = Some(timestamp);
+        self.expected_source_timestamp = None;
+    }
+
+    fn buffered_sample(&self, frame: u64, channel: u16) -> Result<i16, AudioError> {
+        let frame = frame.checked_sub(self.source_start_frame).ok_or_else(|| {
+            AudioError("resampler discarded a source frame before consuming it".into())
+        })?;
+        let index = frame
+            .checked_mul(u64::from(self.target_channels))
+            .and_then(|index| index.checked_add(u64::from(channel)))
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or_else(|| AudioError("resampler source index overflow".into()))?;
+        self.source
+            .get(index)
+            .copied()
+            .ok_or_else(|| AudioError("resampler source frame is unavailable".into()))
+    }
+
+    fn discard_consumed_source(&mut self) {
+        let next_position = self
+            .output_frames_emitted
+            .saturating_mul(u64::from(self.source_rate));
+        let keep_from = next_position / u64::from(self.target_rate);
+        while self.source_start_frame < keep_from {
+            for _ in 0..self.target_channels {
+                let _ = self.source.pop_front();
+            }
+            self.source_start_frame += 1;
+        }
+    }
+}
+
+fn map_channels(
+    data: &[u8],
+    frames: u32,
+    source_channels: u16,
+    target_channels: u16,
+    voice: bool,
+) -> Vec<i16> {
+    let mut mapped = Vec::with_capacity(
+        usize::try_from(frames).unwrap_or_default() * usize::from(target_channels),
+    );
+    for frame in 0..frames {
+        if voice {
+            let voice = (0..source_channels)
+                .map(|channel| i64::from(read_sample(data, frame, source_channels, channel)))
+                .sum::<i64>()
+                / i64::from(source_channels);
+            mapped.extend(std::iter::repeat_n(
+                voice as i16,
+                usize::from(target_channels),
+            ));
+        } else {
+            for channel in 0..target_channels {
+                mapped.push(mapped_sample(
+                    data,
+                    frame,
+                    source_channels,
+                    channel,
+                    target_channels,
+                ));
+            }
+        }
+    }
+    mapped
 }
 
 pub fn adapt_pcm16(
@@ -289,9 +529,11 @@ fn chunk_end(chunk: &Pcm16Chunk, sample_rate: u32) -> Duration {
 }
 
 fn frames_duration(frames: u32, sample_rate: u32) -> Duration {
-    Duration::from_nanos(
-        u64::from(frames).saturating_mul(1_000_000_000) / u64::from(sample_rate.max(1)),
-    )
+    frames_duration_u64(u64::from(frames), sample_rate)
+}
+
+fn frames_duration_u64(frames: u64, sample_rate: u32) -> Duration {
+    Duration::from_nanos(frames.saturating_mul(1_000_000_000) / u64::from(sample_rate.max(1)))
 }
 
 fn duration_frames(duration: Duration, sample_rate: u32) -> u32 {
@@ -332,6 +574,55 @@ mod tests {
             samples(&converted),
             [0, 0, 5_000, 5_000, 10_000, 10_000, 10_000, 10_000]
         );
+    }
+
+    #[test]
+    fn streaming_resampler_is_continuous_across_packet_edges() {
+        let mut converter = PcmStreamConverter::new_voice(24_000, 1, 48_000, 1).unwrap();
+        let first = converter.push(chunk(0, 1, &[0, 10_000])).unwrap().unwrap();
+        let second = converter
+            .push(chunk(0, 1, &[20_000, 30_000]))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(samples(&first), [0, 5_000]);
+        assert_eq!(samples(&second), [10_000, 15_000, 20_000, 25_000]);
+        assert_eq!(
+            second.timestamp,
+            Duration::from_nanos(2 * 1_000_000_000 / 48_000)
+        );
+    }
+
+    #[test]
+    fn voice_converter_downmixes_microphone_arrays_before_duplication() {
+        let mut converter = PcmStreamConverter::new_voice(48_000, 2, 48_000, 2).unwrap();
+        let converted = converter
+            .push(chunk(0, 2, &[1_000, -1_000, 3_000, 1_000]))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(samples(&converted), [0, 0, 2_000, 2_000]);
+    }
+
+    #[test]
+    fn stream_converter_rejects_midstream_format_changes() {
+        let converter = PcmStreamConverter::new_voice(48_000, 1, 48_000, 2).unwrap();
+        assert!(converter.ensure_source_format(44_100, 1).is_err());
+        assert!(converter.ensure_source_format(48_000, 2).is_err());
+        assert!(converter.ensure_source_format(48_000, 1).is_ok());
+    }
+
+    #[test]
+    fn stream_converter_starts_a_new_epoch_after_a_capture_gap() {
+        let mut converter = PcmStreamConverter::new_voice(24_000, 1, 48_000, 1).unwrap();
+        let _ = converter.push(chunk(0, 1, &[0, 10_000])).unwrap();
+        let restarted = converter
+            .push(chunk(1_000, 1, &[20_000, 30_000]))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(restarted.timestamp, Duration::from_secs(1));
+        assert_eq!(samples(&restarted), [20_000, 25_000]);
     }
 
     #[test]
