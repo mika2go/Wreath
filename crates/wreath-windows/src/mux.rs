@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 use wreath_core::replay_buffer::{EncodedPacket, TrackKind};
 
 #[cfg(target_os = "windows")]
@@ -21,9 +21,10 @@ pub fn unique_clip_path(directory: &Path, unix_milliseconds: u128) -> PathBuf {
 }
 
 #[cfg(target_os = "windows")]
-pub fn write_video_mp4<'a>(
+pub fn write_mp4<'a>(
     path: &Path,
-    media_type: &windows::Win32::Media::MediaFoundation::IMFMediaType,
+    video_media_type: &windows::Win32::Media::MediaFoundation::IMFMediaType,
+    audio_media_type: Option<&windows::Win32::Media::MediaFoundation::IMFMediaType>,
     packets: impl Iterator<Item = &'a EncodedPacket>,
 ) -> Result<(), VideoError> {
     use std::os::windows::ffi::OsStrExt;
@@ -34,13 +35,16 @@ pub fn write_video_mp4<'a>(
     };
     use windows::core::PCWSTR;
 
-    let mut packets = packets
-        .filter(|packet| packet.track == TrackKind::Video)
-        .peekable();
+    let packets = ordered_packets(packets);
     let first_timestamp = packets
-        .peek()
+        .iter()
+        .find(|packet| packet.track == TrackKind::Video)
         .ok_or_else(|| VideoError::Initialization("replay buffer has no video packets".into()))?
         .timestamp;
+    let has_audio = audio_media_type.is_some()
+        && packets
+            .iter()
+            .any(|packet| packet.track == TrackKind::Audio);
     let mut attributes = None;
     unsafe { MFCreateAttributes(&mut attributes, 1) }.map_err(initialization_error)?;
     let attributes = attributes.ok_or_else(|| {
@@ -61,16 +65,54 @@ pub fn write_video_mp4<'a>(
         )
     }
     .map_err(initialization_error)?;
-    let stream = unsafe { writer.AddStream(media_type) }.map_err(initialization_error)?;
-    unsafe { writer.SetInputMediaType(stream, media_type, None::<&IMFAttributes>) }
+    let video_stream =
+        unsafe { writer.AddStream(video_media_type) }.map_err(initialization_error)?;
+    unsafe { writer.SetInputMediaType(video_stream, video_media_type, None::<&IMFAttributes>) }
         .map_err(initialization_error)?;
+    let audio_stream = if has_audio {
+        let media_type = audio_media_type.expect("audio media type checked");
+        let stream = unsafe { writer.AddStream(media_type) }.map_err(initialization_error)?;
+        unsafe { writer.SetInputMediaType(stream, media_type, None::<&IMFAttributes>) }
+            .map_err(initialization_error)?;
+        Some(stream)
+    } else {
+        None
+    };
     unsafe { writer.BeginWriting() }.map_err(initialization_error)?;
 
     for packet in packets {
+        let stream = match packet.track {
+            TrackKind::Video => video_stream,
+            TrackKind::Audio => {
+                let Some(stream) = audio_stream else {
+                    continue;
+                };
+                stream
+            }
+        };
         let sample = packet_to_sample(packet, first_timestamp)?;
         unsafe { writer.WriteSample(stream, &sample) }.map_err(initialization_error)?;
     }
     unsafe { writer.Finalize() }.map_err(initialization_error)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn ordered_packets<'a>(packets: impl Iterator<Item = &'a EncodedPacket>) -> Vec<&'a EncodedPacket> {
+    let mut packets = packets.collect::<Vec<_>>();
+    packets.sort_by(|left, right| {
+        left.timestamp
+            .cmp(&right.timestamp)
+            .then_with(|| track_order(left.track).cmp(&track_order(right.track)))
+    });
+    packets
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn track_order(track: TrackKind) -> u8 {
+    match track {
+        TrackKind::Video => 0,
+        TrackKind::Audio => 1,
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -140,6 +182,16 @@ mod tests {
 
     use super::*;
 
+    fn packet(track: TrackKind, milliseconds: u64) -> EncodedPacket {
+        EncodedPacket {
+            track,
+            timestamp: std::time::Duration::from_millis(milliseconds),
+            duration: std::time::Duration::from_millis(10),
+            keyframe: track == TrackKind::Video,
+            payload: vec![1].into_boxed_slice(),
+        }
+    }
+
     #[test]
     fn clip_paths_do_not_overwrite_same_millisecond_saves() {
         let unique = SystemTime::now()
@@ -156,5 +208,17 @@ mod tests {
         assert_eq!(first.file_name().unwrap(), "wreath-1234.mp4");
         assert_eq!(second.file_name().unwrap(), "wreath-1234-2.mp4");
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn mux_order_is_chronological_and_video_wins_ties() {
+        let audio_late = packet(TrackKind::Audio, 20);
+        let audio_tied = packet(TrackKind::Audio, 10);
+        let video_tied = packet(TrackKind::Video, 10);
+        let ordered = ordered_packets([&audio_late, &audio_tied, &video_tied].into_iter());
+
+        assert_eq!(ordered[0].track, TrackKind::Video);
+        assert_eq!(ordered[1].track, TrackKind::Audio);
+        assert_eq!(ordered[2].timestamp, std::time::Duration::from_millis(20));
     }
 }

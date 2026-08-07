@@ -206,8 +206,26 @@ fn run_pipeline(
             available_surfaces.push(converter.create_output_surface()?);
         }
         let encoder = HardwareVideoEncoder::initialize(runtime.device(), codec, settings)?;
+        let audio = if config.audio.desktop {
+            let capture = crate::audio::LoopbackCapture::spawn()
+                .map_err(|error| VideoError::Initialization(error.to_string()))?;
+            let format = capture.format();
+            let settings = crate::audio_encoder::AudioEncoderSettings::for_capture(
+                format.sample_rate,
+                format.channels,
+            )
+            .map_err(|error| VideoError::Initialization(error.to_string()))?;
+            let encoder = crate::audio_encoder::AacEncoder::initialize(settings)
+                .map_err(|error| VideoError::Initialization(error.to_string()))?;
+            Some((capture, encoder))
+        } else {
+            None
+        };
+        let audio_bitrate_kbps = audio
+            .as_ref()
+            .map_or(0, |(_, encoder)| encoder.settings().bytes_per_second / 125);
         let memory_budget = replay_memory_budget(estimated_buffer_bytes(
-            settings.bitrate_kbps,
+            settings.bitrate_kbps.saturating_add(audio_bitrate_kbps),
             config.capture.duration_seconds,
         ));
         let buffer = wreath_core::replay_buffer::EncodedReplayBuffer::new(
@@ -223,6 +241,7 @@ fn run_pipeline(
             converter,
             available_surfaces,
             encoder,
+            audio,
             buffer,
         ))
     })();
@@ -235,6 +254,7 @@ fn run_pipeline(
         converter,
         mut available_surfaces,
         encoder,
+        desktop_audio,
         mut buffer,
     ) = match initialized {
         Ok(initialized) => initialized,
@@ -269,6 +289,15 @@ fn run_pipeline(
         let mut selector = crossbeam_channel::Select::new();
         let command_index = selector.recv(&commands);
         let frame_index = recording.then(|| selector.recv(&frames));
+        let audio_index = (recording && desktop_audio.is_some()).then(|| {
+            selector.recv(
+                desktop_audio
+                    .as_ref()
+                    .expect("desktop audio presence checked")
+                    .0
+                    .receiver(),
+            )
+        });
         let operation = selector.select();
 
         if operation.index() == command_index {
@@ -289,9 +318,14 @@ fn run_pipeline(
                     let _ = command.reply.send(Ok(PipelineCommandResult::Ok));
                 }
                 PipelineCommandKind::Save => {
-                    let result = save_replay(&config.storage.directory, &encoder, &buffer)
-                        .map(PipelineCommandResult::Saved)
-                        .map_err(|error| error.to_string());
+                    let result = save_replay(
+                        &config.storage.directory,
+                        &encoder,
+                        desktop_audio.as_ref().map(|(_, encoder)| encoder),
+                        &buffer,
+                    )
+                    .map(PipelineCommandResult::Saved)
+                    .map_err(|error| error.to_string());
                     let _ = command.reply.send(result);
                 }
                 PipelineCommandKind::Stop => {
@@ -303,6 +337,22 @@ fn run_pipeline(
                     break;
                 }
             }
+        } else if Some(operation.index()) == audio_index {
+            let (capture, audio_encoder) = desktop_audio
+                .as_ref()
+                .expect("audio selector is only registered with desktop audio");
+            let chunk = operation
+                .recv(capture.receiver())
+                .map_err(|error| VideoError::Initialization(error.to_string()))?;
+            let normalized = crate::audio::normalize_to_pcm16(capture.format(), chunk)
+                .map_err(|error| VideoError::Initialization(error.to_string()))?;
+            for packet in audio_encoder
+                .encode(normalized)
+                .map_err(|error| VideoError::Initialization(error.to_string()))?
+            {
+                buffer.push(packet);
+            }
+            update_buffer_status(status, &buffer);
         } else if Some(operation.index()) == frame_index {
             let frame = operation
                 .recv(&frames)
@@ -339,6 +389,7 @@ fn run_pipeline(
 fn save_replay(
     directory: &std::path::Path,
     encoder: &crate::encoder::HardwareVideoEncoder,
+    audio_encoder: Option<&crate::audio_encoder::AacEncoder>,
     buffer: &wreath_core::replay_buffer::EncodedReplayBuffer,
 ) -> Result<std::path::PathBuf, crate::video::VideoError> {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -355,9 +406,17 @@ fn save_replay(
         .and_then(|stem| stem.to_str())
         .unwrap_or("wreath-clip");
     let temporary_path = final_path.with_file_name(format!("{stem}.partial.mp4"));
-    let media_type = encoder.output_media_type()?;
-    if let Err(error) = crate::mux::write_video_mp4(&temporary_path, &media_type, buffer.packets())
-    {
+    let video_media_type = encoder.output_media_type()?;
+    let audio_media_type = audio_encoder
+        .map(crate::audio_encoder::AacEncoder::output_media_type)
+        .transpose()
+        .map_err(|error| crate::video::VideoError::Initialization(error.to_string()))?;
+    if let Err(error) = crate::mux::write_mp4(
+        &temporary_path,
+        &video_media_type,
+        audio_media_type.as_ref(),
+        buffer.packets(),
+    ) {
         let _ = std::fs::remove_file(&temporary_path);
         return Err(error);
     }
@@ -386,17 +445,24 @@ fn drain_encoder_events(
                     if let Some(surface) = in_flight.pop_front() {
                         available.push(surface);
                     }
-                    update_status(status, |pipeline| {
-                        pipeline.buffered_seconds =
-                            buffer.duration().as_secs().min(u64::from(u16::MAX)) as u16;
-                        pipeline.encoded_bytes = buffer.payload_bytes();
-                    });
+                    update_buffer_status(status, buffer);
                 }
             }
             EncoderEvent::DrainComplete | EncoderEvent::Other(_) => {}
         }
     }
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn update_buffer_status(
+    status: &std::sync::Arc<std::sync::RwLock<PipelineStatus>>,
+    buffer: &wreath_core::replay_buffer::EncodedReplayBuffer,
+) {
+    update_status(status, |pipeline| {
+        pipeline.buffered_seconds = buffer.duration().as_secs().min(u64::from(u16::MAX)) as u16;
+        pipeline.encoded_bytes = buffer.payload_bytes();
+    });
 }
 
 #[cfg(target_os = "windows")]
