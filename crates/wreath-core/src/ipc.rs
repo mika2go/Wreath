@@ -55,6 +55,8 @@ pub enum Response {
         monitor: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         codec: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replay_bytes: Option<u64>,
         buffered_seconds: u16,
         error: Option<String>,
     },
@@ -126,6 +128,7 @@ mod tests {
             state: DaemonState::Recording,
             monitor: Some("DISPLAY-1".into()),
             codec: Some("h264".into()),
+            replay_bytes: Some(12_345_678),
             buffered_seconds: 30,
             error: None,
         };
@@ -148,6 +151,7 @@ mod tests {
                 state: DaemonState::Recording,
                 monitor: Some("DISPLAY-1".into()),
                 codec: None,
+                replay_bytes: None,
                 buffered_seconds: 30,
                 error: None,
             }

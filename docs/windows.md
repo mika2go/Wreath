@@ -45,9 +45,12 @@ Use the endpoint ID printed by `wreathctl microphones` instead of `default` to
 pin capture to a specific microphone. `wreathctl config` prints the complete
 current configuration. `wreathctl codecs` lists only hardware video encoders
 reported by Media Foundation; `wreathctl status` reports which one the live
-pipeline selected. `Reload settings` also rebuilds a pipeline in the error state,
-so a corrected display mode or temporarily lost device can be recovered without
-restarting the tray application.
+pipeline selected, its current encoded replay size, and the buffered duration.
+`Reload settings` also rebuilds a pipeline in the error state, so a corrected
+display mode or temporarily lost device can be recovered without restarting the
+tray application. A Windows configuration whose estimated encoded replay would
+exceed 512 MiB is rejected explicitly instead of silently retaining a shorter
+clip.
 
 ## Build an MSI
 

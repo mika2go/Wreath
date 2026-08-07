@@ -3,6 +3,8 @@ use crate::video::HardwareCodec;
 pub const MAX_REPLAY_MEMORY_BYTES: u64 = 512 * 1_048_576;
 const MIN_REPLAY_MEMORY_BYTES: u64 = 8 * 1_048_576;
 #[cfg(target_os = "windows")]
+const PIPELINE_COMMAND_CAPACITY: usize = 4;
+#[cfg(target_os = "windows")]
 const ENCODER_SURFACE_COUNT: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,9 +38,19 @@ impl Default for PipelineStatus {
     }
 }
 
-pub fn replay_memory_budget(estimated_bytes: u64) -> usize {
-    usize::try_from(estimated_bytes.clamp(MIN_REPLAY_MEMORY_BYTES, MAX_REPLAY_MEMORY_BYTES))
-        .unwrap_or(usize::MAX)
+pub fn replay_memory_budget(estimated_bytes: u64) -> Result<usize, crate::video::VideoError> {
+    if estimated_bytes > MAX_REPLAY_MEMORY_BYTES {
+        return Err(crate::video::VideoError::Initialization(format!(
+            "configured replay needs about {} MiB, exceeding the {} MiB Windows memory limit; reduce duration, frame rate, resolution, or quality",
+            estimated_bytes.div_ceil(1_048_576),
+            MAX_REPLAY_MEMORY_BYTES / 1_048_576
+        )));
+    }
+    usize::try_from(estimated_bytes.max(MIN_REPLAY_MEMORY_BYTES)).map_err(|_| {
+        crate::video::VideoError::Initialization(
+            "configured replay memory does not fit this Windows process".into(),
+        )
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -53,7 +65,8 @@ impl ReplayPipeline {
     pub fn spawn(config: wreath_core::config::Config) -> Result<Self, crate::video::VideoError> {
         use std::sync::{Arc, RwLock, mpsc};
 
-        let (command_sender, command_receiver) = crossbeam_channel::unbounded();
+        let (command_sender, command_receiver) =
+            crossbeam_channel::bounded(PIPELINE_COMMAND_CAPACITY);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let status = Arc::new(RwLock::new(PipelineStatus::default()));
         let worker_status = Arc::clone(&status);
@@ -375,7 +388,7 @@ fn run_pipeline(
         let memory_budget = replay_memory_budget(estimated_buffer_bytes(
             settings.bitrate_kbps.saturating_add(audio_bitrate_kbps),
             config.capture.duration_seconds,
-        ));
+        ))?;
         let buffer = wreath_core::replay_buffer::EncodedReplayBuffer::new(
             Duration::from_secs(u64::from(config.capture.duration_seconds)),
             memory_budget,
@@ -812,12 +825,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn replay_memory_is_never_unbounded() {
-        assert_eq!(replay_memory_budget(1), MIN_REPLAY_MEMORY_BYTES as usize);
+    fn replay_memory_has_a_floor_and_accepts_its_limit() {
         assert_eq!(
-            replay_memory_budget(u64::MAX),
+            replay_memory_budget(1).unwrap(),
+            MIN_REPLAY_MEMORY_BYTES as usize
+        );
+        assert_eq!(
+            replay_memory_budget(MAX_REPLAY_MEMORY_BYTES).unwrap(),
             MAX_REPLAY_MEMORY_BYTES as usize
         );
+    }
+
+    #[test]
+    fn replay_memory_rejects_a_silently_shortened_configuration() {
+        let error = replay_memory_budget(MAX_REPLAY_MEMORY_BYTES + 1).unwrap_err();
+
+        assert!(error.to_string().contains("exceeding the 512 MiB"));
     }
 
     #[test]

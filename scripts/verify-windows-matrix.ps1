@@ -69,7 +69,8 @@ foreach ($File in $Files) {
     }
     $RequiredProperties = @(
         "RunId", "Product", "Passed", "MatrixTags", "System", "AvailableHardwareCodecs",
-        "ActiveHardwareCodec", "RelativeGatesEvaluated", "DurationMinutes", "SaveAttempts"
+        "ActiveHardwareCodec", "RelativeGatesEvaluated", "DurationMinutes", "SaveAttempts",
+        "ConfiguredReplaySeconds", "ShortReplaySaves", "PeakEncodedReplayMb", "Gates"
     )
     $MissingProperties = @($RequiredProperties | Where-Object {
         $null -eq $Summary.PSObject.Properties[$_]
@@ -87,6 +88,16 @@ foreach ($File in $Files) {
     })
     if ($MissingSystemProperties.Count -gt 0) {
         $Failures.Add("$($File.Name): missing system fields: $($MissingSystemProperties -join ', ')")
+        continue
+    }
+    $RequiredGateProperties = @(
+        "MaxEncodedReplayMb", "MinClipDurationSeconds", "ReplayDurationToleranceSeconds"
+    )
+    $MissingGateProperties = @($RequiredGateProperties | Where-Object {
+        $null -eq $Summary.Gates.PSObject.Properties[$_]
+    })
+    if ($MissingGateProperties.Count -gt 0) {
+        $Failures.Add("$($File.Name): missing gate fields: $($MissingGateProperties -join ', ')")
         continue
     }
     $Tags = @(Get-SummaryTag $Summary)
@@ -112,6 +123,23 @@ foreach ($File in $Files) {
     }
     if (-not $Summary.Passed) {
         $Failures.Add("$($File.Name): measurement failed its own gates")
+    }
+    if ([int]$Summary.ConfiguredReplaySeconds -le 0) {
+        $Failures.Add("$($File.Name): configured replay duration is missing or invalid")
+    }
+    if ([int]$Summary.ShortReplaySaves -ne 0) {
+        $Failures.Add("$($File.Name): one or more saves used an incomplete replay buffer")
+    }
+    if ([double]$Summary.PeakEncodedReplayMb -le 0 -or
+        [double]$Summary.PeakEncodedReplayMb -gt 512.0 -or
+        [double]$Summary.Gates.MaxEncodedReplayMb -gt 512.0) {
+        $Failures.Add("$($File.Name): encoded replay memory evidence violates the release limit")
+    }
+    if ([double]$Summary.Gates.ReplayDurationToleranceSeconds -gt 2.0 -or
+        [double]$Summary.Gates.MinClipDurationSeconds +
+            [double]$Summary.Gates.ReplayDurationToleranceSeconds -lt
+            [double]$Summary.ConfiguredReplaySeconds) {
+        $Failures.Add("$($File.Name): replay duration gate is weaker than the release policy")
     }
     if ($GpuTags.Count -eq 1 -and -not (Test-GpuInventory $Summary $GpuTags[0])) {
         $Failures.Add("$($File.Name): GPU tag does not match the hardware inventory")

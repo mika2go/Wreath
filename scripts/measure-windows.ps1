@@ -43,6 +43,8 @@ $RunId = Get-Date -Format "yyyyMMdd-HHmmss"
 $ArtifactPrefix = $Product.ToLowerInvariant()
 $CsvPath = Join-Path $OutputDirectory "$ArtifactPrefix-$RunId.csv"
 $SummaryPath = Join-Path $OutputDirectory "$ArtifactPrefix-$RunId.json"
+$ReplayDurationToleranceSeconds = 2.0
+$MaxEncodedReplayMb = 512.0
 
 if ($DurationMinutes -le 0) { throw "DurationMinutes must be positive" }
 if ($SampleIntervalSeconds -lt 1) { throw "SampleIntervalSeconds must be at least one" }
@@ -241,6 +243,30 @@ function Get-WreathStatusCodec([string]$Status) {
     return $Match.Groups[1].Value
 }
 
+function Get-WreathStatusBuffer([string]$Status) {
+    $Match = [regex]::Match($Status, '(?m)^buffer\s+(\d+)s\s*$')
+    if (-not $Match.Success) {
+        throw "Wreath status did not report the buffered replay duration"
+    }
+    return [int]$Match.Groups[1].Value
+}
+
+function Get-WreathStatusReplaySize([string]$Status) {
+    $Match = [regex]::Match($Status, '(?m)^replay\s+(\d+) bytes\s*$')
+    if (-not $Match.Success) {
+        throw "Wreath status did not report encoded replay bytes"
+    }
+    return [long]$Match.Groups[1].Value
+}
+
+function Get-WreathConfiguredDuration([string]$Configuration) {
+    $Match = [regex]::Match($Configuration, '(?m)^duration_seconds\s*=\s*(\d+)\s*$')
+    if (-not $Match.Success) {
+        throw "Wreath configuration did not report capture.duration_seconds"
+    }
+    return [int]$Match.Groups[1].Value
+}
+
 function Test-MedalBaseline(
     [object]$Baseline,
     [string]$Scenario,
@@ -437,6 +463,19 @@ $WreathConfiguration = if ($MeasureMedalOnly) {
 } else {
     Invoke-WreathControl $ControlExe "config"
 }
+$ConfiguredReplaySeconds = if ($MeasureMedalOnly) {
+    $null
+} else {
+    Get-WreathConfiguredDuration $WreathConfiguration
+}
+$EffectiveMinClipDurationSeconds = if ($MeasureMedalOnly) {
+    $MinClipDurationSeconds
+} else {
+    [Math]::Max(
+        $MinClipDurationSeconds,
+        [double]$ConfiguredReplaySeconds - $ReplayDurationToleranceSeconds
+    )
+}
 $InitialWreathStatus = if ($MeasureMedalOnly) { $null } else {
     Invoke-WreathControl $ControlExe "status"
 }
@@ -458,6 +497,11 @@ $ActiveHardwareCodec = if ($MeasureMedalOnly) {
 if (-not $MeasureMedalOnly -and $AvailableHardwareCodecs -notcontains $ActiveHardwareCodec) {
     throw "active codec '$ActiveHardwareCodec' is absent from the hardware encoder inventory"
 }
+$InitialReplayBytes = if ($MeasureMedalOnly) {
+    0L
+} else {
+    Get-WreathStatusReplaySize $InitialWreathStatus
+}
 
 $PreviousWreathCpu = @{}
 $PreviousMedalCpu = @{}
@@ -468,7 +512,10 @@ $EffectiveSaveEverySeconds = if ($MeasureMedalOnly) { 0 } else { $SaveEverySecon
 $NextSaveSeconds = [double]$EffectiveSaveEverySeconds
 $SaveAttempts = 0
 $SaveFailures = 0
+$ShortReplaySaves = 0
 $SavedClips = [System.Collections.Generic.List[string]]::new()
+$ObservedReplayBytes = [System.Collections.Generic.List[long]]::new()
+if (-not $MeasureMedalOnly) { $ObservedReplayBytes.Add($InitialReplayBytes) }
 $DurationSeconds = $DurationMinutes * 60.0
 
 while ($Stopwatch.Elapsed.TotalSeconds -lt $DurationSeconds) {
@@ -533,6 +580,16 @@ while ($Stopwatch.Elapsed.TotalSeconds -lt $DurationSeconds) {
 
     if ($EffectiveSaveEverySeconds -gt 0 -and $NowSeconds -ge $NextSaveSeconds) {
         $SaveAttempts++
+        try {
+            $StatusBeforeSave = Invoke-WreathControl $ControlExe "status"
+            $BufferedSeconds = Get-WreathStatusBuffer $StatusBeforeSave
+            $ObservedReplayBytes.Add((Get-WreathStatusReplaySize $StatusBeforeSave))
+            if ($BufferedSeconds + $ReplayDurationToleranceSeconds -lt $ConfiguredReplaySeconds) {
+                $ShortReplaySaves++
+            }
+        } catch {
+            $ShortReplaySaves++
+        }
         $SaveOutput = @(& $ControlExe save 2>&1)
         if ($LASTEXITCODE -ne 0) {
             $SaveFailures++
@@ -596,6 +653,7 @@ if (-not $MeasureMedalOnly) {
             $Failures.Add("Wreath was not recording at the end of the measurement")
         }
         $FinalActiveHardwareCodec = Get-WreathStatusCodec $FinalWreathStatus
+        $ObservedReplayBytes.Add((Get-WreathStatusReplaySize $FinalWreathStatus))
         if ($FinalActiveHardwareCodec -ne $ActiveHardwareCodec) {
             $Failures.Add("active hardware codec changed during the measurement")
         }
@@ -607,6 +665,12 @@ if (-not $MeasureMedalOnly) {
         $Failures.Add("final Wreath health check failed: $($_.Exception.Message)")
     }
 }
+$PeakEncodedReplayBytes = if ($ObservedReplayBytes.Count -eq 0) {
+    0L
+} else {
+    [long](($ObservedReplayBytes | Measure-Object -Maximum).Maximum)
+}
+$PeakEncodedReplayMb = [double]$PeakEncodedReplayBytes / 1MB
 
 if (-not $MeasureMedalOnly -and $SaveAttempts -gt 0) {
     $Ffprobe = Get-Command $FfprobePath -ErrorAction SilentlyContinue
@@ -619,7 +683,7 @@ if (-not $MeasureMedalOnly -and $SaveAttempts -gt 0) {
                     $Clip `
                     $Ffprobe.Source `
                     $AllowVideoOnly.IsPresent `
-                    $MinClipDurationSeconds `
+                    $EffectiveMinClipDurationSeconds `
                     $MaxAudioVideoSkewSeconds))
             } catch {
                 $Failures.Add("clip validation failed for '$Clip': $($_.Exception.Message)")
@@ -646,8 +710,14 @@ if (-not $MeasureMedalOnly -and $MemoryGrowthMb -gt $MaxMemoryGrowthMb) {
 if (-not $MeasureMedalOnly -and $PeakTrayRam -gt $MaxTrayWorkingSetMb) {
     $Failures.Add("Tray peak $([Math]::Round($PeakTrayRam, 2)) MiB exceeds $MaxTrayWorkingSetMb MiB")
 }
+if (-not $MeasureMedalOnly -and $PeakEncodedReplayMb -gt $MaxEncodedReplayMb) {
+    $Failures.Add("Encoded replay peak $([Math]::Round($PeakEncodedReplayMb, 2)) MiB exceeds $MaxEncodedReplayMb MiB")
+}
 if (-not $MeasureMedalOnly -and $SaveFailures -gt 0) {
     $Failures.Add("$SaveFailures of $SaveAttempts replay saves failed")
+}
+if (-not $MeasureMedalOnly -and $ShortReplaySaves -gt 0) {
+    $Failures.Add("$ShortReplaySaves of $SaveAttempts replay saves started before the configured buffer duration was available")
 }
 if (-not $MeasureMedalOnly -and $null -ne $Baseline -and $SaveAttempts -eq 0) {
     $Failures.Add("Medal comparison completed without a replay save attempt")
@@ -669,6 +739,7 @@ $Summary = [ordered]@{
     MedalBaseline = $ResolvedBaselinePath
     MedalBaselineRunId = if ($null -eq $Baseline) { $null } else { $Baseline.RunId }
     DurationMinutes = $DurationMinutes
+    ConfiguredReplaySeconds = $ConfiguredReplaySeconds
     SampleIntervalSeconds = $SampleIntervalSeconds
     RelativeGatesEvaluated = (-not $MeasureMedalOnly -and $null -ne $Baseline)
     Gates = [ordered]@{
@@ -678,12 +749,16 @@ $Summary = [ordered]@{
         MaxRelativeGpu = $MaxRelativeGpu
         MaxMemoryGrowthMb = $MaxMemoryGrowthMb
         MaxTrayWorkingSetMb = $MaxTrayWorkingSetMb
-        MinClipDurationSeconds = $MinClipDurationSeconds
+        MaxEncodedReplayMb = $MaxEncodedReplayMb
+        MinClipDurationSeconds = $EffectiveMinClipDurationSeconds
+        ReplayDurationToleranceSeconds = $ReplayDurationToleranceSeconds
         MaxAudioVideoSkewSeconds = $MaxAudioVideoSkewSeconds
     }
     Samples = $Rows.Count
     SaveAttempts = $SaveAttempts
     SaveFailures = $SaveFailures
+    ShortReplaySaves = $ShortReplaySaves
+    PeakEncodedReplayMb = [Math]::Round($PeakEncodedReplayMb, 3)
     ValidatedClips = $ClipValidations.Count
     ClipValidations = @($ClipValidations)
     AverageWreathWorkingSetMb = [Math]::Round($AverageWreathRam, 3)

@@ -10,6 +10,7 @@ settings. The default automated comparison gates define "materially fewer" as:
 - average combined Wreath GPU-engine load at most 85% of Medal;
 - no more than 32 MiB working-set growth across a run;
 - native tray peak working set at most 64 MiB;
+- encoded replay payload never above the fixed 512 MiB process limit;
 - zero failed periodic replay saves.
 
 These thresholds can be tightened after measurements from the first hardware
@@ -69,14 +70,17 @@ periodic replay saves; setting `SaveEverySeconds` to zero is rejected.
 
 Install `ffprobe` from FFmpeg before the Wreath phase. After the timed measurement
 has ended, every saved clip is checked for a video stream, the expected audio
-stream, minimum duration, keyframe-clean start, monotonic DTS, and bounded
-audio/video duration skew. Clip hashes and probe results are included in the JSON
-summary. Raw output belongs in test artifacts, not in Git.
+stream, the configured replay duration with at most two seconds of GOP tolerance,
+keyframe-clean start, monotonic DTS, and bounded audio/video duration skew. The
+live ring fill level is checked before every save as well. Clip hashes and probe
+results are included in the JSON summary. Raw output belongs in test artifacts,
+not in Git.
 
 Use `-AllowVideoOnly` only for a matrix row whose Wreath configuration has both
-desktop and microphone audio disabled. The structural minimums can be adjusted
-for an explicit test row with `-MinClipDurationSeconds` and
-`-MaxAudioVideoSkewSeconds`; the resource gates remain unchanged.
+desktop and microphone audio disabled. `-MinClipDurationSeconds` may tighten the
+duration gate but cannot reduce it below the configured duration tolerance.
+`-MaxAudioVideoSkewSeconds` adjusts only the A/V structural gate; the resource
+gates remain unchanged.
 
 For a Wreath-only four-hour soak:
 

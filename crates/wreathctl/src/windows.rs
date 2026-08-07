@@ -200,12 +200,16 @@ fn print_response(response: Response) -> Result<(), String> {
             state,
             monitor,
             codec,
+            replay_bytes,
             buffered_seconds,
             error,
         } => {
             println!("state    {state:?}");
             println!("monitor  {}", monitor.as_deref().unwrap_or("none"));
             println!("codec    {}", codec.as_deref().unwrap_or("none"));
+            if let Some(replay_bytes) = replay_bytes {
+                println!("replay   {replay_bytes} bytes");
+            }
             println!("buffer   {buffered_seconds}s");
             if let Some(error) = error {
                 println!("error    {error}");

@@ -224,6 +224,7 @@ fn refresh_status(window: HWND) {
             state,
             monitor,
             codec,
+            replay_bytes: _,
             buffered_seconds,
             error,
         }) => {

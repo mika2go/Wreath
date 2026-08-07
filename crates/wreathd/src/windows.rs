@@ -43,6 +43,7 @@ pub fn run() -> Result<(), String> {
                     },
                     monitor: status.monitor,
                     codec: status.codec.map(|codec| codec.as_str().to_owned()),
+                    replay_bytes: Some(u64::try_from(status.encoded_bytes).unwrap_or(u64::MAX)),
                     buffered_seconds: status.buffered_seconds,
                     error: status.error,
                 }

@@ -132,6 +132,7 @@ fn run() -> Result<(), String> {
             state,
             monitor,
             codec,
+            replay_bytes,
             buffered_seconds,
             error,
         } => {
@@ -142,6 +143,9 @@ fn run() -> Result<(), String> {
             );
             if let Some(codec) = codec {
                 println!("codec: {codec}");
+            }
+            if let Some(replay_bytes) = replay_bytes {
+                println!("replay: {replay_bytes} bytes");
             }
             if let Some(error) = error {
                 println!("error: {error}");
