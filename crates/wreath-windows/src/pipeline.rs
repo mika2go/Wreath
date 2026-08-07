@@ -210,6 +210,7 @@ struct PipelineAudio {
     master_gain_percent: u16,
     pending_master: std::collections::VecDeque<crate::audio::Pcm16Chunk>,
     microphone_watermark: Option<std::time::Duration>,
+    microphone_clipped: u64,
     encoder: crate::audio_encoder::AacEncoder,
 }
 
@@ -294,8 +295,23 @@ impl PipelineAudio {
             },
             pending_master: std::collections::VecDeque::with_capacity(12),
             microphone_watermark: None,
+            microphone_clipped: 0,
             encoder,
         }))
+    }
+
+    fn note_microphone_clipping(&mut self, data: &[u8]) {
+        let clipped = clipped_samples(data);
+        if clipped == 0 {
+            return;
+        }
+        self.microphone_clipped = self.microphone_clipped.saturating_add(clipped);
+        if self.microphone_clipped.is_power_of_two() {
+            wreath_core::diagnostic!(
+                "Wreath microphone: {} clipped samples so far; lower the Windows input level for this device",
+                self.microphone_clipped
+            );
+        }
     }
 
     fn master_receiver(&self) -> &crossbeam_channel::Receiver<crate::audio::PcmChunk> {
@@ -314,6 +330,9 @@ impl PipelineAudio {
     ) -> Result<Vec<wreath_core::replay_buffer::EncodedPacket>, crate::audio::AudioError> {
         let format = self.master.format();
         let normalized = crate::audio::normalize_to_pcm16(format, chunk)?;
+        if matches!(self.master, AudioCaptureSource::Microphone(_)) {
+            self.note_microphone_clipping(&normalized.data);
+        }
         let mut normalized = if let Some(converter) = &mut self.master_converter {
             let Some(converted) = converter.push(normalized)? else {
                 return Ok(Vec::new());
@@ -345,6 +364,7 @@ impl PipelineAudio {
         })?;
         let format = capture.format();
         let normalized = crate::audio::normalize_to_pcm16(format, chunk)?;
+        self.note_microphone_clipping(&normalized.data);
         let microphone_end = pcm_chunk_end(&normalized, format.sample_rate);
         self.mixer
             .as_mut()
@@ -410,6 +430,19 @@ impl PipelineAudio {
         self.discard_queued();
         self.encoder.flush()
     }
+}
+
+/// Counts samples sitting at the top of the 16-bit range.
+///
+/// Raw capture leaves the driver's automatic gain control out of the path, so
+/// a hot Windows input level now reaches the encoder as hard clipping instead
+/// of being ridden down. That sounds like crackling and cannot be undone
+/// later, so it has to be visible in the log.
+#[cfg(any(target_os = "windows", test))]
+fn clipped_samples(data: &[u8]) -> u64 {
+    data.chunks_exact(2)
+        .filter(|sample| i16::from_le_bytes([sample[0], sample[1]]).unsigned_abs() >= 32_700)
+        .count() as u64
 }
 
 #[cfg(target_os = "windows")]
@@ -953,6 +986,18 @@ mod tests {
 
         assert!(bitrate >= 2_500);
         assert!(bytes < 100 * 1_048_576);
+    }
+
+    #[test]
+    fn clipping_is_counted_only_at_the_top_of_the_range() {
+        let samples = [0_i16, 12_000, -12_000, 32_700, -32_768, 32_699]
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect::<Vec<_>>();
+
+        // 32_700 and -32_768 count; 32_699 sits just below the threshold.
+        assert_eq!(clipped_samples(&samples), 2);
+        assert_eq!(clipped_samples(&[]), 0);
     }
 
     #[test]

@@ -36,11 +36,21 @@ pub fn write_mp4<'a>(
     use windows::core::PCWSTR;
 
     let packets = ordered_packets(packets);
-    let first_timestamp = packets
+    if !packets
         .iter()
-        .find(|packet| packet.track == TrackKind::Video)
-        .ok_or_else(|| VideoError::Initialization("replay buffer has no video packets".into()))?
-        .timestamp;
+        .any(|packet| packet.track == TrackKind::Video)
+    {
+        return Err(VideoError::Initialization(
+            "replay buffer has no video packets".into(),
+        ));
+    }
+    // Rebase on the earliest packet of either track. Using the first video
+    // packet instead collapsed every audio packet ahead of it onto timestamp
+    // zero, because the subtraction saturates.
+    let first_timestamp = packets
+        .first()
+        .map(|packet| packet.timestamp)
+        .unwrap_or_default();
     let has_audio = audio_media_type.is_some()
         && packets
             .iter()

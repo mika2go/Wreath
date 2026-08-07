@@ -83,9 +83,17 @@ impl PcmMixer {
         // 9.5 dB inside one packet, which is audible as a click.
         let denominator = 100_i64.saturating_add(i64::from(self.gain_percent));
         scale_pcm16(&mut master, 100, denominator);
+        // Queued microphone packets can overlap in time after the converter
+        // starts a new epoch. Adding both over the same frames would mix the
+        // microphone into itself and clip, so each frame is written once.
+        let mut mixed_until = master.timestamp;
         for auxiliary in &self.auxiliary {
             if auxiliary.timestamp >= master_end {
                 break;
+            }
+            let auxiliary_end = chunk_end(auxiliary, self.sample_rate);
+            if auxiliary_end <= mixed_until {
+                continue;
             }
             add_overlap(
                 &mut master,
@@ -94,7 +102,9 @@ impl PcmMixer {
                 self.channels,
                 i64::from(self.gain_percent),
                 denominator,
+                mixed_until,
             );
+            mixed_until = auxiliary_end;
         }
         Ok(master)
     }
@@ -719,8 +729,9 @@ fn add_overlap(
     channels: u16,
     numerator: i64,
     denominator: i64,
+    mixed_until: Duration,
 ) {
-    let overlap_start = master.timestamp.max(auxiliary.timestamp);
+    let overlap_start = master.timestamp.max(auxiliary.timestamp).max(mixed_until);
     let master_end = chunk_end(master, sample_rate);
     let auxiliary_end = chunk_end(auxiliary, sample_rate);
     let overlap_end = master_end.min(auxiliary_end);

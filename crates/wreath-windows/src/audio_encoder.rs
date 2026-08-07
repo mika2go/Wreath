@@ -62,10 +62,157 @@ impl AudioEncoderSettings {
     }
 }
 
+/// Keeps the PCM handed to the encoder contiguous with the timeline that
+/// describes it.
+///
+/// WASAPI hands over whatever frames it has; when the endpoint or the queue
+/// loses some, the next packet simply carries a later timestamp. Submitting
+/// that straight to the encoder splices two unrelated waveforms together while
+/// the timeline jumps over the hole, so the AAC frames stop lining up with the
+/// times attached to them. Bridging the hole with silence keeps the payload and
+/// the timeline describing the same thing.
+#[cfg(any(target_os = "windows", test))]
+#[derive(Default)]
+struct EncoderTimeline {
+    next_timestamp: Option<std::time::Duration>,
+    tail: Vec<i16>,
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum TimelinePlan {
+    /// This packet continues directly from the previous one.
+    Continue { timestamp: std::time::Duration },
+    /// Fill the hole ahead of this packet with silence.
+    Bridge {
+        timestamp: std::time::Duration,
+        silent_frames: u32,
+    },
+    /// Too far to bridge; drop the old timeline and start over here.
+    Restart { timestamp: std::time::Duration },
+}
+
+#[cfg(any(target_os = "windows", test))]
+impl EncoderTimeline {
+    /// Longest hole worth filling. Anything beyond this is a pause, a device
+    /// change or a resume, where silence would only pad the clip.
+    const MAX_BRIDGE: std::time::Duration = std::time::Duration::from_secs(1);
+
+    fn plan(&self, timestamp: std::time::Duration, sample_rate: u32) -> TimelinePlan {
+        let Some(expected) = self.next_timestamp else {
+            return TimelinePlan::Restart { timestamp };
+        };
+        if timestamp <= expected {
+            // Never move backwards: the encoder needs a monotonic timeline and
+            // the payload is contiguous regardless of what the clock reported.
+            return TimelinePlan::Continue {
+                timestamp: expected,
+            };
+        }
+        let gap = timestamp.saturating_sub(expected);
+        if gap > Self::MAX_BRIDGE {
+            return TimelinePlan::Restart { timestamp };
+        }
+        let silent_frames = duration_frames(gap, sample_rate);
+        if silent_frames == 0 {
+            return TimelinePlan::Continue {
+                timestamp: expected,
+            };
+        }
+        TimelinePlan::Bridge {
+            timestamp: expected,
+            silent_frames,
+        }
+    }
+
+    fn advance(&mut self, timestamp: std::time::Duration, frames: u32, sample_rate: u32) {
+        self.next_timestamp = Some(timestamp.saturating_add(frames_duration(frames, sample_rate)));
+    }
+
+    fn remember_tail(&mut self, data: &[u8], channels: u16) {
+        let channels = usize::from(channels.max(1));
+        self.tail.clear();
+        let frame_bytes = channels * 2;
+        if data.len() < frame_bytes {
+            return;
+        }
+        for sample in data[data.len() - frame_bytes..].chunks_exact(2) {
+            self.tail.push(i16::from_le_bytes([sample[0], sample[1]]));
+        }
+    }
+
+    fn reset(&mut self) {
+        self.next_timestamp = None;
+        self.tail.clear();
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn duration_frames(duration: std::time::Duration, sample_rate: u32) -> u32 {
+    u32::try_from(duration.as_nanos().saturating_mul(u128::from(sample_rate)) / 1_000_000_000)
+        .unwrap_or(u32::MAX)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn frames_duration(frames: u32, sample_rate: u32) -> std::time::Duration {
+    std::time::Duration::from_nanos(
+        u64::from(frames).saturating_mul(1_000_000_000) / u64::from(sample_rate.max(1)),
+    )
+}
+
+/// Number of frames a splice is ramped over, so neither edge of a bridged hole
+/// is a step in the waveform.
+#[cfg(any(target_os = "windows", test))]
+fn splice_fade_frames(sample_rate: u32) -> u32 {
+    (sample_rate / 500).max(1)
+}
+
+/// Silence that starts from wherever the last packet left off, so entering the
+/// hole is a short ramp rather than a jump to zero.
+#[cfg(any(target_os = "windows", test))]
+fn bridging_silence(frames: u32, channels: u16, tail: &[i16], sample_rate: u32) -> Vec<u8> {
+    let channels = usize::from(channels.max(1));
+    let mut data = vec![0_u8; usize::try_from(frames).unwrap_or_default() * channels * 2];
+    let fade = splice_fade_frames(sample_rate).min(frames);
+    if fade == 0 || tail.len() < channels {
+        return data;
+    }
+    for frame in 0..fade {
+        let remaining = i64::from(fade - frame);
+        let base = usize::try_from(frame).unwrap_or_default() * channels * 2;
+        for (channel, last) in tail.iter().take(channels).enumerate() {
+            let index = base + channel * 2;
+            let ramped = i64::from(*last) * remaining / i64::from(fade);
+            data[index..index + 2].copy_from_slice(&(ramped as i16).to_le_bytes());
+        }
+    }
+    data
+}
+
+/// Ramps the first frames of a packet up from zero after a hole.
+#[cfg(any(target_os = "windows", test))]
+fn fade_in(data: &mut [u8], frames: u32, channels: u16, sample_rate: u32) {
+    let channels = usize::from(channels.max(1));
+    let fade = splice_fade_frames(sample_rate).min(frames);
+    if fade <= 1 {
+        return;
+    }
+    let denominator = i64::from(fade - 1);
+    for frame in 0..fade {
+        for channel in 0..channels {
+            let index = (usize::try_from(frame).unwrap_or_default() * channels + channel) * 2;
+            let sample = i16::from_le_bytes([data[index], data[index + 1]]);
+            let ramped = i64::from(sample) * i64::from(frame) / denominator;
+            data[index..index + 2].copy_from_slice(&(ramped as i16).to_le_bytes());
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub struct AacEncoder {
     transform: windows::Win32::Media::MediaFoundation::IMFTransform,
     settings: AudioEncoderSettings,
+    timeline: EncoderTimeline,
 }
 
 #[cfg(target_os = "windows")]
@@ -92,6 +239,7 @@ impl AacEncoder {
         Ok(Self {
             transform,
             settings,
+            timeline: EncoderTimeline::default(),
         })
     }
 
@@ -106,14 +254,55 @@ impl AacEncoder {
     }
 
     pub fn encode(
-        &self,
-        chunk: Pcm16Chunk,
+        &mut self,
+        mut chunk: Pcm16Chunk,
     ) -> Result<Vec<wreath_core::replay_buffer::EncodedPacket>, AudioError> {
-        self.submit(chunk)?;
-        self.take_available_packets()
+        let sample_rate = self.settings.sample_rate;
+        let channels = self.settings.channels;
+        let mut packets = Vec::new();
+        match self.timeline.plan(chunk.timestamp, sample_rate) {
+            TimelinePlan::Continue { timestamp } => chunk.timestamp = timestamp,
+            TimelinePlan::Bridge {
+                timestamp,
+                silent_frames,
+            } => {
+                let silence = Pcm16Chunk {
+                    timestamp,
+                    frames: silent_frames,
+                    discontinuous: true,
+                    data: bridging_silence(
+                        silent_frames,
+                        channels,
+                        &self.timeline.tail,
+                        sample_rate,
+                    )
+                    .into_boxed_slice(),
+                };
+                let silence_end =
+                    timestamp.saturating_add(frames_duration(silent_frames, sample_rate));
+                self.submit(&silence)?;
+                packets.extend(self.take_available_packets()?);
+                chunk.timestamp = silence_end;
+                fade_in(&mut chunk.data, chunk.frames, channels, sample_rate);
+                wreath_core::diagnostic!(
+                    "Wreath audio encoder: bridged a {} ms capture hole with silence",
+                    frames_duration(silent_frames, sample_rate).as_millis()
+                );
+            }
+            TimelinePlan::Restart { timestamp } => {
+                chunk.timestamp = timestamp;
+                fade_in(&mut chunk.data, chunk.frames, channels, sample_rate);
+            }
+        }
+        self.submit(&chunk)?;
+        self.timeline.remember_tail(&chunk.data, channels);
+        self.timeline
+            .advance(chunk.timestamp, chunk.frames, sample_rate);
+        packets.extend(self.take_available_packets()?);
+        Ok(packets)
     }
 
-    pub fn flush(&self) -> Result<(), AudioError> {
+    pub fn flush(&mut self) -> Result<(), AudioError> {
         use windows::Win32::Media::MediaFoundation::{
             MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
         };
@@ -128,10 +317,12 @@ impl AacEncoder {
             Ok(())
         };
 
-        flush().map_err(audio_error)
+        let result = flush().map_err(audio_error);
+        self.timeline.reset();
+        result
     }
 
-    fn submit(&self, chunk: Pcm16Chunk) -> Result<(), AudioError> {
+    fn submit(&self, chunk: &Pcm16Chunk) -> Result<(), AudioError> {
         use windows::Win32::Media::MediaFoundation::{MFCreateMemoryBuffer, MFCreateSample};
 
         let expected_length = usize::try_from(chunk.frames)
@@ -343,6 +534,134 @@ mod tests {
         let surround = AudioEncoderSettings::for_capture(48_000, 6).unwrap();
         assert_eq!(surround.bytes_per_second, 96_000);
         assert_eq!(surround.block_align(), 12);
+    }
+
+    use std::time::Duration;
+
+    fn timeline_at(next: Duration) -> EncoderTimeline {
+        EncoderTimeline {
+            next_timestamp: Some(next),
+            tail: vec![10_000],
+        }
+    }
+
+    #[test]
+    fn a_contiguous_packet_keeps_the_timeline() {
+        let timeline = timeline_at(Duration::from_millis(100));
+
+        assert_eq!(
+            timeline.plan(Duration::from_millis(100), 48_000),
+            TimelinePlan::Continue {
+                timestamp: Duration::from_millis(100)
+            }
+        );
+    }
+
+    /// A capture hole used to splice two unrelated waveforms together while the
+    /// timeline jumped over it.
+    #[test]
+    fn a_capture_hole_is_bridged_with_silence() {
+        let timeline = timeline_at(Duration::from_millis(100));
+
+        assert_eq!(
+            timeline.plan(Duration::from_millis(140), 48_000),
+            TimelinePlan::Bridge {
+                timestamp: Duration::from_millis(100),
+                silent_frames: 1_920,
+            }
+        );
+    }
+
+    #[test]
+    fn an_overlapping_packet_never_moves_the_timeline_backwards() {
+        let timeline = timeline_at(Duration::from_millis(100));
+
+        assert_eq!(
+            timeline.plan(Duration::from_millis(80), 48_000),
+            TimelinePlan::Continue {
+                timestamp: Duration::from_millis(100)
+            }
+        );
+    }
+
+    #[test]
+    fn a_pause_sized_hole_restarts_instead_of_padding() {
+        let timeline = timeline_at(Duration::from_millis(100));
+
+        assert_eq!(
+            timeline.plan(Duration::from_secs(30), 48_000),
+            TimelinePlan::Restart {
+                timestamp: Duration::from_secs(30)
+            }
+        );
+        assert_eq!(
+            EncoderTimeline::default().plan(Duration::from_secs(5), 48_000),
+            TimelinePlan::Restart {
+                timestamp: Duration::from_secs(5)
+            }
+        );
+    }
+
+    #[test]
+    fn the_timeline_advances_by_payload_and_clears_on_reset() {
+        let mut timeline = EncoderTimeline::default();
+        timeline.advance(Duration::from_millis(10), 480, 48_000);
+
+        assert_eq!(
+            timeline.plan(Duration::from_millis(20), 48_000),
+            TimelinePlan::Continue {
+                timestamp: Duration::from_millis(20)
+            }
+        );
+        assert_eq!(
+            frames_duration(480, 48_000),
+            Duration::from_millis(10),
+            "one packet is exactly its own frame count"
+        );
+
+        // Stereo tail keeps the final frame of each channel for the ramp.
+        let data = [1_i16, 2, 3, 4]
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect::<Vec<_>>();
+        timeline.remember_tail(&data, 2);
+        assert_eq!(timeline.tail, [3, 4]);
+
+        timeline.reset();
+        assert!(timeline.tail.is_empty());
+        assert_eq!(
+            timeline.plan(Duration::from_millis(20), 48_000),
+            TimelinePlan::Restart {
+                timestamp: Duration::from_millis(20)
+            }
+        );
+    }
+
+    #[test]
+    fn both_edges_of_a_bridged_hole_are_ramped() {
+        let silence = bridging_silence(480, 1, &[10_000], 48_000);
+        let ramp = silence
+            .chunks_exact(2)
+            .map(|sample| i16::from_le_bytes(sample.try_into().unwrap()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(ramp[0], 10_000);
+        assert!(ramp[1] < ramp[0]);
+        assert_eq!(ramp[96], 0);
+        assert_eq!(ramp[479], 0);
+
+        let mut resumed = vec![0_u8; 480 * 2];
+        for sample in resumed.chunks_exact_mut(2) {
+            sample.copy_from_slice(&12_000_i16.to_le_bytes());
+        }
+        fade_in(&mut resumed, 480, 1, 48_000);
+        let resumed = resumed
+            .chunks_exact(2)
+            .map(|sample| i16::from_le_bytes(sample.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(resumed[0], 0);
+        assert_eq!(resumed[95], 12_000);
+        assert_eq!(resumed[479], 12_000);
     }
 
     #[test]
