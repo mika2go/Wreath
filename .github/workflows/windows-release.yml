@@ -33,7 +33,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Install WiX Toolset
-        run: dotnet tool install --global wix
+        run: dotnet tool install --global wix --version 4.0.6
 
       - name: Build and test MSI
         shell: pwsh
