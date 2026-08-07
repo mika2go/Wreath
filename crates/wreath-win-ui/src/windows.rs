@@ -28,6 +28,7 @@ const COMMAND_RESUME: usize = 102;
 const COMMAND_OPEN_CLIPS: usize = 103;
 const COMMAND_OPEN_CONFIG: usize = 104;
 const COMMAND_TOGGLE_AUTOSTART: usize = 105;
+const COMMAND_RELOAD_CONFIG: usize = 106;
 const COMMAND_EXIT: usize = 109;
 
 struct AppState {
@@ -197,6 +198,7 @@ fn handle_command(window: HWND, command: usize) {
                 Err(error) => notify(window, "Wreath error", &error, true),
             }
         }
+        COMMAND_RELOAD_CONFIG => handle_simple(window, Request::Reload, "Settings reloaded"),
         COMMAND_EXIT => {
             let _ = send(Request::Shutdown);
             let _ = unsafe { DestroyWindow(window) };
@@ -284,6 +286,7 @@ fn show_menu(window: HWND) {
     append_separator(menu);
     append_item(menu, COMMAND_OPEN_CLIPS, "Open clips");
     append_item(menu, COMMAND_OPEN_CONFIG, "Open settings file");
+    append_item(menu, COMMAND_RELOAD_CONFIG, "Reload settings");
     append_item(
         menu,
         COMMAND_TOGGLE_AUTOSTART,

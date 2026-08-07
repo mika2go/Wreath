@@ -99,8 +99,18 @@ impl Drop for HotkeyRegistration {
 #[cfg(target_os = "windows")]
 pub struct HotkeyListener {
     thread_id: u32,
+    rebind: std::sync::mpsc::SyncSender<HotkeyRebind>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
+
+#[cfg(target_os = "windows")]
+struct HotkeyRebind {
+    hotkey: HotkeyConfig,
+    reply: std::sync::mpsc::SyncSender<Result<(), HotkeyError>>,
+}
+
+#[cfg(target_os = "windows")]
+const REBIND_MESSAGE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
 
 #[cfg(target_os = "windows")]
 impl HotkeyListener {
@@ -116,11 +126,13 @@ impl HotkeyListener {
 
         let hotkey = hotkey.clone();
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+        let (rebind_sender, rebind_receiver) = mpsc::sync_channel::<HotkeyRebind>(1);
         let thread = std::thread::Builder::new()
             .name("wreath-hotkey".into())
             .spawn(move || {
                 let thread_id = unsafe { GetCurrentThreadId() };
-                let registration = match HotkeyRegistration::register(id, &hotkey) {
+                let mut current_hotkey = hotkey;
+                let mut registration = match HotkeyRegistration::register(id, &current_hotkey) {
                     Ok(registration) => registration,
                     Err(error) => {
                         let _ = ready_sender.send(Err(error));
@@ -138,6 +150,34 @@ impl HotkeyListener {
                     }
                     if message.message == WM_HOTKEY && message.wParam.0 == id as usize {
                         on_hotkey();
+                    } else if message.message == REBIND_MESSAGE {
+                        let Ok(request) = rebind_receiver.try_recv() else {
+                            continue;
+                        };
+                        drop(registration);
+                        match HotkeyRegistration::register(id, &request.hotkey) {
+                            Ok(new_registration) => {
+                                current_hotkey = request.hotkey;
+                                registration = new_registration;
+                                let _ = request.reply.send(Ok(()));
+                            }
+                            Err(error) => {
+                                match HotkeyRegistration::register(id, &current_hotkey) {
+                                    Ok(previous_registration) => {
+                                        registration = previous_registration;
+                                        let _ = request.reply.send(Err(error));
+                                    }
+                                    Err(restore_error) => {
+                                        let _ = request.reply.send(Err(HotkeyError::Registration(
+                                            format!(
+                                                "new shortcut failed ({error}); previous shortcut could not be restored ({restore_error})"
+                                            ),
+                                        )));
+                                        return;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 drop(registration);
@@ -148,8 +188,30 @@ impl HotkeyListener {
             .map_err(|error| HotkeyError::Registration(error.to_string()))??;
         Ok(Self {
             thread_id,
+            rebind: rebind_sender,
             thread: Some(thread),
         })
+    }
+
+    /// Replaces the registered shortcut on the listener thread. If Windows
+    /// rejects the new shortcut, the previous registration is restored.
+    pub fn rebind(&self, hotkey: &HotkeyConfig) -> Result<(), HotkeyError> {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
+
+        NativeHotkey::try_from(hotkey)?;
+        let (reply_sender, reply_receiver) = std::sync::mpsc::sync_channel(1);
+        self.rebind
+            .send(HotkeyRebind {
+                hotkey: hotkey.clone(),
+                reply: reply_sender,
+            })
+            .map_err(|error| HotkeyError::Registration(error.to_string()))?;
+        unsafe { PostThreadMessageW(self.thread_id, REBIND_MESSAGE, WPARAM(0), LPARAM(0)) }
+            .map_err(|error| HotkeyError::Registration(error.to_string()))?;
+        reply_receiver
+            .recv()
+            .map_err(|error| HotkeyError::Registration(error.to_string()))?
     }
 }
 

@@ -9,11 +9,11 @@ use wreath_windows::pipeline::{PipelineRunState, ReplayPipeline};
 
 pub fn run() -> Result<(), String> {
     let paths = AppPaths::discover();
-    let config = Config::load(&paths).map_err(|error| error.to_string())?;
+    let mut config = Config::load(&paths).map_err(|error| error.to_string())?;
     if !paths.config_file.exists() {
         config.save(&paths).map_err(|error| error.to_string())?;
     }
-    let pipeline = ReplayPipeline::spawn(config.clone()).map_err(|error| error.to_string())?;
+    let mut pipeline = ReplayPipeline::spawn(config.clone()).map_err(|error| error.to_string())?;
     let server = NamedPipeServer::new(paths.pipe_name()).map_err(|error| error.to_string())?;
     let pipe_name = paths.pipe_name().to_owned();
     let _hotkey = HotkeyListener::spawn(1, &config.hotkey, move || {
@@ -68,11 +68,53 @@ pub fn run() -> Result<(), String> {
                 .unwrap_or_else(|error| Response::Error {
                     message: error.to_string(),
                 }),
-            Request::Reload => Response::Error {
-                message: "restart wreathd to reload Windows capture settings".into(),
-            },
+            Request::Reload => reload(&paths, &mut config, &mut pipeline, &_hotkey),
         };
         ipc::write_response(&mut connection, &response).map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn reload(
+    paths: &AppPaths,
+    current_config: &mut Config,
+    pipeline: &mut ReplayPipeline,
+    hotkey: &HotkeyListener,
+) -> Response {
+    let new_config = match Config::load(paths) {
+        Ok(config) => config,
+        Err(error) => {
+            return Response::Error {
+                message: error.to_string(),
+            };
+        }
+    };
+    if &new_config == current_config {
+        return Response::Ok;
+    }
+
+    let was_paused = pipeline.status().state == PipelineRunState::Paused;
+    let replacement = match ReplayPipeline::spawn(new_config.clone()) {
+        Ok(pipeline) => pipeline,
+        Err(error) => {
+            return Response::Error {
+                message: format!("new Windows capture settings were rejected: {error}"),
+            };
+        }
+    };
+    if was_paused && let Err(error) = replacement.pause() {
+        return Response::Error {
+            message: format!("cannot preserve paused state while reloading: {error}"),
+        };
+    }
+    if let Err(error) = hotkey.rebind(&new_config.hotkey) {
+        return Response::Error {
+            message: format!("cannot activate the new Windows shortcut: {error}"),
+        };
+    }
+
+    let previous = std::mem::replace(pipeline, replacement);
+    *current_config = new_config;
+    drop(previous);
+    Response::Ok
 }
