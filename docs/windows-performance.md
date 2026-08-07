@@ -5,6 +5,7 @@ must use materially fewer background resources than Medal under the same replay
 settings. The default automated comparison gates define "materially fewer" as:
 
 - average combined Wreath working set at most 50% of the Medal process group;
+- peak combined Wreath working set at most 60% of the Medal process group;
 - average combined Wreath CPU at most 70% of the Medal process group;
 - average combined Wreath GPU-engine load at most 85% of Medal;
 - no more than 32 MiB working-set growth across a run;
@@ -50,6 +51,7 @@ the isolated Wreath phase:
   -SaveEverySeconds 60 `
   -ScenarioId "game-scene-a" `
   -SettingsId "1080p60-h264-30s-desktop-mic" `
+  -MatrixTags win11-current,gpu-nvidia,1080p60,audio-desktop-microphone,display-single `
   -MedalBaselinePath perf/windows/medal-YYYYMMDD-HHMMSS.json
 ```
 
@@ -60,10 +62,10 @@ count, or installed RAM differs. The summary records system metadata, executable
 versions, Wreath's complete TOML configuration, the hardware codecs exposed by
 Media Foundation, and the codec actually selected by the running pipeline. The
 active codec must remain stable and appear in that hardware inventory. It samples
-combined process CPU, working/private memory, GPU-engine counters, I/O counters,
-handles, and threads. Relative Medal gates are evaluated only when a validated
-isolated baseline is supplied. A comparison also requires periodic replay saves;
-setting `SaveEverySeconds` to zero is rejected.
+combined process CPU, average and peak working/private memory, GPU-engine
+counters, I/O counters, handles, and threads. Relative Medal gates are evaluated
+only when a validated isolated baseline is supplied. A comparison also requires
+periodic replay saves; setting `SaveEverySeconds` to zero is rejected.
 
 Install `ffprobe` from FFmpeg before the Wreath phase. After the timed measurement
 has ended, every saved clip is checked for a video stream, the expected audio
@@ -119,3 +121,17 @@ Attach the following to the release candidate:
 
 Do not claim the Medal target is achieved until all required comparison rows
 pass on real Windows hardware.
+
+After copying only the release-candidate run summaries into `perf/windows`, verify
+that the complete matrix is present:
+
+```powershell
+./scripts/verify-windows-matrix.ps1
+```
+
+Every Wreath summary must have exactly one Windows, GPU, resolution, audio, and
+display tag. Add lifecycle and manual-check tags only to runs where those checks
+were actually completed. The verifier requires three passing 30-minute Medal
+comparisons per GPU vendor, H.264 on every vendor, every additional codec exposed
+by each tested machine, and at least one passing four-hour Wreath-only soak. It
+writes `perf/windows/matrix-summary.json`; raw evidence remains outside Git.

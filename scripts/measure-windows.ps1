@@ -5,6 +5,7 @@ param(
     [int]$SaveEverySeconds = 60,
     [string]$MedalProcessPattern = "Medal*",
     [double]$MaxRelativeRam = 0.50,
+    [double]$MaxRelativePeakRam = 0.60,
     [double]$MaxRelativeCpu = 0.70,
     [double]$MaxRelativeGpu = 0.85,
     [double]$MaxMemoryGrowthMb = 32,
@@ -16,7 +17,18 @@ param(
     [switch]$MeasureMedalOnly,
     [string]$MedalBaselinePath,
     [string]$ScenarioId,
-    [string]$SettingsId
+    [string]$SettingsId,
+    [ValidateSet(
+        "win10-22h2", "win11-current",
+        "gpu-amd", "gpu-intel", "gpu-nvidia",
+        "1080p60", "1440p60", "4k60",
+        "audio-none", "audio-desktop", "audio-microphone", "audio-desktop-microphone",
+        "display-single", "display-secondary", "display-mixed-refresh",
+        "lifecycle-pause-resume", "lifecycle-display-mode-change",
+        "lifecycle-sleep-resume", "lifecycle-logout-login",
+        "manual-audio-ok", "manual-av-sync-ok"
+    )]
+    [string[]]$MatrixTags = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -152,6 +164,11 @@ function Get-Average([object[]]$Rows, [string]$Property) {
     return [double](($Rows | Measure-Object -Property $Property -Average).Average)
 }
 
+function Get-Maximum([object[]]$Rows, [string]$Property) {
+    if ($Rows.Count -eq 0) { return 0.0 }
+    return [double](($Rows | Measure-Object -Property $Property -Maximum).Maximum)
+}
+
 function Get-SystemInventory {
     $OperatingSystem = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
     $Processors = @(Get-CimInstance Win32_Processor -ErrorAction Stop | ForEach-Object {
@@ -248,6 +265,7 @@ function Test-MedalBaseline(
         throw "Medal baseline was captured on different hardware, drivers, or Windows build"
     }
     if ([double]($Baseline.AverageMedalWorkingSetMb) -le 0 `
+        -or [double]($Baseline.PeakMedalWorkingSetMb) -le 0 `
         -or [double]($Baseline.AverageMedalCpuPercent) -le 0.01 `
         -or [double]($Baseline.AverageMedalGpuEnginePercent) -le 0.01) {
         throw "Medal baseline contains no usable RAM, CPU, or GPU measurement"
@@ -540,6 +558,8 @@ $FirstWindow = @($Rows | Select-Object -First $WindowSize)
 $LastWindow = @($Rows | Select-Object -Last $WindowSize)
 $AverageWreathRam = Get-Average $Rows "WreathWorkingSetMb"
 $AverageMedalRam = Get-Average $Rows "MedalWorkingSetMb"
+$PeakWreathRam = Get-Maximum $Rows "WreathWorkingSetMb"
+$PeakMedalRam = Get-Maximum $Rows "MedalWorkingSetMb"
 $AverageWreathCpu = Get-Average $Rows "WreathCpuPercent"
 $AverageMedalCpu = Get-Average $Rows "MedalCpuPercent"
 $AverageWreathGpu = Get-Average $Rows "WreathGpuEnginePercent"
@@ -548,11 +568,15 @@ $MemoryGrowthMb = (Get-Average $LastWindow "WreathWorkingSetMb") - (Get-Average 
 $PeakTrayRam = [double](($Rows | Measure-Object -Property TrayWorkingSetMb -Maximum).Maximum)
 if ($null -ne $Baseline) {
     $AverageMedalRam = [double]($Baseline.AverageMedalWorkingSetMb)
+    $PeakMedalRam = [double]($Baseline.PeakMedalWorkingSetMb)
     $AverageMedalCpu = [double]($Baseline.AverageMedalCpuPercent)
     $AverageMedalGpu = [double]($Baseline.AverageMedalGpuEnginePercent)
 }
 $RamRatio = if (-not $MeasureMedalOnly -and $null -ne $Baseline) {
     $AverageWreathRam / $AverageMedalRam
+} else { $null }
+$PeakRamRatio = if (-not $MeasureMedalOnly -and $null -ne $Baseline) {
+    $PeakWreathRam / $PeakMedalRam
 } else { $null }
 $CpuRatio = if (-not $MeasureMedalOnly -and $null -ne $Baseline) {
     $AverageWreathCpu / $AverageMedalCpu
@@ -607,6 +631,9 @@ if (-not $MeasureMedalOnly -and $SaveAttempts -gt 0) {
 if (-not $MeasureMedalOnly -and $null -ne $Baseline -and $RamRatio -gt $MaxRelativeRam) {
     $Failures.Add("Wreath RAM ratio $([Math]::Round($RamRatio, 3)) exceeds $MaxRelativeRam")
 }
+if (-not $MeasureMedalOnly -and $null -ne $Baseline -and $PeakRamRatio -gt $MaxRelativePeakRam) {
+    $Failures.Add("Wreath peak RAM ratio $([Math]::Round($PeakRamRatio, 3)) exceeds $MaxRelativePeakRam")
+}
 if (-not $MeasureMedalOnly -and $null -ne $Baseline -and $CpuRatio -gt $MaxRelativeCpu) {
     $Failures.Add("Wreath CPU ratio $([Math]::Round($CpuRatio, 3)) exceeds $MaxRelativeCpu")
 }
@@ -630,6 +657,7 @@ $Summary = [ordered]@{
     Product = $Product
     ScenarioId = $ScenarioId
     SettingsId = $SettingsId
+    MatrixTags = @($MatrixTags | Sort-Object -Unique)
     System = $SystemMetadata
     Processes = $TargetProcessInventory
     WreathConfiguration = $WreathConfiguration
@@ -645,6 +673,7 @@ $Summary = [ordered]@{
     RelativeGatesEvaluated = (-not $MeasureMedalOnly -and $null -ne $Baseline)
     Gates = [ordered]@{
         MaxRelativeRam = $MaxRelativeRam
+        MaxRelativePeakRam = $MaxRelativePeakRam
         MaxRelativeCpu = $MaxRelativeCpu
         MaxRelativeGpu = $MaxRelativeGpu
         MaxMemoryGrowthMb = $MaxMemoryGrowthMb
@@ -660,6 +689,9 @@ $Summary = [ordered]@{
     AverageWreathWorkingSetMb = [Math]::Round($AverageWreathRam, 3)
     AverageMedalWorkingSetMb = [Math]::Round($AverageMedalRam, 3)
     WreathToMedalRamRatio = if ($null -eq $RamRatio) { $null } else { [Math]::Round($RamRatio, 4) }
+    PeakWreathWorkingSetMb = [Math]::Round($PeakWreathRam, 3)
+    PeakMedalWorkingSetMb = [Math]::Round($PeakMedalRam, 3)
+    WreathToMedalPeakRamRatio = if ($null -eq $PeakRamRatio) { $null } else { [Math]::Round($PeakRamRatio, 4) }
     AverageWreathCpuPercent = [Math]::Round($AverageWreathCpu, 4)
     AverageMedalCpuPercent = [Math]::Round($AverageMedalCpu, 4)
     WreathToMedalCpuRatio = if ($null -eq $CpuRatio) { $null } else { [Math]::Round($CpuRatio, 4) }
