@@ -93,6 +93,12 @@ impl EncodedReplayBuffer {
         self.packets.is_empty()
     }
 
+    /// Starts a new capture epoch without changing the configured limits.
+    /// This is used after timestamp discontinuities such as pause/resume.
+    pub fn reset(&mut self) {
+        self.clear();
+    }
+
     fn trim_to_byte_budget(&mut self) {
         while self.payload_bytes > self.max_payload_bytes {
             if !self.advance_to_next_keyframe() {
@@ -228,5 +234,19 @@ mod tests {
         let mut buffer = EncodedReplayBuffer::new(Duration::from_secs(1), 5).unwrap();
         assert!(!buffer.push(video(0, true, 6)));
         assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn reset_starts_a_new_decodable_epoch() {
+        let mut buffer = EncodedReplayBuffer::new(Duration::from_secs(30), 100).unwrap();
+        assert!(buffer.push(video(0, true, 10)));
+        assert!(buffer.push(audio(0, 10)));
+
+        buffer.reset();
+
+        assert!(buffer.is_empty());
+        assert_eq!(buffer.payload_bytes(), 0);
+        assert!(!buffer.push(video(100, false, 10)));
+        assert!(buffer.push(video(101, true, 10)));
     }
 }

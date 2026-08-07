@@ -315,6 +315,11 @@ impl PipelineAudio {
             while microphone.receiver().try_recv().is_ok() {}
         }
     }
+
+    fn start_new_epoch(&mut self) -> Result<(), crate::audio::AudioError> {
+        self.discard_queued();
+        self.encoder.flush()
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -469,9 +474,20 @@ fn run_pipeline(
                 }
                 PipelineCommandKind::Resume => {
                     while frames.try_recv().is_ok() {}
-                    if let Some(audio) = &mut audio {
-                        audio.discard_queued();
+                    if let Err(error) = encoder.flush() {
+                        let _ = command.reply.send(Err(error.to_string()));
+                        continue;
                     }
+                    available_surfaces.extend(in_flight_surfaces.drain(..));
+                    input_requests = 0;
+                    if let Some(audio) = &mut audio
+                        && let Err(error) = audio.start_new_epoch()
+                    {
+                        let _ = command.reply.send(Err(error.to_string()));
+                        continue;
+                    }
+                    buffer.reset();
+                    update_buffer_status(status, &buffer);
                     recording = true;
                     update_status(status, |pipeline| {
                         pipeline.state = PipelineRunState::Recording

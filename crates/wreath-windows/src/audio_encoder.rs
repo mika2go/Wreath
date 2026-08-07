@@ -113,6 +113,24 @@ impl AacEncoder {
         self.take_available_packets()
     }
 
+    pub fn flush(&self) -> Result<(), AudioError> {
+        use windows::Win32::Media::MediaFoundation::{
+            MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
+        };
+
+        let flush = || -> windows::core::Result<()> {
+            unsafe {
+                self.transform
+                    .ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0)?;
+                self.transform
+                    .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
+            }
+            Ok(())
+        };
+
+        flush().map_err(audio_error)
+    }
+
     fn submit(&self, chunk: Pcm16Chunk) -> Result<(), AudioError> {
         use windows::Win32::Media::MediaFoundation::{MFCreateMemoryBuffer, MFCreateSample};
 

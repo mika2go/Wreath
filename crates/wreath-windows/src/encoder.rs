@@ -289,6 +289,21 @@ impl HardwareVideoEncoder {
             .map_err(initialization_error)
     }
 
+    pub fn flush(&self) -> Result<(), VideoError> {
+        use windows::Win32::Media::MediaFoundation::{
+            MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
+        };
+
+        unsafe { self.transform.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0) }
+            .map_err(initialization_error)?;
+        while self.try_next_event()?.is_some() {}
+        unsafe {
+            self.transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
+        }
+        .map_err(initialization_error)
+    }
+
     fn frame_duration_hns(&self) -> i64 {
         10_000_000_i64 / i64::from(self.settings.frames_per_second)
     }
