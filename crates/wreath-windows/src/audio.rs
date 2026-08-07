@@ -802,7 +802,7 @@ impl CaptureDiagnostics {
     /// milliseconds; anything larger points at dropped or duplicated packets.
     fn packet(&mut self, sample_clock: std::time::Duration, wall_clock: std::time::Duration) {
         self.packets = self.packets.saturating_add(1);
-        if self.packets.is_multiple_of(Self::HEARTBEAT_PACKETS) {
+        if self.packets % Self::HEARTBEAT_PACKETS == 0 {
             let endpoint = self.endpoint;
             let packets = self.packets;
             let behind = wall_clock.saturating_sub(sample_clock).as_micros();
