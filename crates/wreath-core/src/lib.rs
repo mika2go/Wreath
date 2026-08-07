@@ -9,5 +9,6 @@ pub mod hyprland;
 pub mod ipc;
 pub mod paths;
 pub mod replay;
+pub mod replay_buffer;
 #[cfg(target_os = "linux")]
 pub mod shortcuts;
