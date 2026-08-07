@@ -731,7 +731,7 @@ impl Renderer {
                 )?;
                 self.setting_row(
                     "Storage limit",
-                    &format!("{} MiB", model.config.storage.max_megabytes),
+                    &format_storage_limit(model.config.storage.max_megabytes),
                     "Old clips are never uploaded.",
                     left,
                     right,
@@ -1330,11 +1330,17 @@ fn greeting() -> &'static str {
 
 fn format_bytes(bytes: u64) -> String {
     if bytes >= 1_073_741_824 {
-        format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
-    } else if bytes >= 1_048_576 {
-        format!("{:.1} MiB", bytes as f64 / 1_048_576.0)
+        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
     } else {
-        format!("{:.0} KiB", bytes as f64 / 1_024.0)
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    }
+}
+
+fn format_storage_limit(megabytes: u32) -> String {
+    if megabytes >= 1_024 && megabytes % 1_024 == 0 {
+        format!("{} GB", megabytes / 1_024)
+    } else {
+        format!("{megabytes} MB")
     }
 }
 
@@ -1355,4 +1361,18 @@ fn age(modified: SystemTime) -> String {
 
 fn on_off(value: bool) -> &'static str {
     if value { "On" } else { "Off" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_bytes, format_storage_limit};
+
+    #[test]
+    fn storage_sizes_use_only_mb_and_gb_labels() {
+        assert_eq!(format_bytes(512 * 1_024), "0.5 MB");
+        assert_eq!(format_bytes(20 * 1_048_576), "20.0 MB");
+        assert_eq!(format_bytes(5 * 1_073_741_824), "5.0 GB");
+        assert_eq!(format_storage_limit(512), "512 MB");
+        assert_eq!(format_storage_limit(10_240), "10 GB");
+    }
 }

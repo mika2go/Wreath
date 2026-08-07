@@ -269,7 +269,7 @@ fn doctor() -> Result<(), String> {
         monitor.name, monitor.width, monitor.height, monitor.refresh_rate
     );
     println!(
-        "buffer   ok · about {} MiB for {} seconds",
+        "buffer   ok · about {} MB for {} seconds",
         ReplaySpec::from_config(&config, monitor).estimated_buffer_megabytes(),
         config.capture.duration_seconds
     );

@@ -249,7 +249,7 @@ impl Config {
         self.hotkey.validate()?;
         if self.storage.max_megabytes < 128 {
             return Err(ConfigError::Invalid(
-                "storage limit must be at least 128 MiB".into(),
+                "storage limit must be at least 128 MB".into(),
             ));
         }
         if !self.storage.directory.is_absolute() {

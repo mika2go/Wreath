@@ -199,7 +199,7 @@ impl Daemon {
         match self.backend.start(spec) {
             Ok(recorder) => {
                 eprintln!(
-                    "wreathd: recording {} at {} fps (estimated buffer {} MiB)",
+                    "wreathd: recording {} at {} fps (estimated buffer {} MB)",
                     spec.monitor,
                     spec.frames_per_second,
                     spec.estimated_buffer_megabytes()

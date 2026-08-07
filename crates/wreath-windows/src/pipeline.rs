@@ -43,7 +43,7 @@ impl Default for PipelineStatus {
 pub fn replay_memory_budget(estimated_bytes: u64) -> Result<usize, crate::video::VideoError> {
     if estimated_bytes > MAX_REPLAY_MEMORY_BYTES {
         return Err(crate::video::VideoError::Initialization(format!(
-            "configured replay needs about {} MiB, exceeding the {} MiB Windows memory limit; reduce duration, frame rate, resolution, or quality",
+            "configured replay needs about {} MB, exceeding the {} MB Windows memory limit; reduce duration, frame rate, resolution, or quality",
             estimated_bytes.div_ceil(1_048_576),
             MAX_REPLAY_MEMORY_BYTES / 1_048_576
         )));
@@ -843,7 +843,7 @@ mod tests {
     fn replay_memory_rejects_a_silently_shortened_configuration() {
         let error = replay_memory_budget(MAX_REPLAY_MEMORY_BYTES + 1).unwrap_err();
 
-        assert!(error.to_string().contains("exceeding the 512 MiB"));
+        assert!(error.to_string().contains("exceeding the 512 MB"));
     }
 
     #[test]

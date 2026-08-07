@@ -834,7 +834,7 @@ fn choose_microphone_gain(window: HWND, model: &mut UiModel) {
 
 fn choose_storage_limit(window: HWND, model: &mut UiModel) {
     let values = [1_024, 5_120, 10_240, 25_600, 51_200, 102_400];
-    let labels = ["1 GiB", "5 GiB", "10 GiB", "25 GiB", "50 GiB", "100 GiB"]
+    let labels = ["1 GB", "5 GB", "10 GB", "25 GB", "50 GB", "100 GB"]
         .into_iter()
         .map(str::to_string)
         .collect::<Vec<_>>();

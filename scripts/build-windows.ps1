@@ -208,6 +208,7 @@ try {
     $SmokeUninstaller = Join-Path $SmokeInstallDirectory "Uninstall.exe"
     $SmokeUi = $null
     $SmokePassed = $false
+    $SmokeUninstalled = $false
     try {
         $InstallExitCode = Invoke-WaitProcess `
             -FilePath $Installer `
@@ -318,17 +319,43 @@ try {
         if ($SmokeUi.HasExited -or $UpgradedTrays.Count -ne 1) {
             throw "the full application and tray did not restart after the NSIS upgrade"
         }
+
+        $UninstallExitCode = Invoke-WaitProcess `
+            -FilePath $SmokeUninstaller `
+            -ArgumentList @("/S")
+        if ($UninstallExitCode -ne 0) {
+            throw "NSIS uninstall smoke test exited with $UninstallExitCode"
+        }
+        Start-Sleep -Seconds 2
+        $RemainingProcesses = @(
+            Get-Process `
+                -Name "wreath-win-ui", "wreath-tray", "wreathd" `
+                -ErrorAction SilentlyContinue
+        )
+        if ($RemainingProcesses.Count -ne 0) {
+            throw "NSIS uninstall left Wreath background processes running: $($RemainingProcesses.Name -join ', ')"
+        }
+        foreach ($Executable in $Executables.Keys) {
+            if (Test-Path -LiteralPath (Join-Path $SmokeInstallDirectory $Executable)) {
+                throw "NSIS uninstall left $Executable installed"
+            }
+        }
+        $RemainingAutostart = Get-ItemPropertyValue `
+            -Path $RunKey `
+            -Name "Wreath" `
+            -ErrorAction SilentlyContinue
+        if ($null -ne $RemainingAutostart) {
+            throw "NSIS uninstall left the Wreath autostart entry installed"
+        }
+        $SmokeUninstalled = $true
         $SmokePassed = $true
     } finally {
-        Get-Process `
-            -Name "wreath-win-ui", "wreath-tray", "wreathd" `
-            -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-        if (Test-Path -LiteralPath $SmokeUninstaller -PathType Leaf) {
-            $UninstallExitCode = Invoke-WaitProcess `
-                -FilePath $SmokeUninstaller `
-                -ArgumentList @("/S")
-            if ($UninstallExitCode -ne 0 -and $SmokePassed) {
-                throw "NSIS uninstall smoke test exited with $UninstallExitCode"
+        if (-not $SmokeUninstalled) {
+            Get-Process `
+                -Name "wreath-win-ui", "wreath-tray", "wreathd" `
+                -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $SmokeUninstaller -PathType Leaf) {
+                [void](Invoke-WaitProcess -FilePath $SmokeUninstaller -ArgumentList @("/S"))
             }
         }
         if (Test-Path -LiteralPath $SmokeInstallDirectory) {
@@ -370,6 +397,7 @@ try {
             IndependentTrayStarted = $true
             EmbeddedApplicationIconTest = $true
             ResizableWindowSmokeTest = $true
+            StopsRunningProcessesOnUninstallTest = $true
             UninstallSmokeTest = $true
         }
     }

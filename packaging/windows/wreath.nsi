@@ -42,13 +42,7 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Wreath contributors"
 
 !insertmacro MUI_LANGUAGE "English"
 
-Section "Wreath" MainSection
-  SectionIn RO
-  SetShellVarContext current
-
-  ; v0.1.x used wreath-win-ui.exe as the tray. Stop both old and new process
-  ; layouts before replacing files so upgrades cannot retain the legacy tray
-  ; mutex or leave the old executable mapped in memory.
+!macro StopWreathProcesses
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /IM "wreath-win-ui.exe"'
   Pop $1
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /IM "wreath-tray.exe"'
@@ -56,6 +50,16 @@ Section "Wreath" MainSection
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /IM "wreathd.exe"'
   Pop $1
   Sleep 250
+!macroend
+
+Section "Wreath" MainSection
+  SectionIn RO
+  SetShellVarContext current
+
+  ; v0.1.x used wreath-win-ui.exe as the tray. Stop both old and new process
+  ; layouts before replacing files so upgrades cannot retain the legacy tray
+  ; mutex or leave the old executable mapped in memory.
+  !insertmacro StopWreathProcesses
 
   SetOutPath "$INSTDIR"
 
@@ -88,6 +92,13 @@ SectionEnd
 
 Section "Uninstall"
   SetShellVarContext current
+
+  ; Ask the recorder to shut down cleanly, then force-stop every Wreath process
+  ; as a fallback before deleting the installed binaries.
+  nsExec::ExecToLog '"$INSTDIR\wreathctl.exe" shutdown'
+  Pop $1
+  !insertmacro StopWreathProcesses
+
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Wreath"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Wreath"
   DeleteRegKey /ifempty HKCU "Software\Wreath"
