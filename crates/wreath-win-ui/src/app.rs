@@ -6,16 +6,18 @@ use windows::Win32::Foundation::{
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT, UpdateWindow};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DestroyMenu, DispatchMessageW, FindWindowW, GWLP_USERDATA, GetClientRect, GetCursorPos,
     GetMessageW, GetWindowLongPtrW, HMENU, MF_SEPARATOR, MF_STRING, MSG, PostQuitMessage,
-    RegisterClassW, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOZORDER, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
-    WINDOW_EX_STYLE, WM_CHAR, WM_COMMAND, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONUP, WM_NCCREATE,
-    WM_PAINT, WM_RBUTTONUP, WM_SIZE, WNDCLASSW, WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW,
+    RegisterClassW, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, TPM_RIGHTBUTTON,
+    TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_CHAR, WM_COMMAND, WM_DESTROY,
+    WM_DPICHANGED, WM_KEYDOWN, WM_LBUTTONUP, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE,
+    WNDCLASSW, WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::config::Codec;
@@ -36,6 +38,7 @@ struct AppState {
     renderer: Renderer,
     width: u32,
     height: u32,
+    dpi: u32,
     player: Option<Player>,
     video_window: Option<HWND>,
     context_clip: Option<usize>,
@@ -82,6 +85,7 @@ fn run_initialized() -> Result<(), String> {
         renderer: Renderer::new()?,
         width: 1280,
         height: 760,
+        dpi: 96,
         player: None,
         video_window: None,
         context_clip: None,
@@ -131,6 +135,7 @@ fn run_initialized() -> Result<(), String> {
     unsafe {
         (*state).video_window = Some(video_window);
         (*state).player = Some(Player::new(video_window, window));
+        (*state).dpi = GetDpiForWindow(window).max(96);
     }
     unsafe {
         let _ = ShowWindow(window, SW_RESTORE);
@@ -186,6 +191,27 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        WM_DPICHANGED => {
+            if let Some(state) = state_mut(window) {
+                state.dpi = low_word(wparam.0 as isize).max(96) as u32;
+            }
+            let recommended = lparam.0 as *const RECT;
+            if !recommended.is_null() {
+                let recommended = unsafe { &*recommended };
+                let _ = unsafe {
+                    SetWindowPos(
+                        window,
+                        None,
+                        recommended.left,
+                        recommended.top,
+                        recommended.right - recommended.left,
+                        recommended.bottom - recommended.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    )
+                };
+            }
+            LRESULT(0)
+        }
         WM_PAINT => {
             let mut paint = PAINTSTRUCT::default();
             unsafe { BeginPaint(window, &mut paint) };
@@ -194,11 +220,12 @@ unsafe extern "system" fn window_proc(
                 let _ = unsafe { GetClientRect(window, &mut client) };
                 state.width = client.right.max(0) as u32;
                 state.height = client.bottom.max(0) as u32;
+                let scale = state.dpi as f32 / 96.0;
                 if let Err(error) = state.renderer.paint(
                     window,
                     &state.model,
-                    state.width.max(1),
-                    state.height.max(1),
+                    ((state.width as f32 / scale).round() as u32).max(1),
+                    ((state.height as f32 / scale).round() as u32).max(1),
                 ) {
                     state.model.notice = Some(format!("Rendering failed: {error}"));
                 }
@@ -208,8 +235,9 @@ unsafe extern "system" fn window_proc(
         }
         WM_LBUTTONUP => {
             if let Some(state) = state_mut(window) {
-                let x = signed_low_word(lparam.0) as f32;
-                let y = signed_high_word(lparam.0) as f32;
+                let scale = state.dpi as f32 / 96.0;
+                let x = signed_low_word(lparam.0) as f32 / scale;
+                let y = signed_high_word(lparam.0) as f32 / scale;
                 if let Some(action) = state.renderer.hit_test(x, y) {
                     handle_action(window, state, action);
                 }
@@ -218,8 +246,9 @@ unsafe extern "system" fn window_proc(
         }
         WM_RBUTTONUP => {
             if let Some(state) = state_mut(window) {
-                let x = signed_low_word(lparam.0) as f32;
-                let y = signed_high_word(lparam.0) as f32;
+                let scale = state.dpi as f32 / 96.0;
+                let x = signed_low_word(lparam.0) as f32 / scale;
+                let y = signed_high_word(lparam.0) as f32 / scale;
                 if let Some(Action::OpenClip(index)) = state.renderer.hit_test(x, y) {
                     state.context_clip = Some(index);
                     show_clip_menu(window, &state.model);
@@ -241,7 +270,12 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_KEYDOWN => {
-            if wparam.0 == 0x20 {
+            if let Some(state) = state_mut(window)
+                && state.model.hotkey_capture
+            {
+                capture_hotkey(&mut state.model, wparam.0 as u32);
+                redraw(window);
+            } else if wparam.0 == 0x20 {
                 if let Some(state) = state_mut(window)
                     && state.model.page == crate::model::Page::Player
                     && let Some(player) = &state.player
@@ -254,6 +288,7 @@ unsafe extern "system" fn window_proc(
                 if let Some(state) = state_mut(window) {
                     state.model.search_focused = false;
                     state.model.hotkey_capture = false;
+                    state.model.pending_hotkey = None;
                     state.model.notice = None;
                 }
                 redraw(window);
@@ -350,9 +385,17 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
                 state.model.config.audio.microphone_gain_percent,
             )
         }
+        Action::CycleStorageLimit => {
+            state.model.config.storage.max_megabytes = cycle(
+                &[1_024, 5_120, 10_240, 25_600, 51_200, 102_400],
+                state.model.config.storage.max_megabytes,
+            )
+        }
         Action::CaptureHotkey => {
             state.model.hotkey_capture = true;
-            state.model.notice = Some("Shortcut capture active — press Escape to cancel".into());
+            state.model.pending_hotkey = None;
+            state.model.notice =
+                Some("Press the shortcut, then Enter to confirm or Escape to cancel".into());
         }
         Action::ChooseStorage => choose_storage(&mut state.model),
         Action::SaveSettings => save_settings(&mut state.model),
@@ -370,6 +413,52 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         },
     }
     redraw(window);
+}
+
+fn capture_hotkey(model: &mut UiModel, virtual_key: u32) {
+    match virtual_key {
+        0x1b => {
+            model.hotkey_capture = false;
+            model.pending_hotkey = None;
+            model.notice = Some("Shortcut change cancelled".into());
+        }
+        0x0d => {
+            let Some(hotkey) = model.pending_hotkey.take() else {
+                model.notice = Some("Press a shortcut before confirming".into());
+                return;
+            };
+            model.config.hotkey = hotkey;
+            model.hotkey_capture = false;
+            model.notice = Some("Shortcut captured; save settings to apply it".into());
+        }
+        0x10 | 0x11 | 0x12 | 0x5b | 0x5c => {}
+        key if key <= 0xff && (key as u8).is_ascii_alphanumeric() => {
+            let mut modifiers = Vec::new();
+            if key_pressed(0x5b) || key_pressed(0x5c) {
+                modifiers.push("SUPER".into());
+            }
+            if key_pressed(0x11) {
+                modifiers.push("CTRL".into());
+            }
+            if key_pressed(0x12) {
+                modifiers.push("ALT".into());
+            }
+            if key_pressed(0x10) {
+                modifiers.push("SHIFT".into());
+            }
+            let hotkey = wreath_core::config::HotkeyConfig {
+                modifiers,
+                key: char::from(key as u8).to_ascii_uppercase().to_string(),
+            };
+            model.notice = Some(format!("Captured {hotkey} — press Enter to confirm"));
+            model.pending_hotkey = Some(hotkey);
+        }
+        _ => model.notice = Some("Use modifiers plus one letter or number".into()),
+    }
+}
+
+fn key_pressed(virtual_key: i32) -> bool {
+    (unsafe { GetKeyState(virtual_key) }) < 0
 }
 
 fn create_collection(window: HWND, model: &mut UiModel) {
@@ -547,15 +636,19 @@ fn update_player_window(state: &mut AppState) {
         }
         return;
     }
-    let bounds = player_bounds(state.width, state.height);
+    let scale = state.dpi as f32 / 96.0;
+    let bounds = player_bounds(
+        (state.width as f32 / scale).round() as u32,
+        (state.height as f32 / scale).round() as u32,
+    );
     let _ = unsafe {
         SetWindowPos(
             window,
             None,
-            bounds.left.round() as i32,
-            bounds.top.round() as i32,
-            (bounds.right - bounds.left).round().max(1.0) as i32,
-            (bounds.bottom - bounds.top).round().max(1.0) as i32,
+            (bounds.left * scale).round() as i32,
+            (bounds.top * scale).round() as i32,
+            ((bounds.right - bounds.left) * scale).round().max(1.0) as i32,
+            ((bounds.bottom - bounds.top) * scale).round().max(1.0) as i32,
             SWP_NOZORDER,
         )
     };

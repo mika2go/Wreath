@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use wreath_core::clips::{self, Clip, Collection};
-use wreath_core::config::Config;
+use wreath_core::config::{Config, HotkeyConfig};
 use wreath_core::paths::AppPaths;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +43,7 @@ pub enum Action {
     CycleDisplay,
     CycleMicrophone,
     CycleMicrophoneGain,
+    CycleStorageLimit,
     CaptureHotkey,
     ChooseStorage,
     SaveSettings,
@@ -66,6 +67,7 @@ pub struct UiModel {
     pub active_clip: Option<usize>,
     pub notice: Option<String>,
     pub hotkey_capture: bool,
+    pub pending_hotkey: Option<HotkeyConfig>,
     pub microphone_names: Vec<(String, String)>,
 }
 
@@ -87,6 +89,7 @@ impl UiModel {
             active_clip: None,
             notice: None,
             hotkey_capture: false,
+            pending_hotkey: None,
             microphone_names: Vec::new(),
         };
         model.refresh()?;
@@ -187,6 +190,7 @@ mod tests {
             active_clip: None,
             notice: None,
             hotkey_capture: false,
+            pending_hotkey: None,
             microphone_names: Vec::new(),
         }
     }

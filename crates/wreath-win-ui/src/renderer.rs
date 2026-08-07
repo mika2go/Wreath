@@ -642,9 +642,14 @@ impl Renderer {
                 )?;
             }
             SettingsSection::Controls => {
+                let shortcut = model
+                    .pending_hotkey
+                    .as_ref()
+                    .unwrap_or(&model.config.hotkey)
+                    .to_string();
                 self.setting_row(
                     "Save replay",
-                    &model.config.hotkey.to_string(),
+                    &shortcut,
                     if model.hotkey_capture {
                         "Press the shortcut, Enter to confirm, Escape to cancel."
                     } else {
@@ -673,7 +678,7 @@ impl Renderer {
                     left,
                     right,
                     284.0,
-                    Action::Navigate(Page::Settings),
+                    Action::CycleStorageLimit,
                 )?;
             }
         }
