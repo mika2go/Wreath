@@ -24,7 +24,7 @@ use windows::core::{PCWSTR, w};
 use wreath_core::config::Codec;
 use wreath_core::ipc::{Request, Response};
 
-use crate::model::{Action, DisplayOption, UiModel};
+use crate::model::{Action, DeleteTarget, DisplayOption, UiModel};
 use crate::player::{PLAYER_EVENT, Player};
 use crate::renderer::{Renderer, player_bounds};
 
@@ -322,6 +322,7 @@ unsafe extern "system" fn window_proc(
                     state.model.search_focused = false;
                     state.model.hotkey_capture = false;
                     state.model.notice = None;
+                    state.model.pending_delete = None;
                 }
                 redraw(window);
             }
@@ -427,7 +428,13 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             save_settings(&mut state.model, "Settings saved and capture reloaded")
         }
         Action::CreateCollection => create_collection(window, &mut state.model),
-        Action::DeleteActiveCollection => delete_active_collection(window, &mut state.model),
+        Action::DeleteActiveCollection => {
+            if let Some(collection) = state.model.active_collection.clone() {
+                state.model.pending_delete = Some(DeleteTarget::Collection(collection));
+            }
+        }
+        Action::CancelDelete => state.model.pending_delete = None,
+        Action::ConfirmDelete => confirm_delete(&mut state.model),
         Action::SelectCollection(index) => {
             state.model.active_collection = index
                 .and_then(|index| state.model.collections.get(index))
@@ -529,27 +536,36 @@ fn create_collection(window: HWND, model: &mut UiModel) {
     }
 }
 
-fn delete_active_collection(window: HWND, model: &mut UiModel) {
-    let Some(collection) = model.active_collection.clone() else {
+fn confirm_delete(model: &mut UiModel) {
+    let Some(target) = model.pending_delete.take() else {
         return;
     };
-    if !confirm(
-        window,
-        "Delete this collection? Its clips will be moved back to Library.",
-    ) {
-        return;
-    }
-    match wreath_core::clips::delete_collection(
-        &model.config.storage.directory,
-        &collection,
-        &model.paths.thumbnail_dir,
-    ) {
-        Ok(()) => {
-            model.active_collection = None;
-            let result = model.refresh();
-            set_result(model, result, "Collection deleted; clips moved to Library");
+    match target {
+        DeleteTarget::Clip(index) => {
+            let Some(clip) = model.clips.get(index).cloned() else {
+                model.notice = Some("Clip is no longer available".into());
+                return;
+            };
+            match wreath_core::clips::delete(&clip, &model.paths.thumbnail_dir) {
+                Ok(()) => {
+                    let result = model.refresh();
+                    set_result(model, result, "Clip deleted");
+                }
+                Err(error) => model.notice = Some(format!("Cannot delete clip: {error}")),
+            }
         }
-        Err(error) => model.notice = Some(format!("Cannot delete collection: {error}")),
+        DeleteTarget::Collection(collection) => match wreath_core::clips::delete_collection(
+            &model.config.storage.directory,
+            &collection,
+            &model.paths.thumbnail_dir,
+        ) {
+            Ok(()) => {
+                model.active_collection = None;
+                let result = model.refresh();
+                set_result(model, result, "Collection deleted; clips moved to Library");
+            }
+            Err(error) => model.notice = Some(format!("Cannot delete collection: {error}")),
+        },
     }
 }
 
@@ -590,6 +606,12 @@ fn handle_clip_command(window: HWND, state: &mut AppState, command: usize) {
     let Some(clip) = state.model.clips.get(index).cloned() else {
         return;
     };
+    if command == COMMAND_CLIP_DELETE {
+        state.model.pending_delete = Some(DeleteTarget::Clip(index));
+        state.context_clip = None;
+        redraw(window);
+        return;
+    }
     let result = match command {
         COMMAND_CLIP_RENAME => {
             let name = match crate::input_dialog::prompt(
@@ -607,13 +629,6 @@ fn handle_clip_command(window: HWND, state: &mut AppState, command: usize) {
             };
             wreath_core::clips::rename(&clip, &name, &state.model.paths.thumbnail_dir)
                 .map(|_| "Clip renamed")
-        }
-        COMMAND_CLIP_DELETE => {
-            if !confirm(window, "Delete this clip permanently?") {
-                return;
-            }
-            wreath_core::clips::delete(&clip, &state.model.paths.thumbnail_dir)
-                .map(|_| "Clip deleted")
         }
         COMMAND_CLIP_MOVE_LIBRARY => wreath_core::clips::move_to_library(
             &clip,
@@ -645,19 +660,6 @@ fn handle_clip_command(window: HWND, state: &mut AppState, command: usize) {
     }
     state.context_clip = None;
     redraw(window);
-}
-
-fn confirm(window: HWND, message: &str) -> bool {
-    use windows::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONWARNING, MB_YESNO, MessageBoxW};
-    let message = wide(message);
-    unsafe {
-        MessageBoxW(
-            Some(window),
-            PCWSTR(message.as_ptr()),
-            w!("Wreath"),
-            MB_YESNO | MB_ICONWARNING,
-        ) == IDYES
-    }
 }
 
 fn open_current_clip(state: &mut AppState) {

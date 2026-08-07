@@ -29,7 +29,7 @@ use windows::Win32::UI::Shell::{
 use windows::core::{PCWSTR, w};
 use windows_numerics::Vector2;
 
-use crate::model::{Action, Page, SettingsSection, UiModel};
+use crate::model::{Action, DeleteTarget, Page, SettingsSection, UiModel};
 
 const CANVAS: u32 = 0x0d0d0f;
 const STAGE: u32 = 0x101012;
@@ -211,6 +211,9 @@ impl Renderer {
             target.Clear(Some(&color(CANVAS)));
         }
         self.render_shell(model, width as f32, height as f32)?;
+        if model.pending_delete.is_some() {
+            self.render_delete_modal(model, width as f32, height as f32)?;
+        }
         if let Some(notice) = &model.notice {
             let rail = sidebar_width(width as f32);
             let notice_area = rect(
@@ -995,18 +998,13 @@ impl Renderer {
         }
         self.text(
             name,
-            rect(
-                area.left + 12.0,
-                area.top + 10.0,
-                area.right - 42.0,
-                area.bottom,
-            ),
+            rect(area.left + 12.0, area.top, area.right - 42.0, area.bottom),
             &self.body.clone(),
             if active { PRIMARY } else { SECONDARY },
         )?;
         self.text(
             &count.to_string(),
-            rect(area.right - 32.0, area.top + 10.0, area.right, area.bottom),
+            rect(area.right - 32.0, area.top, area.right, area.bottom),
             &self.small.clone(),
             SECONDARY,
         )?;
@@ -1015,6 +1013,89 @@ impl Renderer {
             action: Action::SelectCollection(index),
         });
         Ok(())
+    }
+
+    fn render_delete_modal(
+        &mut self,
+        model: &UiModel,
+        width: f32,
+        height: f32,
+    ) -> Result<(), String> {
+        let Some(target) = &model.pending_delete else {
+            return Ok(());
+        };
+        let overlay = rect(0.0, 0.0, width, height);
+        self.fill_alpha(overlay, CANVAS, 0.82, 0.0)?;
+        self.hits.push(HitRegion {
+            rect: overlay,
+            action: Action::CancelDelete,
+        });
+        let modal_width = 460.0_f32.min(width - 40.0);
+        let modal_height = 224.0;
+        let left = (width - modal_width) / 2.0;
+        let top = (height - modal_height) / 2.0;
+        let modal = rect(left, top, left + modal_width, top + modal_height);
+        self.fill(modal, SURFACE, 14.0)?;
+        let (title, detail, confirmation) = match target {
+            DeleteTarget::Clip(index) => {
+                let name = model
+                    .clips
+                    .get(*index)
+                    .map_or("this clip", |clip| clip.title.as_str());
+                (
+                    "Delete clip?",
+                    format!("{name} is removed permanently. This cannot be undone."),
+                    "Delete clip",
+                )
+            }
+            DeleteTarget::Collection(path) => {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("this collection");
+                (
+                    "Delete collection?",
+                    format!("{name} is removed; its clips move safely back to Library."),
+                    "Delete collection",
+                )
+            }
+        };
+        self.text(
+            title,
+            rect(left + 28.0, top + 24.0, modal.right - 28.0, top + 58.0),
+            &self.section.clone(),
+            PRIMARY,
+        )?;
+        self.text(
+            &detail,
+            rect(left + 28.0, top + 66.0, modal.right - 28.0, top + 108.0),
+            &self.body.clone(),
+            SECONDARY,
+        )?;
+        self.pill(
+            rect(
+                modal.right - 292.0,
+                modal.bottom - 62.0,
+                modal.right - 178.0,
+                modal.bottom - 22.0,
+            ),
+            SURFACE_HOVER,
+            "Cancel",
+            PRIMARY,
+            Some(Action::CancelDelete),
+        )?;
+        self.pill(
+            rect(
+                modal.right - 170.0,
+                modal.bottom - 62.0,
+                modal.right - 22.0,
+                modal.bottom - 22.0,
+            ),
+            0xe58b8b,
+            confirmation,
+            CANVAS,
+            Some(Action::ConfirmDelete),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1134,6 +1215,35 @@ impl Renderer {
     fn fill(&self, area: LogicalRect, fill: u32, radius: f32) -> Result<(), String> {
         let target = self.target.as_ref().expect("render target exists");
         let brush = unsafe { target.CreateSolidColorBrush(&color(fill), None) }
+            .map_err(|error| error.to_string())?;
+        unsafe {
+            if radius > 0.0 {
+                target.FillRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: area.d2d(),
+                        radiusX: radius,
+                        radiusY: radius,
+                    },
+                    &brush,
+                );
+            } else {
+                target.FillRectangle(&area.d2d(), &brush);
+            }
+        }
+        Ok(())
+    }
+
+    fn fill_alpha(
+        &self,
+        area: LogicalRect,
+        fill: u32,
+        alpha: f32,
+        radius: f32,
+    ) -> Result<(), String> {
+        let target = self.target.as_ref().expect("render target exists");
+        let mut fill = color(fill);
+        fill.a = alpha.clamp(0.0, 1.0);
+        let brush = unsafe { target.CreateSolidColorBrush(&fill, None) }
             .map_err(|error| error.to_string())?;
         unsafe {
             if radius > 0.0 {

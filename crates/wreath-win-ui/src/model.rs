@@ -51,9 +51,17 @@ pub enum Action {
     SaveSettings,
     CreateCollection,
     DeleteActiveCollection,
+    CancelDelete,
+    ConfirmDelete,
     SelectCollection(Option<usize>),
     PlayPause,
     SeekPercent(u8),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeleteTarget {
+    Clip(usize),
+    Collection(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +92,7 @@ pub struct UiModel {
     pub player_position_seconds: f64,
     pub player_duration_seconds: f64,
     pub player_aspect_ratio: f32,
+    pub pending_delete: Option<DeleteTarget>,
 }
 
 impl UiModel {
@@ -111,6 +120,7 @@ impl UiModel {
             player_position_seconds: 0.0,
             player_duration_seconds: 0.0,
             player_aspect_ratio: 16.0 / 9.0,
+            pending_delete: None,
         };
         model.refresh()?;
         Ok(model)
@@ -244,6 +254,7 @@ mod tests {
             player_position_seconds: 0.0,
             player_duration_seconds: 0.0,
             player_aspect_ratio: 16.0 / 9.0,
+            pending_delete: None,
         }
     }
 
