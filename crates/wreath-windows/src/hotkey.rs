@@ -1,0 +1,127 @@
+use std::fmt;
+
+use wreath_core::config::HotkeyConfig;
+
+const MOD_ALT_VALUE: u32 = 0x0001;
+const MOD_CONTROL_VALUE: u32 = 0x0002;
+const MOD_SHIFT_VALUE: u32 = 0x0004;
+const MOD_WIN_VALUE: u32 = 0x0008;
+const MOD_NOREPEAT_VALUE: u32 = 0x4000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeHotkey {
+    pub modifiers: u32,
+    pub virtual_key: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HotkeyError {
+    UnsupportedModifier(String),
+    UnsupportedKey(String),
+    Registration(String),
+}
+
+impl fmt::Display for HotkeyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedModifier(modifier) => {
+                write!(formatter, "unsupported Windows hotkey modifier: {modifier}")
+            }
+            Self::UnsupportedKey(key) => write!(formatter, "unsupported Windows hotkey: {key}"),
+            Self::Registration(message) => {
+                write!(formatter, "cannot register Windows hotkey: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for HotkeyError {}
+
+impl TryFrom<&HotkeyConfig> for NativeHotkey {
+    type Error = HotkeyError;
+
+    fn try_from(hotkey: &HotkeyConfig) -> Result<Self, Self::Error> {
+        let modifiers = hotkey.modifiers.iter().try_fold(
+            MOD_NOREPEAT_VALUE,
+            |mask, modifier| match modifier.as_str() {
+                "ALT" => Ok(mask | MOD_ALT_VALUE),
+                "CTRL" => Ok(mask | MOD_CONTROL_VALUE),
+                "SHIFT" => Ok(mask | MOD_SHIFT_VALUE),
+                "SUPER" => Ok(mask | MOD_WIN_VALUE),
+                _ => Err(HotkeyError::UnsupportedModifier(modifier.clone())),
+            },
+        )?;
+        let bytes = hotkey.key.as_bytes();
+        let virtual_key = match bytes {
+            [key] if key.is_ascii_alphanumeric() => u32::from(key.to_ascii_uppercase()),
+            _ => return Err(HotkeyError::UnsupportedKey(hotkey.key.clone())),
+        };
+        Ok(Self {
+            modifiers,
+            virtual_key,
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub struct HotkeyRegistration {
+    id: i32,
+}
+
+#[cfg(target_os = "windows")]
+impl HotkeyRegistration {
+    pub fn register(id: i32, hotkey: &HotkeyConfig) -> Result<Self, HotkeyError> {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{HOT_KEY_MODIFIERS, RegisterHotKey};
+
+        let native = NativeHotkey::try_from(hotkey)?;
+        unsafe {
+            RegisterHotKey(
+                None,
+                id,
+                HOT_KEY_MODIFIERS(native.modifiers),
+                native.virtual_key,
+            )
+        }
+        .map_err(|error| HotkeyError::Registration(error.to_string()))?;
+        Ok(Self { id })
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for HotkeyRegistration {
+    fn drop(&mut self) {
+        use windows::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;
+
+        let _ = unsafe { UnregisterHotKey(None, self.id) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn translates_default_hotkey_without_key_repeat() {
+        let hotkey = HotkeyConfig::default();
+        let native = NativeHotkey::try_from(&hotkey).unwrap();
+
+        assert_eq!(native.virtual_key, u32::from(b'R'));
+        assert_eq!(
+            native.modifiers,
+            MOD_WIN_VALUE | MOD_SHIFT_VALUE | MOD_NOREPEAT_VALUE
+        );
+    }
+
+    #[test]
+    fn rejects_key_names_that_are_not_windows_virtual_keys() {
+        let hotkey = HotkeyConfig {
+            modifiers: vec!["CTRL".into()],
+            key: "ENTER".into(),
+        };
+
+        assert!(matches!(
+            NativeHotkey::try_from(&hotkey),
+            Err(HotkeyError::UnsupportedKey(key)) if key == "ENTER"
+        ));
+    }
+}
