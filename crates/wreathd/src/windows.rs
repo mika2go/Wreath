@@ -5,7 +5,7 @@ use wreath_core::ipc::{self, DaemonState, Request, Response};
 use wreath_core::paths::AppPaths;
 use wreath_windows::control::NamedPipeServer;
 use wreath_windows::hotkey::HotkeyListener;
-use wreath_windows::video::VideoRuntime;
+use wreath_windows::pipeline::{PipelineRunState, ReplayPipeline};
 
 pub fn run() -> Result<(), String> {
     let paths = AppPaths::discover();
@@ -13,10 +13,7 @@ pub fn run() -> Result<(), String> {
     if !paths.config_file.exists() {
         config.save(&paths).map_err(|error| error.to_string())?;
     }
-    let video = VideoRuntime::initialize().map_err(|error| error.to_string())?;
-    let selected_codec = video
-        .select_encoder(config.capture.codec)
-        .map_err(|error| error.to_string())?;
+    let pipeline = ReplayPipeline::spawn(config.clone()).map_err(|error| error.to_string())?;
     let server = NamedPipeServer::new(paths.pipe_name()).map_err(|error| error.to_string())?;
     let pipe_name = paths.pipe_name().to_owned();
     let _hotkey = HotkeyListener::spawn(1, &config.hotkey, move || {
@@ -35,20 +32,41 @@ pub fn run() -> Result<(), String> {
         ))
         .map_err(|error| error.to_string())?;
         let response = match request {
-            Request::Status => Response::Status {
-                state: DaemonState::Error,
-                monitor: None,
-                buffered_seconds: 0,
-                error: Some(format!(
-                    "{selected_codec:?} hardware encoder ready; Windows frame capture is pending"
-                )),
-            },
+            Request::Status => {
+                let status = pipeline.status();
+                Response::Status {
+                    state: match status.state {
+                        PipelineRunState::Starting => DaemonState::Starting,
+                        PipelineRunState::Recording => DaemonState::Recording,
+                        PipelineRunState::Paused => DaemonState::Paused,
+                        PipelineRunState::Error => DaemonState::Error,
+                    },
+                    monitor: status.monitor,
+                    buffered_seconds: status.buffered_seconds,
+                    error: status.error,
+                }
+            }
             Request::Shutdown => {
                 shutdown = true;
                 Response::Ok
             }
-            Request::Save | Request::Pause | Request::Resume | Request::Reload => Response::Error {
-                message: "Windows capture backend is not available yet".into(),
+            Request::Pause => pipeline
+                .pause()
+                .map(|()| Response::Ok)
+                .unwrap_or_else(|error| Response::Error {
+                    message: error.to_string(),
+                }),
+            Request::Resume => pipeline
+                .resume()
+                .map(|()| Response::Ok)
+                .unwrap_or_else(|error| Response::Error {
+                    message: error.to_string(),
+                }),
+            Request::Save => Response::Error {
+                message: "Windows MP4 muxing is the next build step".into(),
+            },
+            Request::Reload => Response::Error {
+                message: "restart wreathd to reload Windows capture settings".into(),
             },
         };
         ipc::write_response(&mut connection, &response).map_err(|error| error.to_string())?;

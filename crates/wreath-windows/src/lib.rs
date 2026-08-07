@@ -3,4 +3,5 @@ pub mod control;
 pub mod conversion;
 pub mod encoder;
 pub mod hotkey;
+pub mod pipeline;
 pub mod video;

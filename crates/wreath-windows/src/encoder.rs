@@ -63,7 +63,7 @@ impl HardwareVideoEncoder {
         settings: EncoderSettings,
     ) -> Result<Self, VideoError> {
         use windows::Win32::Media::MediaFoundation::{
-            IMFTransform, MF_TRANSFORM_ASYNC_UNLOCK, MFCreateDXGIDeviceManager,
+            IMFTransform, MF_LOW_LATENCY, MF_TRANSFORM_ASYNC_UNLOCK, MFCreateDXGIDeviceManager,
             MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
             MFT_MESSAGE_SET_D3D_MANAGER,
         };
@@ -84,6 +84,8 @@ impl HardwareVideoEncoder {
         let attributes = unsafe { transform.GetAttributes() }
             .map_err(|error| VideoError::Initialization(error.to_string()))?;
         unsafe { attributes.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1) }
+            .map_err(|error| VideoError::Initialization(error.to_string()))?;
+        unsafe { attributes.SetUINT32(&MF_LOW_LATENCY, 1) }
             .map_err(|error| VideoError::Initialization(error.to_string()))?;
 
         let mut reset_token = 0_u32;
@@ -239,10 +241,7 @@ impl HardwareVideoEncoder {
 
     /// Blocks on Media Foundation's event queue; no encoder polling is needed.
     pub fn wait_for_event(&self) -> Result<EncoderEvent, VideoError> {
-        use windows::Win32::Media::MediaFoundation::{
-            MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS, METransformDrainComplete, METransformHaveOutput,
-            METransformNeedInput,
-        };
+        use windows::Win32::Media::MediaFoundation::MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS;
 
         let event = unsafe {
             self.events
@@ -254,15 +253,34 @@ impl HardwareVideoEncoder {
             .ok()
             .map_err(initialization_error)?;
         let event_type = unsafe { event.GetType() }.map_err(initialization_error)?;
-        Ok(if event_type == METransformNeedInput.0 as u32 {
-            EncoderEvent::NeedInput
-        } else if event_type == METransformHaveOutput.0 as u32 {
-            EncoderEvent::HaveOutput
-        } else if event_type == METransformDrainComplete.0 as u32 {
-            EncoderEvent::DrainComplete
-        } else {
-            EncoderEvent::Other(event_type)
-        })
+        Ok(classify_event(event_type))
+    }
+
+    /// Reads one queued encoder event without waiting. This is called only when
+    /// the pipeline was already woken by a captured frame or control command.
+    pub fn try_next_event(&self) -> Result<Option<EncoderEvent>, VideoError> {
+        use windows::Win32::Media::MediaFoundation::{
+            MF_E_NO_EVENTS_AVAILABLE, MF_EVENT_FLAG_NO_WAIT,
+        };
+
+        let event = match unsafe { self.events.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
+            Ok(event) => event,
+            Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => return Ok(None),
+            Err(error) => return Err(initialization_error(error)),
+        };
+        unsafe { event.GetStatus() }
+            .map_err(initialization_error)?
+            .ok()
+            .map_err(initialization_error)?;
+        let event_type = unsafe { event.GetType() }.map_err(initialization_error)?;
+        Ok(Some(classify_event(event_type)))
+    }
+
+    pub fn drain(&self) -> Result<(), VideoError> {
+        use windows::Win32::Media::MediaFoundation::MFT_MESSAGE_COMMAND_DRAIN;
+
+        unsafe { self.transform.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0) }
+            .map_err(initialization_error)
     }
 
     fn frame_duration_hns(&self) -> i64 {
@@ -278,6 +296,23 @@ fn duration_to_hns(duration: std::time::Duration) -> i64 {
 #[cfg(target_os = "windows")]
 fn initialization_error(error: windows::core::Error) -> VideoError {
     VideoError::Initialization(error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn classify_event(event_type: u32) -> EncoderEvent {
+    use windows::Win32::Media::MediaFoundation::{
+        METransformDrainComplete, METransformHaveOutput, METransformNeedInput,
+    };
+
+    if event_type == METransformNeedInput.0 as u32 {
+        EncoderEvent::NeedInput
+    } else if event_type == METransformHaveOutput.0 as u32 {
+        EncoderEvent::HaveOutput
+    } else if event_type == METransformDrainComplete.0 as u32 {
+        EncoderEvent::DrainComplete
+    } else {
+        EncoderEvent::Other(event_type)
+    }
 }
 
 #[cfg(target_os = "windows")]

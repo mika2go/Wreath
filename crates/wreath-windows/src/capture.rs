@@ -1,7 +1,8 @@
 #[cfg(target_os = "windows")]
-use std::sync::mpsc::{self, Receiver, TrySendError};
-#[cfg(target_os = "windows")]
 use std::time::Duration;
+
+#[cfg(target_os = "windows")]
+use crossbeam_channel::{Receiver, TrySendError};
 
 #[cfg(target_os = "windows")]
 use windows::Foundation::{TimeSpan, TypedEventHandler};
@@ -23,6 +24,14 @@ pub struct CapturedFrame {
     pub height: u32,
 }
 
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureInfo {
+    pub monitor: String,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// A Windows Graphics Capture session with a two-frame handoff queue.
 ///
 /// When the encoder is busy, new frames are dropped instead of growing a queue
@@ -40,7 +49,7 @@ impl MonitorCapture {
         device: &ID3D11Device,
         frames_per_second: u16,
         capture_cursor: bool,
-    ) -> Result<(Self, Receiver<CapturedFrame>), VideoError> {
+    ) -> Result<(Self, CaptureInfo, Receiver<CapturedFrame>), VideoError> {
         use windows::Graphics::Capture::GraphicsCaptureSession;
         use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
         use windows::Graphics::DirectX::DirectXPixelFormat;
@@ -92,7 +101,7 @@ impl MonitorCapture {
             Duration: frame_interval_ticks,
         });
 
-        let (frame_sender, frame_receiver) = mpsc::sync_channel(2);
+        let (frame_sender, frame_receiver) = crossbeam_channel::bounded(2);
         let handler =
             TypedEventHandler::<Direct3D11CaptureFramePool, windows::core::IInspectable>::new(
                 move |sender, _| {
@@ -128,6 +137,11 @@ impl MonitorCapture {
                 frame_pool,
                 session,
                 frame_arrived_token,
+            },
+            CaptureInfo {
+                monitor: "Primary display".into(),
+                width: size.Width as u32,
+                height: size.Height as u32,
             },
             frame_receiver,
         ))

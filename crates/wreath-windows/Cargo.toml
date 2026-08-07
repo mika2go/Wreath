@@ -10,6 +10,7 @@ rust-version.workspace = true
 wreath-core = { path = "../wreath-core" }
 
 [target.'cfg(windows)'.dependencies]
+crossbeam-channel = "0.5"
 windows = { version = "0.62.2", features = [
     "Foundation",
     "Graphics",
