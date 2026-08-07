@@ -1,0 +1,64 @@
+name: Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Semantic version without the v prefix
+        required: true
+        default: 0.1.0
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Install WiX Toolset
+        run: dotnet tool install --global wix
+
+      - name: Build and test MSI
+        shell: pwsh
+        run: ./scripts/build-windows.ps1 -Version '${{ inputs.version }}'
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: Wreath-${{ inputs.version }}-Windows-x64
+          path: |
+            dist/windows/Wreath-${{ inputs.version }}-x64.msi
+            dist/windows/Wreath-${{ inputs.version }}-x64-build.json
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          $Tag = "v$env:RELEASE_VERSION"
+          gh release create $Tag `
+            "dist/windows/Wreath-$env:RELEASE_VERSION-x64.msi" `
+            "dist/windows/Wreath-$env:RELEASE_VERSION-x64-build.json" `
+            --repo $env:GITHUB_REPOSITORY `
+            --target $env:GITHUB_SHA `
+            --title "Wreath $env:RELEASE_VERSION" `
+            --notes "First Windows x64 MSI preview. Native Windows build gates pass; the full AMD/Intel/NVIDIA Medal performance matrix is still pending."
