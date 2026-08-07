@@ -9,6 +9,21 @@ pub enum HardwareCodec {
     Av1,
 }
 
+#[cfg(target_os = "windows")]
+impl HardwareCodec {
+    pub(crate) fn media_subtype(self) -> windows::core::GUID {
+        use windows::Win32::Media::MediaFoundation::{
+            MFVideoFormat_AV1, MFVideoFormat_H264, MFVideoFormat_HEVC,
+        };
+
+        match self {
+            Self::H264 => MFVideoFormat_H264,
+            Self::Hevc => MFVideoFormat_HEVC,
+            Self::Av1 => MFVideoFormat_AV1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HardwareEncoderSupport {
     pub h264: bool,
@@ -182,6 +197,13 @@ fn query_hardware_encoder_support() -> Result<HardwareEncoderSupport, VideoError
 
 #[cfg(target_os = "windows")]
 fn has_hardware_encoder(output_subtype: windows::core::GUID) -> Result<bool, VideoError> {
+    Ok(!hardware_encoder_activations(output_subtype)?.is_empty())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn hardware_encoder_activations(
+    output_subtype: windows::core::GUID,
+) -> Result<Vec<windows::Win32::Media::MediaFoundation::IMFActivate>, VideoError> {
     use std::ptr;
 
     use windows::Win32::Media::MediaFoundation::{
@@ -212,16 +234,19 @@ fn has_hardware_encoder(output_subtype: windows::core::GUID) -> Result<bool, Vid
     }
     .map_err(|error| VideoError::Initialization(error.to_string()))?;
 
+    let mut results = Vec::with_capacity(count as usize);
     if !activations.is_null() {
         let activation_slice =
             unsafe { std::slice::from_raw_parts_mut(activations, count as usize) };
         for activation in activation_slice {
-            drop(activation.take());
+            if let Some(activation) = activation.take() {
+                results.push(activation);
+            }
         }
         unsafe { CoTaskMemFree(Some(activations.cast())) };
     }
 
-    Ok(count > 0)
+    Ok(results)
 }
 
 #[cfg(test)]
