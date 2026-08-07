@@ -43,6 +43,7 @@ Section "Wreath" MainSection
   SetOutPath "$INSTDIR"
 
   File /oname=wreath-win-ui.exe "${BINDIR}\wreath-win-ui.exe"
+  File /oname=wreath-tray.exe "${BINDIR}\wreath-tray.exe"
   File /oname=wreathd.exe "${BINDIR}\wreathd.exe"
   File /oname=wreathctl.exe "${BINDIR}\wreathctl.exe"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -73,6 +74,7 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\Wreath"
 
   Delete /REBOOTOK "$INSTDIR\wreath-win-ui.exe"
+  Delete /REBOOTOK "$INSTDIR\wreath-tray.exe"
   Delete /REBOOTOK "$INSTDIR\wreathd.exe"
   Delete /REBOOTOK "$INSTDIR\wreathctl.exe"
   Delete /REBOOTOK "$INSTDIR\Uninstall.exe"

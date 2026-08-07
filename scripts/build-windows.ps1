@@ -13,6 +13,7 @@ $Installer = Join-Path $DistributionDirectory "Wreath-$Version-x64-setup.exe"
 $Packages = @("wreath-core", "wreath-windows", "wreath-win-ui", "wreathd", "wreathctl")
 $Executables = [ordered]@{
     "wreathd.exe" = 4MB
+    "wreath-tray.exe" = 2MB
     "wreath-win-ui.exe" = 2MB
     "wreathctl.exe" = 2MB
 }

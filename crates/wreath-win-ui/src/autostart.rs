@@ -51,7 +51,8 @@ fn command_is_enabled(command: &[u16]) -> bool {
 pub fn set_enabled(enabled: bool) -> Result<(), String> {
     if enabled {
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-        let command = format!("\"{}\"", executable.display());
+        let tray = tray_executable(&executable);
+        let command = format!("\"{}\"", tray.display());
         let wide = command.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
         let byte_length = u32::try_from(wide.len().saturating_mul(size_of::<u16>()))
             .map_err(|_| "autostart command is too long".to_owned())?;
@@ -81,9 +82,17 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
     }
 }
 
+fn tray_executable(current_executable: &std::path::Path) -> std::path::PathBuf {
+    current_executable
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("wreath-tray.exe")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::command_is_enabled;
+    use super::{command_is_enabled, tray_executable};
+    use std::path::Path;
 
     #[test]
     fn installer_placeholder_does_not_enable_autostart() {
@@ -93,10 +102,22 @@ mod tests {
 
     #[test]
     fn executable_command_enables_autostart() {
-        let command = r#""C:\Program Files\Wreath\wreath-win-ui.exe""#
+        let command = r#""C:\Program Files\Wreath\wreath-tray.exe""#
             .encode_utf16()
             .chain(Some(0))
             .collect::<Vec<_>>();
         assert!(command_is_enabled(&command));
+    }
+
+    #[test]
+    fn autostart_always_targets_the_tray_sibling() {
+        assert_eq!(
+            tray_executable(Path::new(r"C:\Program Files\Wreath\wreath-win-ui.exe")),
+            Path::new(r"C:\Program Files\Wreath\wreath-tray.exe")
+        );
+        assert_eq!(
+            tray_executable(Path::new(r"C:\Program Files\Wreath\wreath-tray.exe")),
+            Path::new(r"C:\Program Files\Wreath\wreath-tray.exe")
+        );
     }
 }

@@ -39,7 +39,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $RepositoryRoot = Split-Path -Parent $PSScriptRoot
 $ResolvedBinDir = [System.IO.Path]::GetFullPath((Join-Path $RepositoryRoot $BinDir))
-$TrayExe = Join-Path $ResolvedBinDir "wreath-win-ui.exe"
+$TrayExe = Join-Path $ResolvedBinDir "wreath-tray.exe"
 $ControlExe = Join-Path $ResolvedBinDir "wreathctl.exe"
 $OutputDirectory = Join-Path $RepositoryRoot "perf/windows"
 $Product = if ($MeasureMedalOnly) { "Medal" } else { "Wreath" }
@@ -561,7 +561,7 @@ if ($MedalBaselinePath) {
 }
 
 if ($MeasureMedalOnly) {
-    if ((Get-ProcessGroup @("wreathd", "wreath-win-ui")).Count -gt 0) {
+    if ((Get-ProcessGroup @("wreathd", "wreath-tray", "wreath-win-ui")).Count -gt 0) {
         throw "Wreath is running; shut it down before the isolated Medal baseline"
     }
     if ((Get-MedalProcessGroup $MedalProcessPattern).Count -eq 0) {
@@ -571,7 +571,7 @@ if ($MeasureMedalOnly) {
     if ((Get-MedalProcessGroup $MedalProcessPattern).Count -gt 0) {
         throw "Medal is running; close it before the isolated Wreath measurement"
     }
-    if ((Get-ProcessGroup @("wreath-win-ui")).Count -eq 0) {
+    if ((Get-ProcessGroup @("wreath-tray")).Count -eq 0) {
         Start-Process -FilePath $TrayExe -WorkingDirectory $ResolvedBinDir | Out-Null
     }
 
@@ -586,12 +586,12 @@ if ($MeasureMedalOnly) {
     if (-not $DaemonReady) { throw "wreathd did not start within 30 seconds" }
 }
 
-$InitialWreathProcesses = @(Get-ProcessGroup @("wreathd", "wreath-win-ui"))
+$InitialWreathProcesses = @(Get-ProcessGroup @("wreathd", "wreath-tray"))
 if (-not $MeasureMedalOnly) {
     $InitialDaemons = @($InitialWreathProcesses | Where-Object { $_.ProcessName -eq "wreathd" })
-    $InitialTrays = @($InitialWreathProcesses | Where-Object { $_.ProcessName -eq "wreath-win-ui" })
+    $InitialTrays = @($InitialWreathProcesses | Where-Object { $_.ProcessName -eq "wreath-tray" })
     if ($InitialDaemons.Count -ne 1 -or $InitialTrays.Count -ne 1) {
-        throw "expected exactly one wreathd and one wreath-win-ui process"
+        throw "expected exactly one wreathd and one wreath-tray process"
     }
 }
 $ExpectedWreathProcessIds = @($InitialWreathProcesses.Id | Sort-Object) -join ","
@@ -683,8 +683,8 @@ while ($Stopwatch.Elapsed.TotalSeconds -lt $DurationSeconds) {
     $ElapsedSeconds = [Math]::Max(0.001, $NowSeconds - $LastSampleSeconds)
     $LastSampleSeconds = $NowSeconds
 
-    $WreathProcesses = Get-ProcessGroup @("wreathd", "wreath-win-ui")
-    $TrayProcesses = Get-ProcessGroup @("wreath-win-ui")
+    $WreathProcesses = Get-ProcessGroup @("wreathd", "wreath-tray")
+    $TrayProcesses = Get-ProcessGroup @("wreath-tray")
     $MedalProcesses = Get-MedalProcessGroup $MedalProcessPattern
     if ($MeasureMedalOnly) {
         if ($MedalProcesses.Count -eq 0) {
@@ -695,7 +695,7 @@ while ($Stopwatch.Elapsed.TotalSeconds -lt $DurationSeconds) {
         }
     } else {
         $Daemons = @($WreathProcesses | Where-Object { $_.ProcessName -eq "wreathd" })
-        $Trays = @($WreathProcesses | Where-Object { $_.ProcessName -eq "wreath-win-ui" })
+        $Trays = @($WreathProcesses | Where-Object { $_.ProcessName -eq "wreath-tray" })
         if ($Daemons.Count -ne 1 -or $Trays.Count -ne 1) {
             throw "Wreath daemon or tray exited during the measurement"
         }

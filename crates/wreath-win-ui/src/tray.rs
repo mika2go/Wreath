@@ -14,7 +14,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     HMENU, HWND_MESSAGE, IDI_APPLICATION, LoadIconW, MF_SEPARATOR, MF_STRING, MSG, PostQuitMessage,
     RegisterClassW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, TPM_BOTTOMALIGN,
     TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
-    WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_NCCREATE, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+    WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NCCREATE, WM_RBUTTONUP, WM_TIMER,
+    WNDCLASSW,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::ipc::{DaemonState, Request, Response};
@@ -25,6 +26,7 @@ const TRAY_ID: u32 = 1;
 const STATUS_TIMER: usize = 1;
 const STATUS_TIMER_INTERVAL_MS: u32 = 5_000;
 const RECOVERY_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+const COMMAND_OPEN_APP: usize = 99;
 const COMMAND_SAVE: usize = 100;
 const COMMAND_PAUSE: usize = 101;
 const COMMAND_RESUME: usize = 102;
@@ -144,6 +146,8 @@ unsafe extern "system" fn window_proc(
             let event = lparam.0 as u32;
             if event == WM_RBUTTONUP {
                 show_menu(window);
+            } else if event == WM_LBUTTONUP {
+                handle_command(window, COMMAND_OPEN_APP);
             } else if event == WM_LBUTTONDBLCLK {
                 handle_command(window, COMMAND_SAVE);
             }
@@ -166,6 +170,11 @@ unsafe extern "system" fn window_proc(
 
 fn handle_command(window: HWND, command: usize) {
     match command {
+        COMMAND_OPEN_APP => {
+            if let Err(error) = open_app() {
+                notify(window, "Wreath error", &error, true);
+            }
+        }
         COMMAND_SAVE => match send(Request::Save) {
             Ok(Response::Saved { path }) => {
                 notify(window, "Clip saved", &path.display().to_string(), false)
@@ -318,6 +327,7 @@ fn show_menu(window: HWND) {
     let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
         return;
     };
+    append_item(menu, COMMAND_OPEN_APP, "Open Wreath");
     append_item(menu, COMMAND_SAVE, "Save replay");
     append_separator(menu);
     append_item(menu, COMMAND_PAUSE, "Pause capture");
@@ -387,6 +397,18 @@ fn ensure_daemon() -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("cannot start {}: {error}", daemon.display()))
+}
+
+fn open_app() -> Result<(), String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let application = executable
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("wreath-win-ui.exe");
+    std::process::Command::new(&application)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("cannot start {}: {error}", application.display()))
 }
 
 fn open_path(path: &Path) {

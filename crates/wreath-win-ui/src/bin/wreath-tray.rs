@@ -2,10 +2,10 @@
 
 #[cfg(target_os = "windows")]
 fn main() -> std::process::ExitCode {
-    match wreath_win_ui::app::run() {
+    match wreath_win_ui::tray::run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            wreath_win_ui::app::show_error(&error);
+            wreath_win_ui::tray::show_error(&error);
             std::process::ExitCode::FAILURE
         }
     }
@@ -13,5 +13,5 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(not(target_os = "windows"))]
 fn main() {
-    eprintln!("wreath-win-ui is available only on Windows");
+    eprintln!("wreath-tray is available only on Windows");
 }

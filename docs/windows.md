@@ -14,13 +14,15 @@ the buffered video payload or introducing a save-time hole in the next replay.
 
 - `wreathd.exe` owns capture, encoding, the replay ring, the global hotkey, and
   the local named pipe.
-- `wreath-win-ui.exe` is a native Win32 tray process. It starts the daemon when
-  necessary and then remains in a message loop.
+- `wreath-tray.exe` is the native notification-area process. It starts the
+  daemon when necessary and then remains in a message loop.
+- `wreath-win-ui.exe` is the visible native Windows application. Closing it
+  leaves the tray and recorder running.
 - `wreathctl.exe` is the optional command-line control client.
 
-The tray menu saves a replay, pauses or resumes capture, opens clips or the
-configuration file, and enables per-user startup. Enabling startup writes only
-the current UI executable to
+The tray opens or focuses the full application and its menu saves a replay,
+pauses or resumes capture, opens clips or the configuration file, and enables
+per-user startup. Enabling startup writes only `wreath-tray.exe` to
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`; it requires no service
 and no administrator rights.
 
@@ -73,7 +75,7 @@ From the repository root:
 ```
 
 The script runs the locked Windows-target test suite and Clippy with warnings as
-errors, builds only the three Windows executables in release mode, enforces small
+errors, builds only the four Windows executables in release mode, enforces small
 binary-size budgets, and writes
 `dist/windows/Wreath-0.1.0-x64-setup.exe`. A matching
 `Wreath-0.1.0-x64-build.json` records the SHA-256 hash and size of every binary
