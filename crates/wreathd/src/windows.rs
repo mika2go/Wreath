@@ -10,7 +10,9 @@ use wreath_windows::pipeline::{PipelineRunState, ReplayPipeline};
 pub fn run() -> Result<(), String> {
     let paths = AppPaths::discover();
     let mut config = Config::load(&paths).map_err(|error| error.to_string())?;
-    if !paths.config_file.exists() {
+    let needs_initial_save = !paths.config_file.exists();
+    let migrated_hotkey = wreath_windows::hotkey::migrate_legacy_windows_hotkey(&mut config.hotkey);
+    if needs_initial_save || migrated_hotkey {
         config.save(&paths).map_err(|error| error.to_string())?;
     }
     let mut pipeline = ReplayPipeline::spawn(config.clone()).map_err(|error| error.to_string())?;

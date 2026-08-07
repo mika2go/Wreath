@@ -102,7 +102,11 @@ impl Default for CaptureConfig {
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
-            modifiers: vec!["SUPER".into(), "SHIFT".into()],
+            modifiers: if cfg!(target_os = "windows") {
+                vec!["CTRL".into(), "ALT".into()]
+            } else {
+                vec!["SUPER".into(), "SHIFT".into()]
+            },
             key: "R".into(),
         }
     }

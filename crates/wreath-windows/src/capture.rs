@@ -92,6 +92,10 @@ impl MonitorCapture {
         let session = frame_pool
             .CreateCaptureSession(&item)
             .map_err(initialization_error)?;
+        // Windows Graphics Capture draws a colored monitor outline by default.
+        // Disable it before the session starts; older Windows builds that do not
+        // expose IGraphicsCaptureSession2 keep working with their default.
+        let _ = session.SetIsBorderRequired(false);
         session
             .SetIsCursorCaptureEnabled(capture_cursor)
             .map_err(initialization_error)?;

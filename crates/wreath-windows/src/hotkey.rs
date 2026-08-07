@@ -8,6 +8,24 @@ const MOD_SHIFT_VALUE: u32 = 0x0004;
 const MOD_WIN_VALUE: u32 = 0x0008;
 const MOD_NOREPEAT_VALUE: u32 = 0x4000;
 
+pub fn default_windows_hotkey() -> HotkeyConfig {
+    HotkeyConfig {
+        modifiers: vec!["CTRL".into(), "ALT".into()],
+        key: "R".into(),
+    }
+}
+
+/// Migrates the original Windows default, which used the OS-reserved Windows
+/// key and therefore was not a dependable global shortcut.
+pub fn migrate_legacy_windows_hotkey(hotkey: &mut HotkeyConfig) -> bool {
+    if hotkey.modifiers == ["SUPER", "SHIFT"] && hotkey.key == "R" {
+        *hotkey = default_windows_hotkey();
+        true
+    } else {
+        false
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeHotkey {
     pub modifiers: u32,
@@ -234,14 +252,26 @@ mod tests {
 
     #[test]
     fn translates_default_hotkey_without_key_repeat() {
-        let hotkey = HotkeyConfig::default();
+        let hotkey = default_windows_hotkey();
         let native = NativeHotkey::try_from(&hotkey).unwrap();
 
         assert_eq!(native.virtual_key, u32::from(b'R'));
         assert_eq!(
             native.modifiers,
-            MOD_WIN_VALUE | MOD_SHIFT_VALUE | MOD_NOREPEAT_VALUE
+            MOD_CONTROL_VALUE | MOD_ALT_VALUE | MOD_NOREPEAT_VALUE
         );
+    }
+
+    #[test]
+    fn migrates_the_reserved_legacy_windows_shortcut() {
+        let mut hotkey = HotkeyConfig {
+            modifiers: vec!["SUPER".into(), "SHIFT".into()],
+            key: "R".into(),
+        };
+
+        assert!(migrate_legacy_windows_hotkey(&mut hotkey));
+        assert_eq!(hotkey, default_windows_hotkey());
+        assert!(!migrate_legacy_windows_hotkey(&mut hotkey));
     }
 
     #[test]
@@ -255,5 +285,26 @@ mod tests {
             NativeHotkey::try_from(&hotkey),
             Err(HotkeyError::UnsupportedKey(key)) if key == "ENTER"
         ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn registered_hotkey_dispatches_its_callback() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_HOTKEY};
+
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let listener = HotkeyListener::spawn(42, &default_windows_hotkey(), move || {
+            let _ = sender.send(());
+        })
+        .unwrap();
+        unsafe {
+            PostThreadMessageW(listener.thread_id, WM_HOTKEY, WPARAM(42), LPARAM(0)).unwrap();
+        }
+
+        receiver.recv_timeout(Duration::from_secs(2)).unwrap();
     }
 }

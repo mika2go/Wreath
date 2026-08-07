@@ -293,7 +293,10 @@ unsafe extern "system" fn window_proc(
             if let Some(state) = state_mut(window)
                 && state.model.hotkey_capture
             {
-                capture_hotkey(&mut state.model, wparam.0 as u32);
+                if capture_hotkey(&mut state.model, wparam.0 as u32) {
+                    let shortcut = state.model.config.hotkey.to_string();
+                    save_settings(&mut state.model, &format!("{shortcut} is saved and active"));
+                }
                 redraw(window);
             } else if wparam.0 == 0x20 {
                 if let Some(state) = state_mut(window)
@@ -386,7 +389,9 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             state.model.notice = Some("Press the new shortcut, or Escape to cancel".into());
         }
         Action::ChooseStorage => choose_storage(&mut state.model),
-        Action::SaveSettings => save_settings(&mut state.model),
+        Action::SaveSettings => {
+            save_settings(&mut state.model, "Settings saved and capture reloaded")
+        }
         Action::CreateCollection => create_collection(window, &mut state.model),
         Action::DeleteActiveCollection => delete_active_collection(window, &mut state.model),
         Action::SelectCollection(index) => {
@@ -403,13 +408,14 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
     redraw(window);
 }
 
-fn capture_hotkey(model: &mut UiModel, virtual_key: u32) {
+fn capture_hotkey(model: &mut UiModel, virtual_key: u32) -> bool {
     match virtual_key {
         0x1b => {
             model.hotkey_capture = false;
             model.notice = Some("Shortcut change cancelled".into());
+            false
         }
-        0x10 | 0x11 | 0x12 | 0x5b | 0x5c => {}
+        0x10 | 0x11 | 0x12 | 0x5b | 0x5c => false,
         key if key <= 0xff && (key as u8).is_ascii_alphanumeric() => {
             let mut modifiers = Vec::new();
             if key_pressed(0x5b) || key_pressed(0x5c) {
@@ -430,13 +436,22 @@ fn capture_hotkey(model: &mut UiModel, virtual_key: u32) {
             };
             if hotkey.modifiers.is_empty() {
                 model.notice = Some("Hold at least one modifier with the key".into());
-                return;
+                return false;
             }
-            model.notice = Some(format!("Captured {hotkey}; save settings to apply it"));
+            if hotkey != model.config.hotkey
+                && let Err(error) = wreath_windows::hotkey::HotkeyRegistration::register(2, &hotkey)
+            {
+                model.notice = Some(format!("That shortcut is unavailable: {error}"));
+                return false;
+            }
             model.config.hotkey = hotkey;
             model.hotkey_capture = false;
+            true
         }
-        _ => model.notice = Some("Use modifiers plus one letter or number".into()),
+        _ => {
+            model.notice = Some("Use modifiers plus one letter or number".into());
+            false
+        }
     }
 }
 
@@ -664,10 +679,10 @@ fn handle_character(state: &mut AppState, character: u32) {
     }
 }
 
-fn save_settings(model: &mut UiModel) {
+fn save_settings(model: &mut UiModel, success: &str) {
     match model.config.save(&model.paths) {
         Ok(()) => match reload_capture() {
-            Ok(Response::Ok) => model.notice = Some("Settings saved and capture reloaded".into()),
+            Ok(Response::Ok) => model.notice = Some(success.into()),
             Ok(Response::Error { message }) | Err(message) => {
                 model.notice = Some(format!("Saved, but reload failed: {message}"))
             }
