@@ -883,7 +883,8 @@ fn choose_display(window: HWND, model: &mut UiModel) {
     };
     let display = &model.displays[index];
     model.config.capture.monitor = Some(display.name.clone());
-    let native_rate = (display.refresh_rate.round() as u16).clamp(15, 240);
+    let native_rate =
+        (display.refresh_rate.round() as u16).clamp(15, wreath_core::config::MAX_FRAMES_PER_SECOND);
     model.config.capture.frames_per_second =
         model.config.capture.frames_per_second.min(native_rate);
 }

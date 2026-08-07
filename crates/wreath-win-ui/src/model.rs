@@ -201,13 +201,18 @@ impl UiModel {
         let native_rate = self
             .selected_display()
             .map_or(60, |display| display.refresh_rate.round() as u16)
-            .clamp(15, 240);
-        let mut rates = [30, 60, 75, 90, 100, 120, 144, 165, 180, 200, 240]
+            .clamp(15, wreath_core::config::MAX_FRAMES_PER_SECOND);
+        let mut rates = [30, 48, 60]
             .into_iter()
             .filter(|rate| *rate <= native_rate)
             .collect::<Vec<_>>();
         rates.push(native_rate);
-        rates.push(self.config.capture.frames_per_second.clamp(15, 240));
+        rates.push(
+            self.config
+                .capture
+                .frames_per_second
+                .clamp(15, wreath_core::config::MAX_FRAMES_PER_SECOND),
+        );
         rates.sort_unstable();
         rates.dedup();
         rates
@@ -291,9 +296,23 @@ mod tests {
         });
         model.config.capture.monitor = Some("DISPLAY1".into());
         model.config.capture.frames_per_second = 50;
-        assert_eq!(
-            model.frame_rate_options(),
-            vec![30, 50, 60, 75, 90, 100, 120, 144]
-        );
+
+        // A 144 Hz monitor no longer offers 144: hardware encoders could not
+        // sustain it, so the choice only ever produced dropped frames.
+        assert_eq!(model.frame_rate_options(), vec![30, 48, 50, 60]);
+    }
+
+    #[test]
+    fn a_slower_monitor_still_caps_the_frame_rate_choices() {
+        let mut model = model();
+        model.displays.push(DisplayOption {
+            name: "DISPLAY1".into(),
+            label: "DISPLAY1 · 1920×1080 · 30 Hz".into(),
+            refresh_rate: 30.0,
+        });
+        model.config.capture.monitor = Some("DISPLAY1".into());
+        model.config.capture.frames_per_second = 30;
+
+        assert_eq!(model.frame_rate_options(), vec![30]);
     }
 }

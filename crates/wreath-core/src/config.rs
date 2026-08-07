@@ -7,6 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::paths::AppPaths;
 
+/// Highest capture frame rate Wreath offers.
+///
+/// Hardware encoders could not sustain more than this at the resolutions
+/// people record at, so frames were dropped and the picture held still, while
+/// the extra rate doubled clip size for no visible gain.
+pub const MAX_FRAMES_PER_SECOND: u16 = 60;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Config {
@@ -229,7 +236,8 @@ impl Config {
             return Ok(Self::default());
         };
         let text = fs::read_to_string(source)?;
-        let config: Self = toml::from_str(&text).map_err(ConfigError::Parse)?;
+        let mut config: Self = toml::from_str(&text).map_err(ConfigError::Parse)?;
+        config.migrate();
         config.validate()?;
         Ok(config)
     }
@@ -242,16 +250,24 @@ impl Config {
         Ok(())
     }
 
+    /// Brings a configuration written by an older build back into range.
+    ///
+    /// A rejected configuration stops the recorder from starting at all, which
+    /// would strand exactly the people whose settings need changing.
+    fn migrate(&mut self) {
+        self.capture.frames_per_second = self.capture.frames_per_second.min(MAX_FRAMES_PER_SECOND);
+    }
+
     pub fn validate(&self) -> Result<(), ConfigError> {
         if !(5..=600).contains(&self.capture.duration_seconds) {
             return Err(ConfigError::Invalid(
                 "clip duration must be between 5 and 600 seconds".into(),
             ));
         }
-        if !(15..=240).contains(&self.capture.frames_per_second) {
-            return Err(ConfigError::Invalid(
-                "frame rate must be between 15 and 240".into(),
-            ));
+        if !(15..=MAX_FRAMES_PER_SECOND).contains(&self.capture.frames_per_second) {
+            return Err(ConfigError::Invalid(format!(
+                "frame rate must be between 15 and {MAX_FRAMES_PER_SECOND}"
+            )));
         }
         if self.capture.quality > 100 {
             return Err(ConfigError::Invalid(
@@ -313,6 +329,18 @@ mod tests {
         let encoded = toml::to_string(&config).unwrap();
         let decoded: Config = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded, config);
+    }
+
+    #[test]
+    fn an_old_high_frame_rate_configuration_is_brought_into_range_not_rejected() {
+        let mut config = Config::default();
+        config.capture.frames_per_second = 144;
+        assert!(config.validate().is_err());
+
+        config.migrate();
+
+        assert_eq!(config.capture.frames_per_second, MAX_FRAMES_PER_SECOND);
+        assert!(config.validate().is_ok());
     }
 
     #[test]

@@ -130,12 +130,34 @@ impl EncodedReplayBuffer {
         }
     }
 
+    /// Trimming advances by whole groups of pictures, and dropping one could
+    /// take the buffer well under the requested duration - a 30 second replay
+    /// came out at 24 because the encoder's real group length is several
+    /// seconds. A group is only dropped while what remains still covers the
+    /// target, so a saved clip is never shorter than it was configured to be.
     fn trim_to_duration(&mut self) {
         while self.duration() > self.target_duration {
-            if !self.advance_to_next_keyframe() {
-                break;
+            match self.duration_without_leading_group() {
+                Some(remaining) if remaining >= self.target_duration => {
+                    if !self.advance_to_next_keyframe() {
+                        break;
+                    }
+                }
+                _ => break,
             }
         }
+    }
+
+    fn duration_without_leading_group(&self) -> Option<Duration> {
+        let next_keyframe = self
+            .packets
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find_map(|(index, packet)| packet.starts_decodable_video().then_some(index))?;
+        let first = self.packets.get(next_keyframe)?;
+        let last = self.packets.back()?;
+        Some(last.end_timestamp().saturating_sub(first.timestamp))
     }
 
     fn advance_to_next_keyframe(&mut self) -> bool {
@@ -206,6 +228,27 @@ mod tests {
 
     #[test]
     fn duration_trimming_advances_to_a_keyframe() {
+        let mut buffer = EncodedReplayBuffer::new(Duration::from_secs(2), 1_000).unwrap();
+
+        buffer.push(video(0, true, 10));
+        buffer.push(video(1, false, 10));
+        buffer.push(audio(1, 10));
+        buffer.push(video(2, true, 10));
+        buffer.push(video(3, false, 10));
+
+        // Dropping the leading group still leaves the requested two seconds.
+        assert_eq!(
+            buffer.packets().next().unwrap().timestamp,
+            Duration::from_secs(2)
+        );
+        assert_eq!(buffer.duration(), Duration::from_secs(2));
+    }
+
+    /// A saved clip has to be at least as long as it was configured to be. The
+    /// trimmer used to drop a whole group of pictures whenever the buffer sat
+    /// over the target, which took a 30 second replay down to 24.
+    #[test]
+    fn duration_trimming_never_leaves_less_than_the_target() {
         let mut buffer = EncodedReplayBuffer::new(Duration::from_secs(3), 1_000).unwrap();
 
         buffer.push(video(0, true, 10));
@@ -214,11 +257,10 @@ mod tests {
         buffer.push(video(2, true, 10));
         buffer.push(video(3, false, 10));
 
-        assert_eq!(
-            buffer.packets().next().unwrap().timestamp,
-            Duration::from_secs(2)
-        );
-        assert_eq!(buffer.duration(), Duration::from_secs(2));
+        // Advancing to the keyframe at two seconds would leave only two, so the
+        // buffer keeps the longer span instead.
+        assert_eq!(buffer.packets().next().unwrap().timestamp, Duration::ZERO);
+        assert!(buffer.duration() >= Duration::from_secs(3));
     }
 
     #[test]

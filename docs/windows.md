@@ -30,7 +30,11 @@ The native application uses the same Wreath mark for its window, executable,
 installer, and notification-area icon. Its sidebar expands only when there is
 room for labels and otherwise remains icon-only. Settings with multiple choices
 open native Windows menus. Frame-rate choices follow the selected monitor's
-current Windows refresh rate, quality includes 100 percent, and changing the
+current Windows refresh rate up to 60, which is the ceiling: hardware encoders
+could not sustain more at the resolutions people record at, so the higher
+choices only produced dropped frames and doubled the clip size. Configurations
+written by older builds are brought down to 60 rather than rejected. Quality
+includes 100 percent, and changing the
 global shortcut completes as soon as the new modifier-plus-key combination is
 pressed. The Windows default is `Ctrl+Alt+R`; installations that still use the
 old OS-reserved `Win+Shift+R` default are migrated automatically. Capture
@@ -57,10 +61,8 @@ wreathctl config quality 60
 
 ## Clip size
 
-Size follows resolution, frame rate, quality and codec. At the default quality
-a 30 second clip is roughly 56 MB at 1080p60, 100 MB at 1440p60 and 224 MB at
-2160p60. High frame rates cost proportionally: 1440p at 120 fps is twice
-1440p60.
+Size follows resolution, quality and codec. At the default quality a 30 second
+clip is roughly 56 MB at 1080p60, 100 MB at 1440p60 and 224 MB at 2160p60.
 
 Three levers, in the order worth reaching for:
 
@@ -71,6 +73,10 @@ Three levers, in the order worth reaching for:
   about 40 fast motion starts to smear.
 - `wreathctl config fps 30` or a shorter `duration` — both scale the size
   directly.
+
+A saved clip is never shorter than its configured duration. The buffer trims by
+whole groups of pictures, and a group is only dropped while what remains still
+covers the target, so a clip runs from that duration up to one group longer.
 
 The encoder runs at a constant bitrate. Variable bitrate would let a still
 menu cost a fraction of a fast pan, but configuring it through `ICodecAPI`
