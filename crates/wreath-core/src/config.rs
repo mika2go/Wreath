@@ -323,8 +323,10 @@ mod tests {
 
     #[test]
     fn hotkey_can_be_fully_unbound() {
-        let mut config = Config::default();
-        config.hotkey = HotkeyConfig::unbound();
+        let config = Config {
+            hotkey: HotkeyConfig::unbound(),
+            ..Config::default()
+        };
         assert!(config.validate().is_ok());
         assert_eq!(config.hotkey.to_string(), "Unbound");
     }
