@@ -283,6 +283,9 @@ try {
 
         $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
         $LegacyAutostart = '"C:\Legacy Wreath\wreath-win-ui.exe"'
+        if (-not (Test-Path -LiteralPath $RunKey)) {
+            New-Item -Path $RunKey -Force | Out-Null
+        }
         Set-ItemProperty -Path $RunKey -Name "Wreath" -Value $LegacyAutostart
 
         $UpgradeExitCode = Invoke-WaitProcess `
