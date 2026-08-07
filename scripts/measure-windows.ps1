@@ -129,9 +129,17 @@ function Get-ProcessGroupMetric(
 
 function Get-GpuCounterSample {
     try {
-        return @((Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction Stop).CounterSamples)
+        $Samples = @((Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction Stop).CounterSamples)
+        return [pscustomobject]@{
+            Available = $Samples.Count -gt 0
+            Samples = $Samples
+        }
     } catch {
-        return @()
+        Write-Verbose "GPU engine counters are unavailable: $($_.Exception.Message)"
+        return [pscustomobject]@{
+            Available = $false
+            Samples = @()
+        }
     }
 }
 
@@ -384,7 +392,9 @@ function Test-MedalBaseline(
     if ($Baseline.System.Fingerprint -ne $ExpectedHardwareFingerprint) {
         throw "Medal baseline was captured on different hardware, drivers, or Windows build"
     }
-    foreach ($Property in @("IoCountersAvailable", "AverageMedalWriteBytesPerSecond")) {
+    foreach ($Property in @(
+        "IoCountersAvailable", "GpuCountersAvailable", "AverageMedalWriteBytesPerSecond"
+    )) {
         if ($null -eq $Baseline.PSObject.Properties[$Property]) {
             throw "Medal baseline lacks required process I/O evidence"
         }
@@ -392,6 +402,9 @@ function Test-MedalBaseline(
     if (-not $Baseline.IoCountersAvailable -or
         [double]($Baseline.AverageMedalWriteBytesPerSecond) -le 0.01) {
         throw "Medal baseline contains no usable process write-I/O measurement"
+    }
+    if (-not $Baseline.GpuCountersAvailable) {
+        throw "Medal baseline contains incomplete GPU counter evidence"
     }
     if ([double]($Baseline.AverageMedalWorkingSetMb) -le 0 `
         -or [double]($Baseline.PeakMedalWorkingSetMb) -le 0 `
@@ -697,7 +710,7 @@ while ($Stopwatch.Elapsed.TotalSeconds -lt $DurationSeconds) {
 
     $Wreath = Get-ProcessGroupMetric $WreathProcesses $PreviousWreathCpu $ElapsedSeconds
     $Medal = Get-ProcessGroupMetric $MedalProcesses $PreviousMedalCpu $ElapsedSeconds
-    $GpuSamples = Get-GpuCounterSample
+    $GpuCounter = Get-GpuCounterSample
     $WreathIo = Get-ProcessGroupIoMetric $WreathProcesses
     $MedalIo = Get-ProcessGroupIoMetric $MedalProcesses
     $TrayWorkingSetMb = [double](($TrayProcesses | Measure-Object -Property WorkingSet64 -Sum).Sum) / 1MB
@@ -708,7 +721,8 @@ while ($Stopwatch.Elapsed.TotalSeconds -lt $DurationSeconds) {
         WreathCpuPercent = [Math]::Round($Wreath.CpuPercent, 4)
         WreathWorkingSetMb = [Math]::Round($Wreath.WorkingSetMb, 3)
         WreathPrivateMb = [Math]::Round($Wreath.PrivateMb, 3)
-        WreathGpuEnginePercent = [Math]::Round((Get-ProcessGroupGpuMetric $GpuSamples $WreathProcesses), 4)
+        WreathGpuEnginePercent = [Math]::Round((Get-ProcessGroupGpuMetric $GpuCounter.Samples $WreathProcesses), 4)
+        GpuCountersAvailable = $GpuCounter.Available
         WreathReadBytesPerSecond = [Math]::Round($WreathIo.ReadBytesPerSecond, 0)
         WreathWriteBytesPerSecond = [Math]::Round($WreathIo.WriteBytesPerSecond, 0)
         WreathIoAvailable = $WreathIo.Available
@@ -719,7 +733,7 @@ while ($Stopwatch.Elapsed.TotalSeconds -lt $DurationSeconds) {
         MedalCpuPercent = [Math]::Round($Medal.CpuPercent, 4)
         MedalWorkingSetMb = [Math]::Round($Medal.WorkingSetMb, 3)
         MedalPrivateMb = [Math]::Round($Medal.PrivateMb, 3)
-        MedalGpuEnginePercent = [Math]::Round((Get-ProcessGroupGpuMetric $GpuSamples $MedalProcesses), 4)
+        MedalGpuEnginePercent = [Math]::Round((Get-ProcessGroupGpuMetric $GpuCounter.Samples $MedalProcesses), 4)
         MedalReadBytesPerSecond = [Math]::Round($MedalIo.ReadBytesPerSecond, 0)
         MedalWriteBytesPerSecond = [Math]::Round($MedalIo.WriteBytesPerSecond, 0)
         MedalIoAvailable = $MedalIo.Available
@@ -809,6 +823,7 @@ $IoCountersAvailable = if ($MeasureMedalOnly) {
 } else {
     @($Rows | Where-Object { -not $_.WreathIoAvailable }).Count -eq 0
 }
+$GpuCountersAvailable = @($Rows | Where-Object { -not $_.GpuCountersAvailable }).Count -eq 0
 $MemoryGrowthMb = (Get-Average $LastWindow "WreathWorkingSetMb") - (Get-Average $FirstWindow "WreathWorkingSetMb")
 $PeakTrayRam = [double](($Rows | Measure-Object -Property TrayWorkingSetMb -Maximum).Maximum)
 if ($null -ne $Baseline) {
@@ -912,6 +927,9 @@ if (-not $MeasureMedalOnly -and $null -ne $Baseline -and $GpuRatio -gt $MaxRelat
 if (-not $IoCountersAvailable) {
     $Failures.Add("process I/O counters were unavailable for one or more samples")
 }
+if (-not $GpuCountersAvailable) {
+    $Failures.Add("GPU engine counters were unavailable for one or more samples")
+}
 if (-not $MeasureMedalOnly -and $IdleWreathRows.Count -eq 0) {
     $Failures.Add("measurement contains no idle Wreath I/O samples")
 }
@@ -1003,6 +1021,7 @@ $Summary = [ordered]@{
     AverageMedalGpuEnginePercent = [Math]::Round($AverageMedalGpu, 4)
     WreathToMedalGpuRatio = if ($null -eq $GpuRatio) { $null } else { [Math]::Round($GpuRatio, 4) }
     IoCountersAvailable = $IoCountersAvailable
+    GpuCountersAvailable = $GpuCountersAvailable
     AverageWreathWriteBytesPerSecond = [Math]::Round($AverageWreathWrite, 3)
     AverageMedalWriteBytesPerSecond = [Math]::Round($AverageMedalWrite, 3)
     WreathToMedalWriteIoRatio = if ($null -eq $WriteIoRatio) { $null } else { [Math]::Round($WriteIoRatio, 4) }

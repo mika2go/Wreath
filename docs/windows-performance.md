@@ -80,6 +80,9 @@ The full-run write-transfer average must remain at most 25% of Medal, while
 samples outside an active replay save must average at most 1 MiB/s. These are
 process transfer counters and intentionally include file, pipe, and device I/O;
 they are a conservative load gate rather than a physical-disk-only estimate.
+Unavailable GPU engine counters likewise fail the run instead of producing a
+false zero-load result. The same requirement applies to the isolated Medal
+baseline and every Wreath matrix row.
 
 Install `ffprobe` from FFmpeg before the Wreath phase. After the timed measurement
 has ended, every saved clip is checked for a video stream, the expected audio
@@ -158,5 +161,5 @@ D3D11, so an installed but unused discrete GPU cannot satisfy a hybrid-system
 row. Every matrix row must also contain valid process I/O evidence and enforce
 the fixed relative and idle write limits. It rejects rows unless every scheduled
 save produced a structurally validated clip under the 90% frame-rate gate. The
-verifier writes `perf/windows/matrix-summary.json`; raw evidence remains outside
-Git.
+GPU engine counters must be available throughout the run. The verifier writes
+`perf/windows/matrix-summary.json`; raw evidence remains outside Git.

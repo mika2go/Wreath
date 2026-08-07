@@ -82,7 +82,7 @@ foreach ($File in $Files) {
         "ActiveHardwareCodec", "ActiveGpuAdapter", "RelativeGatesEvaluated", "DurationMinutes",
         "SaveAttempts", "SaveFailures", "ValidatedClips", "ClipValidations", "ConfiguredReplaySeconds",
         "ConfiguredFramesPerSecond", "ShortReplaySaves", "SlowReplaySaves",
-        "PeakSaveDurationMs", "PeakEncodedReplayMb", "IoCountersAvailable",
+        "PeakSaveDurationMs", "PeakEncodedReplayMb", "IoCountersAvailable", "GpuCountersAvailable",
         "AverageWreathWriteBytesPerSecond", "AverageMedalWriteBytesPerSecond",
         "WreathToMedalWriteIoRatio", "AverageIdleWreathWriteMbPerSecond", "Gates"
     )
@@ -213,6 +213,9 @@ foreach ($File in $Files) {
     }
     if (-not $Summary.IoCountersAvailable) {
         $Failures.Add("$($File.Name): process I/O counter evidence is incomplete")
+    }
+    if (-not $Summary.GpuCountersAvailable) {
+        $Failures.Add("$($File.Name): GPU engine counter evidence is incomplete")
     }
     if ([double]$Summary.AverageWreathWriteBytesPerSecond -lt 0 -or
         [double]$Summary.AverageMedalWriteBytesPerSecond -lt 0) {
