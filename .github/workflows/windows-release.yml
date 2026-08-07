@@ -6,7 +6,7 @@ on:
       version:
         description: Semantic version without the v prefix
         required: true
-        default: 0.1.0
+        default: 0.1.1
         type: string
 
 permissions:
@@ -32,10 +32,10 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Install WiX Toolset
-        run: dotnet tool install --global wix --version 4.0.6
+      - name: Install NSIS
+        run: choco install nsis --yes --no-progress
 
-      - name: Build and test MSI
+      - name: Build and test NSIS installer
         shell: pwsh
         run: ./scripts/build-windows.ps1 -Version '${{ inputs.version }}'
 
@@ -44,7 +44,7 @@ jobs:
         with:
           name: Wreath-${{ inputs.version }}-Windows-x64
           path: |
-            dist/windows/Wreath-${{ inputs.version }}-x64.msi
+            dist/windows/Wreath-${{ inputs.version }}-x64-setup.exe
             dist/windows/Wreath-${{ inputs.version }}-x64-build.json
           if-no-files-found: error
 
@@ -56,9 +56,9 @@ jobs:
         run: |
           $Tag = "v$env:RELEASE_VERSION"
           gh release create $Tag `
-            "dist/windows/Wreath-$env:RELEASE_VERSION-x64.msi" `
+            "dist/windows/Wreath-$env:RELEASE_VERSION-x64-setup.exe" `
             "dist/windows/Wreath-$env:RELEASE_VERSION-x64-build.json" `
             --repo $env:GITHUB_REPOSITORY `
             --target $env:GITHUB_SHA `
             --title "Wreath $env:RELEASE_VERSION" `
-            --notes "First Windows x64 MSI preview. Native Windows build gates pass; the full AMD/Intel/NVIDIA Medal performance matrix is still pending."
+            --notes "Windows x64 NSIS preview installer. Native Windows build gates pass; the full AMD/Intel/NVIDIA Medal performance matrix is still pending."

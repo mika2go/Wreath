@@ -8,8 +8,8 @@ Set-StrictMode -Version Latest
 $RepositoryRoot = Split-Path -Parent $PSScriptRoot
 $BinaryDirectory = Join-Path $RepositoryRoot "target/$Target/release"
 $DistributionDirectory = Join-Path $RepositoryRoot "dist/windows"
-$InstallerSource = Join-Path $RepositoryRoot "packaging/windows/wreath.wxs"
-$Installer = Join-Path $DistributionDirectory "Wreath-$Version-x64.msi"
+$InstallerSource = Join-Path $RepositoryRoot "packaging/windows/wreath.nsi"
+$Installer = Join-Path $DistributionDirectory "Wreath-$Version-x64-setup.exe"
 $Packages = @("wreath-core", "wreath-windows", "wreath-win-ui", "wreathd", "wreathctl")
 $Executables = [ordered]@{
     "wreathd.exe" = 4MB
@@ -18,16 +18,16 @@ $Executables = [ordered]@{
 }
 
 if ($env:OS -ne "Windows_NT") {
-    throw "The MSI release must be built natively on Windows"
+    throw "The NSIS release must be built natively on Windows"
 }
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "Version must contain exactly three numeric components"
 }
 if ($Target -ne "x86_64-pc-windows-msvc") {
-    throw "The x64 MSI supports only the x86_64-pc-windows-msvc target"
+    throw "The x64 NSIS installer supports only the x86_64-pc-windows-msvc target"
 }
 if (-not (Test-Path -LiteralPath $InstallerSource -PathType Leaf)) {
-    throw "Missing WiX source: $InstallerSource"
+    throw "Missing NSIS source: $InstallerSource"
 }
 
 function Get-RequiredCommand([string]$Name) {
@@ -52,10 +52,10 @@ function Get-CommandOutput(
 $CargoCommand = Get-RequiredCommand "cargo"
 $RustcCommand = Get-RequiredCommand "rustc"
 $GitCommand = Get-RequiredCommand "git"
-$WixCommand = Get-RequiredCommand "wix"
+$NsisCommand = Get-RequiredCommand "makensis"
 $CargoVersion = Get-CommandOutput $CargoCommand @("--version")
 $RustcVersion = Get-CommandOutput $RustcCommand @("-Vv")
-$WixVersion = Get-CommandOutput $WixCommand @("--version")
+$NsisVersion = Get-CommandOutput $NsisCommand @("/VERSION")
 $TrackedChanges = @(Get-CommandOutput $GitCommand @(
     "-C", $RepositoryRoot, "status", "--porcelain", "--untracked-files=no"
 ))
@@ -107,18 +107,20 @@ try {
     }
 
     New-Item -ItemType Directory -Force -Path $DistributionDirectory | Out-Null
-    & $WixCommand build $InstallerSource `
-        -arch x64 `
-        -d "Version=$Version" `
-        -d "BinDir=$BinaryDirectory" `
-        -o $Installer
-    if ($LASTEXITCODE -ne 0) { throw "WiX installer build failed" }
+    & $NsisCommand `
+        "/DVERSION=$Version" `
+        "/DBINDIR=$BinaryDirectory" `
+        "/DOUTFILE=$Installer" `
+        $InstallerSource
+    if ($LASTEXITCODE -ne 0) { throw "NSIS installer build failed" }
 
     if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) {
-        throw "WiX reported success but did not produce $Installer"
+        throw "NSIS reported success but did not produce $Installer"
     }
     $InstallerFile = Get-Item -LiteralPath $Installer
-    if ($InstallerFile.Length -eq 0) { throw "WiX produced an empty MSI" }
+    if ($InstallerFile.Length -eq 0) {
+        throw "NSIS produced an empty installer"
+    }
     $Evidence = [ordered]@{
         BuiltAtUtc = [DateTime]::UtcNow.ToString("o")
         Version = $Version
@@ -136,7 +138,7 @@ try {
         Toolchain = [ordered]@{
             Cargo = $CargoVersion
             Rustc = $RustcVersion
-            Wix = $WixVersion
+            Nsis = $NsisVersion
         }
         Binaries = @($BinaryEvidence)
         Installer = [ordered]@{
