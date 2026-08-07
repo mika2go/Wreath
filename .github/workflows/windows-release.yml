@@ -6,7 +6,7 @@ on:
       version:
         description: Semantic version without the v prefix
         required: true
-        default: 0.2.6
+        default: 0.2.7
         type: string
 
 permissions:
@@ -68,4 +68,4 @@ jobs:
             --repo $env:GITHUB_REPOSITORY `
             --target $env:GITHUB_SHA `
             --title "Wreath $env:RELEASE_VERSION" `
-            --notes "Windows x64 NSIS microphone, playback-exit, and thumbnail hotfix. Microphone capture now asks the Windows audio engine for a clean mono PCM stream at the recorder sample rate with high-quality conversion, uses the communications endpoint by default, runs on an MMCSS audio thread, and has additional buffering for short encoder stalls. Stable gain staging replaces packet-by-packet peak normalization. Leaving a clip now stops playback immediately, and Library cards correctly display Windows-extracted preview images. Native Windows tests, build checks, and installer lifecycle gates pass; the full AMD/Intel/NVIDIA Medal performance matrix is still pending."
+            --notes "Windows x64 NSIS keyboard-layout and startup hotfix. The keybind editor now captures Alt combinations and Windows virtual keys across localized, ISO, OEM, navigation, numpad, function, and media-key layouts, shows the active keyboard layout's key names, and accepts F-keys as an option instead of requiring them. The daemon exposes its named pipe while graphics and audio initialize, and settings reload recovery now tolerates slower systems for up to 15 seconds while reporting the latest connection error. Native Windows tests, build checks, and installer lifecycle gates pass; the full AMD/Intel/NVIDIA Medal performance matrix is still pending."
