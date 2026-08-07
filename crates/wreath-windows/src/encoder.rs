@@ -115,7 +115,6 @@ impl HardwareVideoEncoder {
             .map_err(|error| VideoError::Initialization(error.to_string()))?;
         unsafe { transform.SetInputType(0, &input_type, 0) }
             .map_err(|error| VideoError::Initialization(error.to_string()))?;
-        configure_rate_control(&transform, settings);
         unsafe { transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0) }
             .map_err(|error| VideoError::Initialization(error.to_string()))?;
         unsafe { transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0) }
@@ -378,79 +377,6 @@ fn media_type(
     };
     configure().map_err(|error| VideoError::Initialization(error.to_string()))?;
     Ok(media_type)
-}
-
-/// Asks the hardware encoder for peak-constrained variable bitrate.
-///
-/// Only the average bitrate was ever set, and Media Foundation hardware
-/// encoders default to constant bitrate, so a still menu or a static desktop
-/// spent exactly as many bits as a fast pan. Variable bitrate holds the same
-/// average target for buffer sizing while letting quiet frames cost a fraction
-/// of it, which is where most of a replay clip's size actually goes.
-///
-/// Every setting is best effort. Encoders differ in what they expose and a
-/// refusal only means the previous default stays in place.
-#[cfg(target_os = "windows")]
-fn configure_rate_control(
-    transform: &windows::Win32::Media::MediaFoundation::IMFTransform,
-    settings: EncoderSettings,
-) {
-    use windows::Win32::Media::MediaFoundation::{
-        CODECAPI_AVEncCommonMaxBitRate, CODECAPI_AVEncCommonMeanBitRate,
-        CODECAPI_AVEncCommonQualityVsSpeed, CODECAPI_AVEncCommonRateControlMode, ICodecAPI,
-        eAVEncCommonRateControlMode_PeakConstrainedVBR,
-    };
-    use windows::core::Interface;
-
-    let codec = match transform.cast::<ICodecAPI>() {
-        Ok(codec) => codec,
-        Err(error) => {
-            wreath_core::diagnostic!(
-                "Wreath video encoder: rate control is not configurable ({error}); keeping the encoder default"
-            );
-            return;
-        }
-    };
-    let mean = settings.bitrate_kbps.saturating_mul(1_000);
-    // Headroom for complex frames without letting a single scene run away.
-    let peak = mean.saturating_add(mean / 2);
-    let apply = |name: &str, key: &windows::core::GUID, value: u32| {
-        let variant = unsigned_variant(value);
-        if let Err(error) = unsafe { codec.SetValue(key, &variant) } {
-            wreath_core::diagnostic!("Wreath video encoder: {name} was refused ({error})");
-        }
-    };
-    apply(
-        "variable bitrate",
-        &CODECAPI_AVEncCommonRateControlMode,
-        eAVEncCommonRateControlMode_PeakConstrainedVBR.0 as u32,
-    );
-    apply("mean bitrate", &CODECAPI_AVEncCommonMeanBitRate, mean);
-    apply("peak bitrate", &CODECAPI_AVEncCommonMaxBitRate, peak);
-    // Leans on compression efficiency rather than encoder speed; a replay
-    // buffer has a whole frame interval to spare.
-    apply("quality bias", &CODECAPI_AVEncCommonQualityVsSpeed, 70);
-    wreath_core::diagnostic!(
-        "Wreath video encoder: peak-constrained VBR, mean {mean} bit/s, peak {peak} bit/s"
-    );
-}
-
-/// Wraps an unsigned value the way `ICodecAPI` expects its settings.
-#[cfg(target_os = "windows")]
-fn unsigned_variant(value: u32) -> windows::Win32::System::Variant::VARIANT {
-    use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_UI4};
-
-    VARIANT {
-        Anonymous: VARIANT_0 {
-            Anonymous: std::mem::ManuallyDrop::new(VARIANT_0_0 {
-                vt: VT_UI4,
-                wReserved1: 0,
-                wReserved2: 0,
-                wReserved3: 0,
-                Anonymous: VARIANT_0_0_0 { ulVal: value },
-            }),
-        },
-    }
 }
 
 #[cfg(target_os = "windows")]

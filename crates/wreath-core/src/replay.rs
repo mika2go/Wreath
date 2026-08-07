@@ -43,19 +43,19 @@ impl ReplaySpec {
 
     /// Bits per second the encoder is aimed at.
     ///
-    /// The old constants asked for roughly twice what a hardware encoder needs
-    /// to look good: about 0.2 bits per pixel at the default quality, where
-    /// 0.08 to 0.10 is the usual operating point and what streaming services
-    /// ask for. A replay clip is a file people send to someone, so the default
-    /// sits at that operating point and the quality setting scales around it —
-    /// 100 still reaches most of the old headroom, 50 halves it again.
+    /// The original constants asked for about 0.2 bits per pixel at the default
+    /// quality, which is generous; 0.08 to 0.10 is what streaming services ask
+    /// for. Going straight to that operating point turned out to be too far in
+    /// one step for a constant-bitrate encoder, so this sits between the two at
+    /// roughly 0.15, about a quarter below where it started. The quality
+    /// setting scales around it, and hevc is where the real saving is.
     pub fn target_bitrate_kbps(&self) -> u32 {
         let pixels_per_second =
             u64::from(self.width) * u64::from(self.height) * u64::from(self.frames_per_second);
         let bits_per_pixel_milli = match self.codec {
-            Codec::Auto | Codec::H264 => 80_u64,
-            Codec::Hevc => 58,
-            Codec::Av1 => 45,
+            Codec::Auto | Codec::H264 => 120_u64,
+            Codec::Hevc => 86,
+            Codec::Av1 => 68,
         };
         let quality_factor = 50_u64 + u64::from(self.quality);
         let bitrate = pixels_per_second
@@ -130,7 +130,7 @@ mod tests {
     /// have to land at a shareable size rather than at the encoder's ceiling.
     #[test]
     fn default_clips_stay_shareable_at_common_resolutions() {
-        let sizes = [(1920, 1080, 45), (2560, 1440, 75), (3840, 2160, 160)];
+        let sizes = [(1920, 1080, 60), (2560, 1440, 105), (3840, 2160, 230)];
 
         for (width, height, megabyte_limit) in sizes {
             let replay = ReplaySpec {

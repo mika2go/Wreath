@@ -5,7 +5,10 @@ const MIN_REPLAY_MEMORY_BYTES: u64 = 8 * 1_048_576;
 #[cfg(target_os = "windows")]
 const PIPELINE_COMMAND_CAPACITY: usize = 4;
 #[cfg(target_os = "windows")]
-const ENCODER_SURFACE_COUNT: usize = 3;
+/// Frames the encoder may hold at once. Three left hardware encoders without
+/// enough in flight to pipeline properly, and every frame that arrived while
+/// they were all busy was dropped, which shows up as the picture holding still.
+const ENCODER_SURFACE_COUNT: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PipelineRunState {
@@ -569,6 +572,7 @@ fn run_pipeline(
     let mut input_requests = 0_usize;
     let mut in_flight_surfaces = VecDeque::with_capacity(ENCODER_SURFACE_COUNT);
     let mut recording = true;
+    let mut skipped_frames = 0_u64;
     loop {
         drain_encoder_events(
             &encoder,
@@ -705,6 +709,14 @@ fn run_pipeline(
                 status,
             )?;
             if input_requests == 0 || available_surfaces.is_empty() {
+                // The encoder could not keep up, so this frame never reaches
+                // the clip and the picture holds. Invisible until now.
+                skipped_frames = skipped_frames.saturating_add(1);
+                if skipped_frames.is_power_of_two() {
+                    wreath_core::diagnostic!(
+                        "Wreath video pipeline: {skipped_frames} frames skipped because the encoder was not ready"
+                    );
+                }
                 continue;
             }
             if frame.width != capture_info.width || frame.height != capture_info.height {
@@ -947,12 +959,20 @@ fn target_bitrate_kbps(config: &wreath_core::config::Config, width: u32, height:
     wreath_core::replay::ReplaySpec::from_config(config, &monitor).target_bitrate_kbps()
 }
 
+/// Memory the replay buffer may hold.
+///
+/// Sized at the nominal bitrate this was exactly the average the encoder aims
+/// at, so every keyframe and every busy scene pushed the buffer over its byte
+/// budget and the trimmer dropped whole groups of pictures - which shortened
+/// the saved clip below the duration the user configured. The budget carries
+/// half again as much so that only the duration decides how long a clip is.
 #[cfg(any(target_os = "windows", test))]
 fn estimated_buffer_bytes(bitrate_kbps: u32, duration_seconds: u16) -> u64 {
-    u64::from(bitrate_kbps)
+    let nominal = u64::from(bitrate_kbps)
         .saturating_mul(1_000)
         .saturating_mul(u64::from(duration_seconds))
-        / 8
+        / 8;
+    nominal.saturating_add(nominal / 2)
 }
 
 #[cfg(test)]
@@ -986,6 +1006,15 @@ mod tests {
 
         assert!(bitrate >= 2_500);
         assert!(bytes < 100 * 1_048_576);
+    }
+
+    /// The byte budget has to leave room above the nominal average, or the
+    /// trimmer shortens clips below their configured duration.
+    #[test]
+    fn the_buffer_budget_leaves_room_above_the_nominal_average() {
+        let nominal = u64::from(20_000_u32) * 1_000 * 30 / 8;
+
+        assert!(estimated_buffer_bytes(20_000, 30) > nominal);
     }
 
     #[test]

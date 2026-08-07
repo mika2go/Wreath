@@ -38,6 +38,7 @@ pub struct EncodedReplayBuffer {
     target_duration: Duration,
     max_payload_bytes: usize,
     payload_bytes: usize,
+    byte_trims: u64,
 }
 
 impl EncodedReplayBuffer {
@@ -51,6 +52,7 @@ impl EncodedReplayBuffer {
             target_duration,
             max_payload_bytes,
             payload_bytes: 0,
+            byte_trims: 0,
         })
     }
 
@@ -106,9 +108,24 @@ impl EncodedReplayBuffer {
     }
 
     fn trim_to_byte_budget(&mut self) {
+        let mut trimmed = false;
         while self.payload_bytes > self.max_payload_bytes {
+            trimmed = true;
             if !self.advance_to_next_keyframe() {
                 self.clear();
+            }
+        }
+        if trimmed {
+            // This shortens the saved clip below its configured duration, so
+            // it must not happen quietly.
+            self.byte_trims = self.byte_trims.saturating_add(1);
+            if self.byte_trims.is_power_of_two() {
+                let seconds = self.duration().as_secs();
+                let megabytes = self.max_payload_bytes / 1_048_576;
+                crate::diagnostic!(
+                    "Wreath replay buffer: byte budget of {megabytes} MB reached {} times; the clip is down to {seconds} s",
+                    self.byte_trims
+                );
             }
         }
     }
