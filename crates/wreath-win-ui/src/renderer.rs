@@ -713,7 +713,7 @@ impl Renderer {
                 self.setting_row(
                     "Recording level",
                     &format!("{}%", model.config.audio.microphone_gain_percent),
-                    "Digital microphone gain from 0 to 200 percent.",
+                    "Clean input level without digital noise boost.",
                     left,
                     right,
                     460.0,

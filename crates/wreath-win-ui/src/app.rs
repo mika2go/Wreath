@@ -887,7 +887,7 @@ fn choose_microphone(window: HWND, model: &mut UiModel) {
 }
 
 fn choose_microphone_gain(window: HWND, model: &mut UiModel) {
-    let values = [50, 75, 100, 125, 150, 200];
+    let values = [25, 50, 75, 100];
     let labels = values
         .iter()
         .map(|gain| format!("{gain}%"))

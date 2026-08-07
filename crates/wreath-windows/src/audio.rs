@@ -170,7 +170,7 @@ pub struct MicrophoneTarget {
 pub fn microphones() -> Result<Vec<MicrophoneTarget>, AudioError> {
     use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
     use windows::Win32::Media::Audio::{
-        DEVICE_STATE_ACTIVE, IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eConsole,
+        DEVICE_STATE_ACTIVE, IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eCommunications,
     };
     use windows::Win32::System::Com::{
         CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
@@ -185,7 +185,7 @@ pub fn microphones() -> Result<Vec<MicrophoneTarget>, AudioError> {
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
                 .map_err(|error| AudioError(error.to_string()))?;
-        let default_id = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }
+        let default_id = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eCommunications) }
             .ok()
             .and_then(|device| device_id(&device).ok());
         let collection = unsafe { enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE) }
@@ -267,8 +267,23 @@ impl LoopbackCapture {
 #[cfg(target_os = "windows")]
 impl MicrophoneCapture {
     pub fn spawn(endpoint_id: Option<&str>) -> Result<Self, AudioError> {
-        CaptureStream::spawn(CaptureEndpoint::Microphone(endpoint_id.map(str::to_owned)))
-            .map(|stream| Self { stream })
+        Self::spawn_at_sample_rate(endpoint_id, 48_000)
+    }
+
+    pub fn spawn_at_sample_rate(
+        endpoint_id: Option<&str>,
+        sample_rate: u32,
+    ) -> Result<Self, AudioError> {
+        if !(8_000..=192_000).contains(&sample_rate) {
+            return Err(AudioError(format!(
+                "requested microphone sample rate {sample_rate} Hz is unsupported"
+            )));
+        }
+        CaptureStream::spawn(CaptureEndpoint::Microphone {
+            endpoint_id: endpoint_id.map(str::to_owned),
+            sample_rate,
+        })
+        .map(|stream| Self { stream })
     }
 
     pub fn format(&self) -> AudioFormat {
@@ -283,7 +298,10 @@ impl MicrophoneCapture {
 #[cfg(target_os = "windows")]
 enum CaptureEndpoint {
     Loopback,
-    Microphone(Option<String>),
+    Microphone {
+        endpoint_id: Option<String>,
+        sample_rate: u32,
+    },
 }
 
 #[cfg(target_os = "windows")]
@@ -297,11 +315,14 @@ impl CaptureStream {
         let stop_event = unsafe { CreateEventW(None, false, false, None) }
             .map_err(|error| AudioError(error.to_string()))?;
         let stop_for_thread = stop_event.0 as usize;
-        let (chunk_sender, chunk_receiver) = crossbeam_channel::bounded(8);
+        // Keep enough headroom for short encoder or GPU stalls. Dropping a
+        // microphone packet creates an audible edge even when timestamps remain
+        // correct, so the capture thread must be able to drain WASAPI promptly.
+        let (chunk_sender, chunk_receiver) = crossbeam_channel::bounded(64);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let thread_name = match endpoint {
             CaptureEndpoint::Loopback => "wreath-wasapi-loopback",
-            CaptureEndpoint::Microphone(_) => "wreath-wasapi-microphone",
+            CaptureEndpoint::Microphone { .. } => "wreath-wasapi-microphone",
         };
         let thread = match std::thread::Builder::new()
             .name(thread_name.into())
@@ -361,30 +382,39 @@ fn capture_loop(
 ) -> Result<(), AudioError> {
     use windows::Win32::Foundation::{CloseHandle, WAIT_FAILED, WAIT_OBJECT_0};
     use windows::Win32::Media::Audio::{
-        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
-        IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator, eCapture,
-        eConsole, eRender,
+        AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+        AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioCaptureClient,
+        IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eCommunications, eConsole, eRender,
     };
     use windows::Win32::System::Com::{
-        CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
-        CoUninitialize,
+        CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
     };
-    use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForMultipleObjects};
+    use windows::Win32::System::Threading::{
+        AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, CreateEventW, INFINITE,
+        WaitForMultipleObjects,
+    };
 
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
         .ok()
         .map_err(|error| AudioError(error.to_string()))?;
+    let mut task_index = 0;
+    let mmcss =
+        unsafe { AvSetMmThreadCharacteristicsW(windows::core::w!("Audio"), &mut task_index).ok() };
     let result = (|| -> Result<(), AudioError> {
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
                 .map_err(|error| AudioError(error.to_string()))?;
-        let (device, stream_flags) = match endpoint {
+        let (device, stream_flags, requested_format) = match endpoint {
             CaptureEndpoint::Loopback => (
                 unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
                     .map_err(|error| AudioError(error.to_string()))?,
                 AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                None,
             ),
-            CaptureEndpoint::Microphone(Some(endpoint_id)) => {
+            CaptureEndpoint::Microphone {
+                endpoint_id: Some(endpoint_id),
+                sample_rate,
+            } => {
                 let wide_id = endpoint_id
                     .encode_utf16()
                     .chain(Some(0))
@@ -396,37 +426,28 @@ fn capture_loop(
                                 "configured microphone endpoint `{endpoint_id}` is unavailable: {error}"
                             ))
                         })?,
-                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                        | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                    Some(mono_pcm16_format(sample_rate)),
                 )
             }
-            CaptureEndpoint::Microphone(None) => (
-                unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }
+            CaptureEndpoint::Microphone {
+                endpoint_id: None,
+                sample_rate,
+            } => (
+                unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eCommunications) }
                     .map_err(|error| AudioError(error.to_string()))?,
-                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                    | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                    | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                Some(mono_pcm16_format(sample_rate)),
             ),
         };
-        let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
-            .map_err(|error| AudioError(error.to_string()))?;
-        let mix_format =
-            unsafe { client.GetMixFormat() }.map_err(|error| AudioError(error.to_string()))?;
-        if mix_format.is_null() {
-            return Err(AudioError("WASAPI returned no mix format".into()));
-        }
-        let format = unsafe { describe_format(mix_format) };
+        let (client, format) =
+            initialize_capture_client(&device, stream_flags, requested_format.as_ref())?;
         let audio_event = unsafe { CreateEventW(None, false, false, None) }
             .map_err(|error| AudioError(error.to_string()))?;
-        let initialize_result = unsafe {
-            client.Initialize(
-                AUDCLNT_SHAREMODE_SHARED,
-                stream_flags,
-                0,
-                0,
-                mix_format,
-                None,
-            )
-        };
-        unsafe { CoTaskMemFree(Some(mix_format.cast())) };
-        initialize_result.map_err(|error| AudioError(error.to_string()))?;
         unsafe { client.SetEventHandle(audio_event) }
             .map_err(|error| AudioError(error.to_string()))?;
         let capture: IAudioCaptureClient =
@@ -455,8 +476,79 @@ fn capture_loop(
         let _ = unsafe { CloseHandle(audio_event) };
         Ok(())
     })();
+    if let Some(mmcss) = mmcss {
+        let _ = unsafe { AvRevertMmThreadCharacteristics(mmcss) };
+    }
     unsafe { CoUninitialize() };
     result
+}
+
+#[cfg(target_os = "windows")]
+fn mono_pcm16_format(sample_rate: u32) -> windows::Win32::Media::Audio::WAVEFORMATEX {
+    windows::Win32::Media::Audio::WAVEFORMATEX {
+        wFormatTag: windows::Win32::Media::Audio::WAVE_FORMAT_PCM as u16,
+        nChannels: 1,
+        nSamplesPerSec: sample_rate,
+        nAvgBytesPerSec: sample_rate.saturating_mul(2),
+        nBlockAlign: 2,
+        wBitsPerSample: 16,
+        cbSize: 0,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn initialize_capture_client(
+    device: &windows::Win32::Media::Audio::IMMDevice,
+    stream_flags: u32,
+    requested_format: Option<&windows::Win32::Media::Audio::WAVEFORMATEX>,
+) -> Result<(windows::Win32::Media::Audio::IAudioClient, AudioFormat), AudioError> {
+    use windows::Win32::Media::Audio::{AUDCLNT_SHAREMODE_SHARED, IAudioClient};
+    use windows::Win32::System::Com::{CLSCTX_ALL, CoTaskMemFree};
+
+    if let Some(requested) = requested_format {
+        let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
+            .map_err(|error| AudioError(error.to_string()))?;
+        if unsafe {
+            client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                stream_flags,
+                0,
+                0,
+                requested,
+                None,
+            )
+        }
+        .is_ok()
+        {
+            return Ok((client, unsafe {
+                describe_format(std::ptr::from_ref(requested))
+            }));
+        }
+        // Microsoft requires a fresh IAudioClient after a failed Initialize.
+        // Fall back to the endpoint mix format so unusual drivers remain usable.
+    }
+
+    let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
+        .map_err(|error| AudioError(error.to_string()))?;
+    let mix_format =
+        unsafe { client.GetMixFormat() }.map_err(|error| AudioError(error.to_string()))?;
+    if mix_format.is_null() {
+        return Err(AudioError("WASAPI returned no mix format".into()));
+    }
+    let format = unsafe { describe_format(mix_format) };
+    let initialized = unsafe {
+        client.Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            stream_flags,
+            0,
+            0,
+            mix_format,
+            None,
+        )
+    };
+    unsafe { CoTaskMemFree(Some(mix_format.cast())) };
+    initialized.map_err(|error| AudioError(error.to_string()))?;
+    Ok((client, format))
 }
 
 #[cfg(target_os = "windows")]

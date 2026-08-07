@@ -160,20 +160,14 @@ pub fn apply_gain_pcm16(
     if gain_percent > 200 {
         return Err(AudioError("microphone gain exceeds 200 percent".into()));
     }
-    let peak = chunk
-        .data
-        .chunks_exact(2)
-        .map(|sample| {
-            let value = i16::from_le_bytes([sample[0], sample[1]]);
-            i64::from(value) * i64::from(gain_percent) / 100
-        })
-        .map(i64::unsigned_abs)
-        .max()
-        .unwrap_or_default();
+    // Never amplify a microphone-only stream above its Windows capture level.
+    // Digital boost raises the endpoint noise floor and then clips voice peaks;
+    // values above 100 remain accepted for old configs but resolve to unity.
+    let effective_gain = gain_percent.min(100);
     for sample in chunk.data.chunks_exact_mut(2) {
         let value = i16::from_le_bytes([sample[0], sample[1]]);
-        let amplified = i64::from(value) * i64::from(gain_percent) / 100;
-        let adjusted = limit_peak(amplified, peak);
+        let adjusted = i32::from(value) * i32::from(effective_gain) / 100;
+        let adjusted = adjusted as i16;
         sample.copy_from_slice(&adjusted.to_le_bytes());
     }
     Ok(())
@@ -253,35 +247,21 @@ fn mix_overlap(
     let overlap_frames = duration_frames(overlap_end.saturating_sub(overlap_start), sample_rate)
         .min(master.frames.saturating_sub(master_offset))
         .min(auxiliary.frames.saturating_sub(auxiliary_offset));
-    let mut peak = 0_u64;
     for frame in 0..overlap_frames {
         for channel in 0..channels {
             let (master_index, auxiliary_index) =
                 overlap_sample_indices(master_offset, auxiliary_offset, frame, channel, channels);
-            peak = peak.max(
-                combined_sample(
-                    master,
-                    auxiliary,
-                    master_index,
-                    auxiliary_index,
-                    gain_percent,
-                )
-                .unsigned_abs(),
-            );
-        }
-    }
-    for frame in 0..overlap_frames {
-        for channel in 0..channels {
-            let (master_index, auxiliary_index) =
-                overlap_sample_indices(master_offset, auxiliary_offset, frame, channel, channels);
-            let combined = combined_sample(
-                master,
-                auxiliary,
-                master_index,
-                auxiliary_index,
-                gain_percent,
-            );
-            let mixed = limit_peak(combined, peak);
+            let base =
+                i16::from_le_bytes([master.data[master_index], master.data[master_index + 1]]);
+            let microphone = i16::from_le_bytes([
+                auxiliary.data[auxiliary_index],
+                auxiliary.data[auxiliary_index + 1],
+            ]);
+            let microphone_weight = i64::from(gain_percent);
+            let denominator = 100 + microphone_weight;
+            let mixed =
+                (i64::from(base) * 100 + i64::from(microphone) * microphone_weight) / denominator;
+            let mixed = mixed as i16;
             master.data[master_index..master_index + 2].copy_from_slice(&mixed.to_le_bytes());
         }
     }
@@ -300,34 +280,6 @@ fn overlap_sample_indices(
     let auxiliary_index =
         (usize::try_from(auxiliary_offset + frame).unwrap() * channels + channel) * 2;
     (master_index, auxiliary_index)
-}
-
-fn combined_sample(
-    master: &Pcm16Chunk,
-    auxiliary: &Pcm16Chunk,
-    master_index: usize,
-    auxiliary_index: usize,
-    gain_percent: u16,
-) -> i64 {
-    let base = i16::from_le_bytes([master.data[master_index], master.data[master_index + 1]]);
-    let added = i16::from_le_bytes([
-        auxiliary.data[auxiliary_index],
-        auxiliary.data[auxiliary_index + 1],
-    ]);
-    i64::from(base) + i64::from(added) * i64::from(gain_percent) / 100
-}
-
-/// Applies one gain factor to the complete packet/overlap instead of clipping
-/// individual samples. That preserves the microphone waveform at loud peaks
-/// and avoids the flat-topped distortion produced by per-sample saturation.
-fn limit_peak(sample: i64, peak: u64) -> i16 {
-    const MAXIMUM: u64 = i16::MAX as u64;
-    let limited = if peak > MAXIMUM {
-        sample * i64::try_from(MAXIMUM).unwrap() / i64::try_from(peak).unwrap()
-    } else {
-        sample
-    };
-    limited.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
 }
 
 fn chunk_end(chunk: &Pcm16Chunk, sample_rate: u32) -> Duration {
@@ -383,14 +335,14 @@ mod tests {
     }
 
     #[test]
-    fn mixes_only_timestamp_overlap_without_flat_top_clipping() {
+    fn mixes_only_timestamp_overlap_with_stable_headroom() {
         let mut mixer = PcmMixer::new(1_000, 1, 200).unwrap();
         mixer
             .push_auxiliary(chunk(1, 1, &[20_000, 10_000]), 1_000, 1)
             .unwrap();
 
         let mixed = mixer.mix(chunk(0, 1, &[1_000, 10_000, 10_000])).unwrap();
-        assert_eq!(samples(&mixed), [1_000, i16::MAX, 19_660]);
+        assert_eq!(samples(&mixed), [1_000, 16_666, 10_000]);
     }
 
     #[test]
@@ -405,10 +357,12 @@ mod tests {
     }
 
     #[test]
-    fn standalone_microphone_gain_is_bounded_and_clamped() {
+    fn standalone_microphone_level_never_digitally_boosts_noise() {
         let mut audio = chunk(0, 1, &[20_000, -20_000]);
         apply_gain_pcm16(&mut audio, 1, 200).unwrap();
-        assert_eq!(samples(&audio), [i16::MAX, -i16::MAX]);
+        assert_eq!(samples(&audio), [20_000, -20_000]);
+        apply_gain_pcm16(&mut audio, 1, 50).unwrap();
+        assert_eq!(samples(&audio), [10_000, -10_000]);
         assert!(apply_gain_pcm16(&mut audio, 1, 201).is_err());
     }
 }

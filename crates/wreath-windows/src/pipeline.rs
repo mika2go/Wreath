@@ -217,10 +217,14 @@ impl PipelineAudio {
     ) -> Result<Option<Self>, crate::audio::AudioError> {
         let (master, auxiliary_microphone) = if config.desktop {
             let desktop = crate::audio::LoopbackCapture::spawn()?;
+            let desktop_sample_rate = desktop.format().sample_rate;
             let microphone = config
                 .microphone
                 .then(|| {
-                    crate::audio::MicrophoneCapture::spawn(config.microphone_device.as_deref())
+                    crate::audio::MicrophoneCapture::spawn_at_sample_rate(
+                        config.microphone_device.as_deref(),
+                        desktop_sample_rate,
+                    )
                 })
                 .transpose()?;
             (AudioCaptureSource::Desktop(desktop), microphone)
