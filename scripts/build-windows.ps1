@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.2.1",
+    [string]$Version = "0.2.2",
     [string]$Target = "x86_64-pc-windows-msvc"
 )
 
@@ -30,6 +30,64 @@ if ($Target -ne "x86_64-pc-windows-msvc") {
 if (-not (Test-Path -LiteralPath $InstallerSource -PathType Leaf)) {
     throw "Missing NSIS source: $InstallerSource"
 }
+
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class WreathWindowsSmoke
+{
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Rect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool MoveWindow(
+        IntPtr window,
+        int x,
+        int y,
+        int width,
+        int height,
+        bool repaint
+    );
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool GetWindowRect(IntPtr window, out Rect rectangle);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr LoadLibraryExW(string path, IntPtr file, uint flags);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr FindResourceW(IntPtr module, IntPtr name, IntPtr type);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool FreeLibrary(IntPtr module);
+
+    public static bool HasApplicationIcon(string path)
+    {
+        const uint LoadLibraryAsDataFile = 0x00000002;
+        const int GroupIconResource = 14;
+        IntPtr module = LoadLibraryExW(path, IntPtr.Zero, LoadLibraryAsDataFile);
+        if (module == IntPtr.Zero)
+        {
+            return false;
+        }
+        try
+        {
+            return FindResourceW(module, new IntPtr(1), new IntPtr(GroupIconResource)) != IntPtr.Zero;
+        }
+        finally
+        {
+            FreeLibrary(module);
+        }
+    }
+}
+"@
 
 function Get-RequiredCommand([string]$Name) {
     $Command = Get-Command $Name -ErrorAction SilentlyContinue
@@ -169,6 +227,12 @@ try {
         if (-not (Test-Path -LiteralPath $SmokeUninstaller -PathType Leaf)) {
             throw "NSIS smoke install omitted Uninstall.exe"
         }
+        foreach ($IconExecutable in @("wreath-win-ui.exe", "wreath-tray.exe")) {
+            $IconPath = Join-Path $SmokeInstallDirectory $IconExecutable
+            if (-not [WreathWindowsSmoke]::HasApplicationIcon($IconPath)) {
+                throw "$IconExecutable does not contain the Wreath application icon"
+            }
+        }
 
         $SmokeUi = Start-Process `
             -FilePath (Join-Path $SmokeInstallDirectory "wreath-win-ui.exe") `
@@ -189,6 +253,32 @@ try {
         )
         if ($SmokeTrayPath -ne $ExpectedTrayPath) {
             throw "clean-install smoke test started an unexpected tray: $SmokeTrayPath"
+        }
+        if ($SmokeUi.MainWindowHandle -eq [IntPtr]::Zero) {
+            throw "the installed full application did not create a visible main window"
+        }
+        if (-not [WreathWindowsSmoke]::MoveWindow(
+            $SmokeUi.MainWindowHandle,
+            80,
+            80,
+            980,
+            700,
+            $true
+        )) {
+            throw "the installed full application rejected a native resize request"
+        }
+        Start-Sleep -Seconds 1
+        $SmokeUi.Refresh()
+        $ResizedBounds = [WreathWindowsSmoke+Rect]::new()
+        if (-not [WreathWindowsSmoke]::GetWindowRect(
+            $SmokeUi.MainWindowHandle,
+            [ref]$ResizedBounds
+        )) {
+            throw "the installed full application window bounds could not be inspected"
+        }
+        if (($ResizedBounds.Right - $ResizedBounds.Left) -lt 900 -or
+            ($ResizedBounds.Bottom - $ResizedBounds.Top) -lt 640) {
+            throw "the installed full application resized below its supported layout"
         }
 
         $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
@@ -275,6 +365,8 @@ try {
             LegacyAutostartMigrationTest = $true
             FullApplicationStarted = $true
             IndependentTrayStarted = $true
+            EmbeddedApplicationIconTest = $true
+            ResizableWindowSmokeTest = $true
             UninstallSmokeTest = $true
         }
     }
