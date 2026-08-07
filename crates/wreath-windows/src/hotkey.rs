@@ -96,6 +96,76 @@ impl Drop for HotkeyRegistration {
     }
 }
 
+#[cfg(target_os = "windows")]
+pub struct HotkeyListener {
+    thread_id: u32,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(target_os = "windows")]
+impl HotkeyListener {
+    pub fn spawn(
+        id: i32,
+        hotkey: &HotkeyConfig,
+        mut on_hotkey: impl FnMut() + Send + 'static,
+    ) -> Result<Self, HotkeyError> {
+        use std::sync::mpsc;
+
+        use windows::Win32::System::Threading::GetCurrentThreadId;
+        use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY};
+
+        let hotkey = hotkey.clone();
+        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+        let thread = std::thread::Builder::new()
+            .name("wreath-hotkey".into())
+            .spawn(move || {
+                let thread_id = unsafe { GetCurrentThreadId() };
+                let registration = match HotkeyRegistration::register(id, &hotkey) {
+                    Ok(registration) => registration,
+                    Err(error) => {
+                        let _ = ready_sender.send(Err(error));
+                        return;
+                    }
+                };
+                if ready_sender.send(Ok(thread_id)).is_err() {
+                    return;
+                }
+                let mut message = MSG::default();
+                loop {
+                    let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
+                    if result.0 <= 0 {
+                        break;
+                    }
+                    if message.message == WM_HOTKEY && message.wParam.0 == id as usize {
+                        on_hotkey();
+                    }
+                }
+                drop(registration);
+            })
+            .map_err(|error| HotkeyError::Registration(error.to_string()))?;
+        let thread_id = ready_receiver
+            .recv()
+            .map_err(|error| HotkeyError::Registration(error.to_string()))??;
+        Ok(Self {
+            thread_id,
+            thread: Some(thread),
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for HotkeyListener {
+    fn drop(&mut self) {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+
+        let _ = unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) };
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

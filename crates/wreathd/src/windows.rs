@@ -4,6 +4,7 @@ use wreath_core::config::Config;
 use wreath_core::ipc::{self, DaemonState, Request, Response};
 use wreath_core::paths::AppPaths;
 use wreath_windows::control::NamedPipeServer;
+use wreath_windows::hotkey::HotkeyListener;
 
 pub fn run() -> Result<(), String> {
     let paths = AppPaths::discover();
@@ -12,6 +13,13 @@ pub fn run() -> Result<(), String> {
         config.save(&paths).map_err(|error| error.to_string())?;
     }
     let server = NamedPipeServer::new(paths.pipe_name()).map_err(|error| error.to_string())?;
+    let pipe_name = paths.pipe_name().to_owned();
+    let _hotkey = HotkeyListener::spawn(1, &config.hotkey, move || {
+        if let Err(error) = wreath_windows::control::send_request(&pipe_name, &Request::Save) {
+            eprintln!("wreathd: hotkey save failed: {error}");
+        }
+    })
+    .map_err(|error| error.to_string())?;
     let mut shutdown = false;
     while !shutdown {
         let mut connection = server.accept().map_err(|error| error.to_string())?;
