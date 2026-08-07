@@ -62,9 +62,12 @@ pub fn run() -> Result<(), String> {
                 .unwrap_or_else(|error| Response::Error {
                     message: error.to_string(),
                 }),
-            Request::Save => Response::Error {
-                message: "Windows MP4 muxing is the next build step".into(),
-            },
+            Request::Save => pipeline
+                .save()
+                .map(|path| Response::Saved { path })
+                .unwrap_or_else(|error| Response::Error {
+                    message: error.to_string(),
+                }),
             Request::Reload => Response::Error {
                 message: "restart wreathd to reload Windows capture settings".into(),
             },

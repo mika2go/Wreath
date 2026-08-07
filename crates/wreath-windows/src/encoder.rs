@@ -141,6 +141,12 @@ impl HardwareVideoEncoder {
         &self.transform
     }
 
+    pub fn output_media_type(
+        &self,
+    ) -> Result<windows::Win32::Media::MediaFoundation::IMFMediaType, VideoError> {
+        unsafe { self.transform.GetOutputCurrentType(0) }.map_err(initialization_error)
+    }
+
     pub fn submit_texture(
         &self,
         texture: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,

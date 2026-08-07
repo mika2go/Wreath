@@ -92,14 +92,26 @@ impl ReplayPipeline {
     }
 
     pub fn pause(&self) -> Result<(), crate::video::VideoError> {
-        self.send_command(PipelineCommandKind::Pause)
+        self.send_command(PipelineCommandKind::Pause).map(|_| ())
     }
 
     pub fn resume(&self) -> Result<(), crate::video::VideoError> {
-        self.send_command(PipelineCommandKind::Resume)
+        self.send_command(PipelineCommandKind::Resume).map(|_| ())
     }
 
-    fn send_command(&self, kind: PipelineCommandKind) -> Result<(), crate::video::VideoError> {
+    pub fn save(&self) -> Result<std::path::PathBuf, crate::video::VideoError> {
+        match self.send_command(PipelineCommandKind::Save)? {
+            PipelineCommandResult::Saved(path) => Ok(path),
+            PipelineCommandResult::Ok => Err(crate::video::VideoError::Initialization(
+                "video pipeline returned no saved path".into(),
+            )),
+        }
+    }
+
+    fn send_command(
+        &self,
+        kind: PipelineCommandKind,
+    ) -> Result<PipelineCommandResult, crate::video::VideoError> {
         let (reply_sender, reply_receiver) = crossbeam_channel::bounded(1);
         self.commands
             .send(PipelineCommand {
@@ -132,14 +144,21 @@ impl Drop for ReplayPipeline {
 #[cfg(target_os = "windows")]
 struct PipelineCommand {
     kind: PipelineCommandKind,
-    reply: crossbeam_channel::Sender<Result<(), String>>,
+    reply: crossbeam_channel::Sender<Result<PipelineCommandResult, String>>,
 }
 
 #[cfg(target_os = "windows")]
 enum PipelineCommandKind {
     Pause,
     Resume,
+    Save,
     Stop,
+}
+
+#[cfg(target_os = "windows")]
+enum PipelineCommandResult {
+    Ok,
+    Saved(std::path::PathBuf),
 }
 
 #[cfg(target_os = "windows")]
@@ -257,17 +276,26 @@ fn run_pipeline(
                 PipelineCommandKind::Pause => {
                     recording = false;
                     update_status(status, |pipeline| pipeline.state = PipelineRunState::Paused);
-                    let _ = command.reply.send(Ok(()));
+                    let _ = command.reply.send(Ok(PipelineCommandResult::Ok));
                 }
                 PipelineCommandKind::Resume => {
                     recording = true;
                     update_status(status, |pipeline| {
                         pipeline.state = PipelineRunState::Recording
                     });
-                    let _ = command.reply.send(Ok(()));
+                    let _ = command.reply.send(Ok(PipelineCommandResult::Ok));
+                }
+                PipelineCommandKind::Save => {
+                    let result = save_replay(&config.storage.directory, &encoder, &buffer)
+                        .map(PipelineCommandResult::Saved)
+                        .map_err(|error| error.to_string());
+                    let _ = command.reply.send(result);
                 }
                 PipelineCommandKind::Stop => {
-                    let result = encoder.drain().map_err(|error| error.to_string());
+                    let result = encoder
+                        .drain()
+                        .map(|()| PipelineCommandResult::Ok)
+                        .map_err(|error| error.to_string());
                     let _ = command.reply.send(result);
                     break;
                 }
@@ -302,6 +330,37 @@ fn run_pipeline(
         }
     }
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn save_replay(
+    directory: &std::path::Path,
+    encoder: &crate::encoder::HardwareVideoEncoder,
+    buffer: &wreath_core::replay_buffer::EncodedReplayBuffer,
+) -> Result<std::path::PathBuf, crate::video::VideoError> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    std::fs::create_dir_all(directory)
+        .map_err(|error| crate::video::VideoError::Initialization(error.to_string()))?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| crate::video::VideoError::Initialization(error.to_string()))?
+        .as_millis();
+    let final_path = crate::mux::unique_clip_path(directory, timestamp);
+    let stem = final_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("wreath-clip");
+    let temporary_path = final_path.with_file_name(format!("{stem}.partial.mp4"));
+    let media_type = encoder.output_media_type()?;
+    if let Err(error) = crate::mux::write_video_mp4(&temporary_path, &media_type, buffer.packets())
+    {
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(error);
+    }
+    std::fs::rename(&temporary_path, &final_path)
+        .map_err(|error| crate::video::VideoError::Initialization(error.to_string()))?;
+    Ok(final_path)
 }
 
 #[cfg(target_os = "windows")]
