@@ -1,4 +1,5 @@
 use std::io::BufReader;
+use std::sync::mpsc;
 
 use wreath_core::config::Config;
 use wreath_core::ipc::{self, DaemonState, GraphicsAdapter, Request, Response};
@@ -15,8 +16,13 @@ pub fn run() -> Result<(), String> {
     if needs_initial_save || migrated_hotkey {
         config.save(&paths).map_err(|error| error.to_string())?;
     }
-    let mut pipeline = ReplayPipeline::spawn(config.clone()).map_err(|error| error.to_string())?;
     let server = NamedPipeServer::new(paths.pipe_name()).map_err(|error| error.to_string())?;
+    // Create the named-pipe instance before graphics/audio initialization. On
+    // slower machines that initialization can take several seconds; clients
+    // can now connect immediately and wait for the daemon instead of seeing a
+    // misleading "file not found" error during normal startup.
+    let (connections, handled) = listen(server)?;
+    let mut pipeline = ReplayPipeline::spawn(config.clone()).map_err(|error| error.to_string())?;
     let pipe_name = paths.pipe_name().to_owned();
     let _hotkey =
         HotkeyListener::spawn(
@@ -34,7 +40,9 @@ pub fn run() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let mut shutdown = false;
     while !shutdown {
-        let mut connection = server.accept().map_err(|error| error.to_string())?;
+        let mut connection = connections
+            .recv()
+            .map_err(|error| format!("Windows control listener stopped: {error}"))??;
         let request = ipc::read_request(&mut BufReader::new(
             connection
                 .try_clone()
@@ -88,8 +96,36 @@ pub fn run() -> Result<(), String> {
             Request::Reload => reload(&paths, &mut config, &mut pipeline, &_hotkey),
         };
         ipc::write_response(&mut connection, &response).map_err(|error| error.to_string())?;
+        handled
+            .send(())
+            .map_err(|error| format!("Windows control listener stopped: {error}"))?;
     }
     Ok(())
+}
+
+type AcceptedConnection = Result<std::fs::File, String>;
+
+fn listen(
+    server: NamedPipeServer,
+) -> Result<(mpsc::Receiver<AcceptedConnection>, mpsc::SyncSender<()>), String> {
+    let (connection_sender, connection_receiver) = mpsc::sync_channel(0);
+    let (handled_sender, handled_receiver) = mpsc::sync_channel(0);
+    std::thread::Builder::new()
+        .name("wreath-control".into())
+        .spawn(move || {
+            loop {
+                let connection = server.accept().map_err(|error| error.to_string());
+                let accepted = connection.is_ok();
+                if connection_sender.send(connection).is_err() || !accepted {
+                    return;
+                }
+                if handled_receiver.recv().is_err() {
+                    return;
+                }
+            }
+        })
+        .map_err(|error| format!("cannot start Windows control listener: {error}"))?;
+    Ok((connection_receiver, handled_sender))
 }
 
 fn reload(

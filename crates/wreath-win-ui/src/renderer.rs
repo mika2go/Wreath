@@ -729,15 +729,15 @@ impl Renderer {
                 let shortcut = if model.hotkey_capture {
                     "Press shortcut…".into()
                 } else {
-                    model.config.hotkey.to_string()
+                    wreath_windows::hotkey::localized_hotkey_label(&model.config.hotkey)
                 };
                 self.setting_row(
                     "Save replay",
                     &shortcut,
                     if model.hotkey_capture {
-                        "Press the new shortcut now, or Escape to cancel."
+                        "Press any key or combination now; Escape cancels."
                     } else {
-                        "Change the global shortcut; no Enter confirmation needed."
+                        "Uses this keyboard's Windows key names; no confirmation needed."
                     },
                     left,
                     right - 54.0,

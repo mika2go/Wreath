@@ -8,6 +8,180 @@ const MOD_SHIFT_VALUE: u32 = 0x0004;
 const MOD_WIN_VALUE: u32 = 0x0008;
 const MOD_NOREPEAT_VALUE: u32 = 0x4000;
 
+const VK_F1: u32 = 0x70;
+const VK_F24: u32 = 0x87;
+
+/// Turns the virtual-key value delivered by Windows into the stable value kept
+/// in Wreath's config. OEM keys intentionally retain their virtual-key number:
+/// their printed label depends on the user's active keyboard layout.
+pub fn key_name_from_virtual_key(virtual_key: u32) -> Option<String> {
+    let name = match virtual_key {
+        0x08 => "BACKSPACE",
+        0x09 => "TAB",
+        0x0d => "ENTER",
+        0x13 => "PAUSE",
+        0x14 => "CAPSLOCK",
+        0x20 => "SPACE",
+        0x21 => "PAGEUP",
+        0x22 => "PAGEDOWN",
+        0x23 => "END",
+        0x24 => "HOME",
+        0x25 => "LEFT",
+        0x26 => "UP",
+        0x27 => "RIGHT",
+        0x28 => "DOWN",
+        0x2c => "PRINTSCREEN",
+        0x2d => "INSERT",
+        0x2e => "DELETE",
+        0x60..=0x69 => return Some(format!("NUMPAD{}", virtual_key - 0x60)),
+        0x6a => "MULTIPLY",
+        0x6b => "ADD",
+        0x6c => "SEPARATOR",
+        0x6d => "SUBTRACT",
+        0x6e => "DECIMAL",
+        0x6f => "DIVIDE",
+        VK_F1..=VK_F24 => return Some(format!("F{}", virtual_key - VK_F1 + 1)),
+        0x90 => "NUMLOCK",
+        0x91 => "SCROLLLOCK",
+        0xa6 => "BROWSER_BACK",
+        0xa7 => "BROWSER_FORWARD",
+        0xa8 => "BROWSER_REFRESH",
+        0xa9 => "BROWSER_STOP",
+        0xaa => "BROWSER_SEARCH",
+        0xab => "BROWSER_FAVORITES",
+        0xac => "BROWSER_HOME",
+        0xad => "VOLUME_MUTE",
+        0xae => "VOLUME_DOWN",
+        0xaf => "VOLUME_UP",
+        0xb0 => "MEDIA_NEXT",
+        0xb1 => "MEDIA_PREVIOUS",
+        0xb2 => "MEDIA_STOP",
+        0xb3 => "MEDIA_PLAY_PAUSE",
+        0xb4 => "LAUNCH_MAIL",
+        0xb5 => "LAUNCH_MEDIA",
+        0xb6 => "LAUNCH_APP1",
+        0xb7 => "LAUNCH_APP2",
+        0xba..=0xc0 | 0xdb..=0xdf | 0xe2 => return Some(format!("VK_{virtual_key:02X}")),
+        key if key <= 0xff && (key as u8).is_ascii_alphanumeric() => {
+            return Some(char::from(key as u8).to_ascii_uppercase().to_string());
+        }
+        _ => return None,
+    };
+    Some(name.into())
+}
+
+pub fn virtual_key_from_name(key: &str) -> Option<u32> {
+    let named = match key {
+        "BACKSPACE" => 0x08,
+        "TAB" => 0x09,
+        "ENTER" => 0x0d,
+        "PAUSE" => 0x13,
+        "CAPSLOCK" => 0x14,
+        "SPACE" => 0x20,
+        "PAGEUP" => 0x21,
+        "PAGEDOWN" => 0x22,
+        "END" => 0x23,
+        "HOME" => 0x24,
+        "LEFT" => 0x25,
+        "UP" => 0x26,
+        "RIGHT" => 0x27,
+        "DOWN" => 0x28,
+        "PRINTSCREEN" => 0x2c,
+        "INSERT" => 0x2d,
+        "DELETE" => 0x2e,
+        "MULTIPLY" => 0x6a,
+        "ADD" => 0x6b,
+        "SEPARATOR" => 0x6c,
+        "SUBTRACT" => 0x6d,
+        "DECIMAL" => 0x6e,
+        "DIVIDE" => 0x6f,
+        "NUMLOCK" => 0x90,
+        "SCROLLLOCK" => 0x91,
+        "BROWSER_BACK" => 0xa6,
+        "BROWSER_FORWARD" => 0xa7,
+        "BROWSER_REFRESH" => 0xa8,
+        "BROWSER_STOP" => 0xa9,
+        "BROWSER_SEARCH" => 0xaa,
+        "BROWSER_FAVORITES" => 0xab,
+        "BROWSER_HOME" => 0xac,
+        "VOLUME_MUTE" => 0xad,
+        "VOLUME_DOWN" => 0xae,
+        "VOLUME_UP" => 0xaf,
+        "MEDIA_NEXT" => 0xb0,
+        "MEDIA_PREVIOUS" => 0xb1,
+        "MEDIA_STOP" => 0xb2,
+        "MEDIA_PLAY_PAUSE" => 0xb3,
+        "LAUNCH_MAIL" => 0xb4,
+        "LAUNCH_MEDIA" => 0xb5,
+        "LAUNCH_APP1" => 0xb6,
+        "LAUNCH_APP2" => 0xb7,
+        _ => {
+            if let Some(hex) = key.strip_prefix("VK_") {
+                let virtual_key = u32::from_str_radix(hex, 16).ok()?;
+                return (key_name_from_virtual_key(virtual_key).as_deref() == Some(key))
+                    .then_some(virtual_key);
+            }
+            if let Some(number) = key.strip_prefix('F')
+                && let Ok(number) = number.parse::<u32>()
+                && (1..=24).contains(&number)
+            {
+                return Some(VK_F1 + number - 1);
+            }
+            if let Some(number) = key.strip_prefix("NUMPAD")
+                && let Ok(number) = number.parse::<u32>()
+                && number <= 9
+            {
+                return Some(0x60 + number);
+            }
+            let bytes = key.as_bytes();
+            return match bytes {
+                [key] if key.is_ascii_alphanumeric() => Some(u32::from(key.to_ascii_uppercase())),
+                _ => None,
+            };
+        }
+    };
+    Some(named)
+}
+
+#[cfg(target_os = "windows")]
+pub fn localized_hotkey_label(hotkey: &HotkeyConfig) -> String {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyNameTextW, MAPVK_VK_TO_VSC_EX, MapVirtualKeyW,
+    };
+
+    if !hotkey.is_bound() {
+        return "Unbound".into();
+    }
+    let key = virtual_key_from_name(&hotkey.key)
+        .and_then(|virtual_key| {
+            let scan_code = unsafe { MapVirtualKeyW(virtual_key, MAPVK_VK_TO_VSC_EX) };
+            if scan_code == 0 {
+                return None;
+            }
+            let mut key_message = ((scan_code & 0xff) << 16) as i32;
+            if scan_code & 0xff00 != 0 {
+                key_message |= 1 << 24;
+            }
+            let mut buffer = [0_u16; 64];
+            let length = unsafe { GetKeyNameTextW(key_message, &mut buffer) };
+            (length > 0).then(|| String::from_utf16_lossy(&buffer[..length as usize]))
+        })
+        .unwrap_or_else(|| hotkey.key.clone());
+    hotkey
+        .modifiers
+        .iter()
+        .map(|modifier| match modifier.as_str() {
+            "SUPER" => "Win",
+            "CTRL" => "Ctrl",
+            "ALT" => "Alt",
+            "SHIFT" => "Shift",
+            value => value,
+        })
+        .chain(std::iter::once(key.as_str()))
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
 pub fn default_windows_hotkey() -> HotkeyConfig {
     HotkeyConfig {
         modifiers: vec!["CTRL".into(), "ALT".into()],
@@ -69,22 +243,8 @@ impl TryFrom<&HotkeyConfig> for NativeHotkey {
                 _ => Err(HotkeyError::UnsupportedModifier(modifier.clone())),
             },
         )?;
-        let bytes = hotkey.key.as_bytes();
-        let virtual_key = match bytes {
-            [key] if key.is_ascii_alphanumeric() => u32::from(key.to_ascii_uppercase()),
-            [b'F', digit] if digit.is_ascii_digit() && *digit != b'0' => {
-                0x70 + u32::from(*digit - b'1')
-            }
-            [b'F', first, second] if first.is_ascii_digit() && second.is_ascii_digit() => {
-                let number = u32::from(*first - b'0') * 10 + u32::from(*second - b'0');
-                if (10..=24).contains(&number) {
-                    0x70 + number - 1
-                } else {
-                    return Err(HotkeyError::UnsupportedKey(hotkey.key.clone()));
-                }
-            }
-            _ => return Err(HotkeyError::UnsupportedKey(hotkey.key.clone())),
-        };
+        let virtual_key = virtual_key_from_name(&hotkey.key)
+            .ok_or_else(|| HotkeyError::UnsupportedKey(hotkey.key.clone()))?;
         Ok(Self {
             modifiers,
             virtual_key,
@@ -302,13 +462,35 @@ mod tests {
     fn rejects_key_names_that_are_not_windows_virtual_keys() {
         let hotkey = HotkeyConfig {
             modifiers: vec!["CTRL".into()],
-            key: "ENTER".into(),
+            key: "NOT_A_KEY".into(),
         };
 
         assert!(matches!(
             NativeHotkey::try_from(&hotkey),
-            Err(HotkeyError::UnsupportedKey(key)) if key == "ENTER"
+            Err(HotkeyError::UnsupportedKey(key)) if key == "NOT_A_KEY"
         ));
+    }
+
+    #[test]
+    fn translates_keys_from_different_windows_keyboard_sections() {
+        for (key, virtual_key) in [
+            ("ENTER", 0x0d),
+            ("LEFT", 0x25),
+            ("NUMPAD7", 0x67),
+            ("MEDIA_PLAY_PAUSE", 0xb3),
+            ("VK_BA", 0xba),
+            ("VK_E2", 0xe2),
+        ] {
+            assert_eq!(virtual_key_from_name(key), Some(virtual_key));
+            assert_eq!(key_name_from_virtual_key(virtual_key).as_deref(), Some(key));
+        }
+    }
+
+    #[test]
+    fn excludes_modifiers_escape_mouse_and_reserved_virtual_keys() {
+        for virtual_key in [0x01, 0x10, 0x11, 0x12, 0x1b, 0x5b, 0x5c, 0xe7] {
+            assert_eq!(key_name_from_virtual_key(virtual_key), None);
+        }
     }
 
     #[test]

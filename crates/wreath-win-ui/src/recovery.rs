@@ -1,5 +1,13 @@
 use std::time::{Duration, Instant};
 
+pub const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
+pub const DAEMON_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+
+pub fn daemon_startup_attempts() -> usize {
+    usize::try_from(DAEMON_STARTUP_TIMEOUT.as_millis() / DAEMON_RETRY_INTERVAL.as_millis())
+        .unwrap_or(150)
+}
+
 pub struct RecoveryThrottle {
     next_attempt_at: Instant,
 }
@@ -50,5 +58,12 @@ mod tests {
         throttle.reset(healthy);
 
         assert!(throttle.acquire(healthy, retry));
+    }
+
+    #[test]
+    fn daemon_startup_wait_covers_slow_windows_initialization() {
+        let attempts = daemon_startup_attempts();
+        assert_eq!(attempts, 150);
+        assert!(DAEMON_RETRY_INTERVAL * attempts as u32 >= DAEMON_STARTUP_TIMEOUT);
     }
 }

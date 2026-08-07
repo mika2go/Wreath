@@ -18,7 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowLongPtrW, SetWindowPos, ShowWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
     TranslateMessage, WINDOW_EX_STYLE, WM_CHAR, WM_COMMAND, WM_DESTROY, WM_DPICHANGED,
     WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONUP, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE,
-    WM_TIMER, WNDCLASSW, WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW,
+    WM_SYSKEYDOWN, WM_TIMER, WNDCLASSW, WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::config::Codec;
@@ -307,16 +307,21 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
-        WM_KEYDOWN => {
-            if let Some(state) = state_mut(window)
-                && state.model.hotkey_capture
-            {
+        WM_KEYDOWN | WM_SYSKEYDOWN
+            if state_mut(window).is_some_and(|state| state.model.hotkey_capture) =>
+        {
+            if let Some(state) = state_mut(window) {
                 if capture_hotkey(&mut state.model, wparam.0 as u32) {
-                    let shortcut = state.model.config.hotkey.to_string();
+                    let shortcut =
+                        wreath_windows::hotkey::localized_hotkey_label(&state.model.config.hotkey);
                     save_settings(&mut state.model, &format!("{shortcut} is saved and active"));
                 }
                 redraw(window);
-            } else if wparam.0 == 0x20 {
+            }
+            LRESULT(0)
+        }
+        WM_KEYDOWN => {
+            if wparam.0 == 0x20 {
                 if let Some(state) = state_mut(window)
                     && state.model.page == crate::model::Page::Player
                     && let Some(player) = &state.player
@@ -443,7 +448,8 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         Action::ChooseStorageLimit => choose_storage_limit(window, &mut state.model),
         Action::CaptureHotkey => {
             state.model.hotkey_capture = true;
-            state.model.notice = Some("Press F1–F24, or a modifier plus a letter or number".into());
+            state.model.notice =
+                Some("Press any keyboard key or combination now; Escape cancels".into());
         }
         Action::ClearHotkey => {
             state.model.config.hotkey = wreath_core::config::HotkeyConfig::unbound();
@@ -491,9 +497,11 @@ fn capture_hotkey(model: &mut UiModel, virtual_key: u32) -> bool {
             false
         }
         0x10 | 0x11 | 0x12 | 0x5b | 0x5c => false,
-        key if (0x70..=0x87).contains(&key)
-            || (key <= 0xff && (key as u8).is_ascii_alphanumeric()) =>
-        {
+        key => {
+            let Some(key_name) = wreath_windows::hotkey::key_name_from_virtual_key(key) else {
+                model.notice = Some("That key cannot be used as a Windows shortcut".into());
+                return false;
+            };
             let mut modifiers = Vec::new();
             if key_pressed(0x5b) || key_pressed(0x5c) {
                 modifiers.push("SUPER".into());
@@ -507,18 +515,10 @@ fn capture_hotkey(model: &mut UiModel, virtual_key: u32) -> bool {
             if key_pressed(0x10) {
                 modifiers.push("SHIFT".into());
             }
-            let function_key = (0x70..=0x87)
-                .contains(&key)
-                .then(|| format!("F{}", key - 0x70 + 1));
             let hotkey = wreath_core::config::HotkeyConfig {
                 modifiers,
-                key: function_key
-                    .unwrap_or_else(|| char::from(key as u8).to_ascii_uppercase().to_string()),
+                key: key_name,
             };
-            if hotkey.modifiers.is_empty() && !(0x70..=0x87).contains(&key) {
-                model.notice = Some("Hold at least one modifier with the key".into());
-                return false;
-            }
             if hotkey != model.config.hotkey
                 && let Err(error) = wreath_windows::hotkey::HotkeyRegistration::register(2, &hotkey)
             {
@@ -528,10 +528,6 @@ fn capture_hotkey(model: &mut UiModel, virtual_key: u32) -> bool {
             model.config.hotkey = hotkey;
             model.hotkey_capture = false;
             true
-        }
-        _ => {
-            model.notice = Some("Use F1–F24, or modifiers plus one letter or number".into());
-            false
         }
     }
 }
@@ -791,22 +787,22 @@ fn save_settings(model: &mut UiModel, success: &str) {
 }
 
 fn reload_capture() -> Result<Response, String> {
-    let first_error = match send(Request::Reload) {
+    let mut last_error = match send(Request::Reload) {
         Ok(response) => return Ok(response),
         Err(error) => error,
     };
-    start_daemon().map_err(|start_error| {
-        format!("{first_error}; recorder could not be started: {start_error}")
-    })?;
-    for _ in 0..30 {
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    start_daemon()
+        .map_err(|start_error| format!("background service could not be started: {start_error}"))?;
+    for _ in 0..crate::recovery::daemon_startup_attempts() {
+        std::thread::sleep(crate::recovery::DAEMON_RETRY_INTERVAL);
         match send(Request::Reload) {
             Ok(response) => return Ok(response),
-            Err(_) => continue,
+            Err(error) => last_error = error,
         }
     }
     Err(format!(
-        "{first_error}; recorder did not become ready after 3 seconds"
+        "background service did not become ready within {} seconds (last error: {last_error})",
+        crate::recovery::DAEMON_STARTUP_TIMEOUT.as_secs()
     ))
 }
 
