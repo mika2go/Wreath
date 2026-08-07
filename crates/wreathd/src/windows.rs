@@ -5,6 +5,7 @@ use wreath_core::ipc::{self, DaemonState, Request, Response};
 use wreath_core::paths::AppPaths;
 use wreath_windows::control::NamedPipeServer;
 use wreath_windows::hotkey::HotkeyListener;
+use wreath_windows::video::VideoRuntime;
 
 pub fn run() -> Result<(), String> {
     let paths = AppPaths::discover();
@@ -12,6 +13,10 @@ pub fn run() -> Result<(), String> {
     if !paths.config_file.exists() {
         config.save(&paths).map_err(|error| error.to_string())?;
     }
+    let video = VideoRuntime::initialize().map_err(|error| error.to_string())?;
+    let selected_codec = video
+        .select_encoder(config.capture.codec)
+        .map_err(|error| error.to_string())?;
     let server = NamedPipeServer::new(paths.pipe_name()).map_err(|error| error.to_string())?;
     let pipe_name = paths.pipe_name().to_owned();
     let _hotkey = HotkeyListener::spawn(1, &config.hotkey, move || {
@@ -34,7 +39,9 @@ pub fn run() -> Result<(), String> {
                 state: DaemonState::Error,
                 monitor: None,
                 buffered_seconds: 0,
-                error: Some("Windows capture backend is not available yet".into()),
+                error: Some(format!(
+                    "{selected_codec:?} hardware encoder ready; Windows frame capture is pending"
+                )),
             },
             Request::Shutdown => {
                 shutdown = true;
