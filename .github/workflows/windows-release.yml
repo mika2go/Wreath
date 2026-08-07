@@ -6,7 +6,7 @@ on:
       version:
         description: Semantic version without the v prefix
         required: true
-        default: 0.2.3
+        default: 0.2.4
         type: string
 
 permissions:
@@ -68,4 +68,4 @@ jobs:
             --repo $env:GITHUB_REPOSITORY `
             --target $env:GITHUB_SHA `
             --title "Wreath $env:RELEASE_VERSION" `
-            --notes "Windows x64 NSIS capture hotfix. Wreath disables the Windows capture border, migrates the reserved legacy shortcut to Ctrl+Alt+R, validates and applies changed hotkeys immediately, displays storage only in MB/GB, and stops UI, tray, and recorder processes during uninstall. Native Windows build and installer lifecycle gates pass; the full AMD/Intel/NVIDIA Medal performance matrix is still pending."
+            --notes "Windows x64 NSIS playback and audio hotfix. Clips now start through the correct Media Foundation state transition, include a seek rail, use their native aspect ratio, and refresh the Library after saving. Global saves play a Wreath sound and show a tray notification. F1-F24 hotkeys and full shortcut unbinding are supported, Collections alignment and deletion UI are polished, and microphone mixing waits for the input stream without stalling capture. Native Windows build and installer lifecycle gates pass; the full AMD/Intel/NVIDIA Medal performance matrix is still pending."
