@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use wreath_core::clips::{self, Clip, Collection};
-use wreath_core::config::{Config, HotkeyConfig};
+use wreath_core::config::Config;
 use wreath_core::paths::AppPaths;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,17 +33,18 @@ pub enum Action {
     OpenClipsFolder,
     Search,
     ClearSearch,
+    DismissNotice,
     ToggleCursor,
     ToggleDesktopAudio,
     ToggleMicrophone,
-    CycleDuration,
-    CycleFrameRate,
-    CycleCodec,
-    CycleQuality,
-    CycleDisplay,
-    CycleMicrophone,
-    CycleMicrophoneGain,
-    CycleStorageLimit,
+    ChooseDuration,
+    ChooseFrameRate,
+    ChooseCodec,
+    ChooseQuality,
+    ChooseDisplay,
+    ChooseMicrophone,
+    ChooseMicrophoneGain,
+    ChooseStorageLimit,
     CaptureHotkey,
     ChooseStorage,
     SaveSettings,
@@ -51,6 +52,13 @@ pub enum Action {
     DeleteActiveCollection,
     SelectCollection(Option<usize>),
     PlayPause,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplayOption {
+    pub name: String,
+    pub label: String,
+    pub refresh_rate: f64,
 }
 
 pub struct UiModel {
@@ -67,7 +75,7 @@ pub struct UiModel {
     pub active_clip: Option<usize>,
     pub notice: Option<String>,
     pub hotkey_capture: bool,
-    pub pending_hotkey: Option<HotkeyConfig>,
+    pub displays: Vec<DisplayOption>,
     pub microphone_names: Vec<(String, String)>,
 }
 
@@ -89,7 +97,7 @@ impl UiModel {
             active_clip: None,
             notice: None,
             hotkey_capture: false,
-            pending_hotkey: None,
+            displays: Vec::new(),
             microphone_names: Vec::new(),
         };
         model.refresh()?;
@@ -155,6 +163,33 @@ impl UiModel {
     pub fn active_clip(&self) -> Option<&Clip> {
         self.active_clip.and_then(|index| self.clips.get(index))
     }
+
+    pub fn selected_display(&self) -> Option<&DisplayOption> {
+        let configured = self.config.capture.monitor.as_deref();
+        configured
+            .and_then(|name| {
+                self.displays
+                    .iter()
+                    .find(|display| display.name.eq_ignore_ascii_case(name))
+            })
+            .or_else(|| self.displays.first())
+    }
+
+    pub fn frame_rate_options(&self) -> Vec<u16> {
+        let native_rate = self
+            .selected_display()
+            .map_or(60, |display| display.refresh_rate.round() as u16)
+            .clamp(15, 240);
+        let mut rates = [30, 60, 75, 90, 100, 120, 144, 165, 180, 200, 240]
+            .into_iter()
+            .filter(|rate| *rate <= native_rate)
+            .collect::<Vec<_>>();
+        rates.push(native_rate);
+        rates.push(self.config.capture.frames_per_second.clamp(15, 240));
+        rates.sort_unstable();
+        rates.dedup();
+        rates
+    }
 }
 
 #[cfg(test)]
@@ -190,7 +225,7 @@ mod tests {
             active_clip: None,
             notice: None,
             hotkey_capture: false,
-            pending_hotkey: None,
+            displays: Vec::new(),
             microphone_names: Vec::new(),
         }
     }
@@ -216,5 +251,21 @@ mod tests {
     #[test]
     fn total_size_sums_all_clips() {
         assert_eq!(model().total_size_bytes(), 25);
+    }
+
+    #[test]
+    fn frame_rates_follow_the_selected_monitor_and_keep_the_current_value() {
+        let mut model = model();
+        model.displays.push(DisplayOption {
+            name: "DISPLAY1".into(),
+            label: "DISPLAY1 · 2560×1440 · 144 Hz".into(),
+            refresh_rate: 144.0,
+        });
+        model.config.capture.monitor = Some("DISPLAY1".into());
+        model.config.capture.frames_per_second = 50;
+        assert_eq!(
+            model.frame_rate_options(),
+            vec![30, 50, 60, 75, 90, 100, 120, 144]
+        );
     }
 }

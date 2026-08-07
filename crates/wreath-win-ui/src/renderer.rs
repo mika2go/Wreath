@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct2D::Common::{D2D_RECT_F, D2D_SIZE_U, D2D1_COLOR_F};
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_DRAW_TEXT_OPTIONS_NONE,
+    D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
     D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap, ID2D1Factory,
     ID2D1HwndRenderTarget,
@@ -14,7 +14,9 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
-    DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
+    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection,
+    IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Gdi::{DeleteObject, HPALETTE};
 use windows::Win32::Graphics::Imaging::{
@@ -25,6 +27,7 @@ use windows::Win32::UI::Shell::{
     IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK, SIIGBF_THUMBNAILONLY,
 };
 use windows::core::{PCWSTR, w};
+use windows_numerics::Vector2;
 
 use crate::model::{Action, Page, SettingsSection, UiModel};
 
@@ -35,6 +38,26 @@ const SURFACE_HOVER: u32 = 0x202024;
 const PRIMARY: u32 = 0xf4f5f9;
 const SECONDARY: u32 = 0x777e8e;
 const SUCCESS: u32 = 0x76d9a3;
+const DANGER: u32 = 0xe58b8b;
+const WIDE_SIDEBAR_BREAKPOINT: f32 = 1080.0;
+
+#[derive(Debug, Clone, Copy)]
+enum Glyph {
+    Logo,
+    Home,
+    Library,
+    Collections,
+    Settings,
+    ChevronDown,
+    Close,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SettingControl {
+    Button,
+    Dropdown,
+    Toggle,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct LogicalRect {
@@ -61,7 +84,7 @@ impl LogicalRect {
 
 pub fn player_bounds(width: u32, height: u32) -> LogicalRect {
     let width = width as f32;
-    let rail = if width < 760.0 { 54.0 } else { 62.0 };
+    let rail = sidebar_width(width);
     let padding = if width < 820.0 {
         16.0
     } else if width < 980.0 {
@@ -91,6 +114,7 @@ pub struct Renderer {
     section: IDWriteTextFormat,
     body: IDWriteTextFormat,
     small: IDWriteTextFormat,
+    body_center: IDWriteTextFormat,
     hits: Vec<HitRegion>,
     wic_factory: IWICImagingFactory,
     thumbnails: HashMap<PathBuf, ID2D1Bitmap>,
@@ -105,11 +129,12 @@ impl Renderer {
         let write_factory =
             unsafe { DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED) }
                 .map_err(|error| error.to_string())?;
-        let title = text_format(&write_factory, 31.0, true)?;
-        let heading = text_format(&write_factory, 25.0, true)?;
-        let section = text_format(&write_factory, 17.0, true)?;
-        let body = text_format(&write_factory, 12.0, false)?;
-        let small = text_format(&write_factory, 10.0, false)?;
+        let title = text_format(&write_factory, 31.0, true, false)?;
+        let heading = text_format(&write_factory, 25.0, true, false)?;
+        let section = text_format(&write_factory, 17.0, true, false)?;
+        let body = text_format(&write_factory, 12.0, false, false)?;
+        let small = text_format(&write_factory, 10.0, false, false)?;
+        let body_center = text_format(&write_factory, 12.0, false, true)?;
         let wic_factory =
             unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
                 .map_err(|error| error.to_string())?;
@@ -121,6 +146,7 @@ impl Renderer {
             section,
             body,
             small,
+            body_center,
             hits: Vec::new(),
             wic_factory,
             thumbnails: HashMap::new(),
@@ -129,8 +155,16 @@ impl Renderer {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        if let Some(target) = &self.target {
-            let _ = unsafe { target.Resize(&D2D_SIZE_U { width, height }) };
+        if width == 0 || height == 0 {
+            return;
+        }
+        let resize_failed = self
+            .target
+            .as_ref()
+            .is_some_and(|target| unsafe { target.Resize(&D2D_SIZE_U { width, height }) }.is_err());
+        if resize_failed {
+            self.target = None;
+            self.thumbnails.clear();
         }
     }
 
@@ -158,18 +192,36 @@ impl Renderer {
         }
         self.render_shell(model, width as f32, height as f32)?;
         if let Some(notice) = &model.notice {
-            self.pill(
-                LogicalRect {
-                    left: 82.0,
-                    top: height as f32 - 54.0,
-                    right: width as f32 - 32.0,
-                    bottom: height as f32 - 20.0,
-                },
-                SURFACE_HOVER,
+            let rail = sidebar_width(width as f32);
+            let notice_area = rect(
+                rail + 18.0,
+                height as f32 - 62.0,
+                width as f32 - 22.0,
+                height as f32 - 18.0,
+            );
+            self.fill(notice_area, SURFACE_HOVER, 10.0)?;
+            self.text(
                 notice,
+                rect(
+                    notice_area.left + 16.0,
+                    notice_area.top,
+                    notice_area.right - 48.0,
+                    notice_area.bottom,
+                ),
+                &self.body.clone(),
                 PRIMARY,
-                None,
             )?;
+            let close = rect(
+                notice_area.right - 42.0,
+                notice_area.top + 5.0,
+                notice_area.right - 5.0,
+                notice_area.bottom - 5.0,
+            );
+            self.glyph(Glyph::Close, close, SECONDARY)?;
+            self.hits.push(HitRegion {
+                rect: close,
+                action: Action::DismissNotice,
+            });
         }
         unsafe { target.EndDraw(None, None) }.map_err(|error| {
             self.target = None;
@@ -199,8 +251,8 @@ impl Renderer {
     }
 
     fn render_shell(&mut self, model: &UiModel, width: f32, height: f32) -> Result<(), String> {
-        let compact = width < 820.0;
-        let rail = if width < 760.0 { 54.0 } else { 62.0 };
+        let wide_sidebar = width >= WIDE_SIDEBAR_BREAKPOINT;
+        let rail = sidebar_width(width);
         self.fill(
             LogicalRect {
                 left: 0.0,
@@ -211,77 +263,67 @@ impl Renderer {
             STAGE,
             0.0,
         )?;
-        self.text(
-            "W",
-            LogicalRect {
-                left: 20.0,
-                top: 18.0,
-                right: rail,
-                bottom: 48.0,
-            },
-            &self.section.clone(),
-            SUCCESS,
+        self.glyph(
+            Glyph::Logo,
+            rect(if wide_sidebar { 20.0 } else { 22.0 }, 18.0, 50.0, 48.0),
+            PRIMARY,
         )?;
+        if wide_sidebar {
+            self.text(
+                "Wreath",
+                rect(62.0, 17.0, rail - 16.0, 49.0),
+                &self.section.clone(),
+                PRIMARY,
+            )?;
+        }
         let nav = [
-            (Page::Home, "H", "Home"),
-            (Page::Library, "L", "Library"),
-            (Page::Collections, "C", "Collections"),
-            (Page::Settings, "S", "Settings"),
+            (Page::Home, Glyph::Home, "Home"),
+            (Page::Library, Glyph::Library, "Library"),
+            (Page::Collections, Glyph::Collections, "Collections"),
+            (Page::Settings, Glyph::Settings, "Settings"),
         ];
         for (offset, (page, icon, label)) in nav.iter().enumerate() {
-            let top = 90.0 + offset as f32 * 58.0;
+            let top = 88.0 + offset as f32 * 56.0;
             let active =
                 model.page == *page || (model.page == Page::Player && model.previous_page == *page);
-            let rect = LogicalRect {
-                left: 8.0,
+            let nav_area = LogicalRect {
+                left: 10.0,
                 top,
-                right: rail - 8.0,
-                bottom: top + 42.0,
+                right: rail - 10.0,
+                bottom: top + 44.0,
             };
             if active {
-                self.fill(rect, SURFACE_HOVER, 10.0)?;
+                self.fill(nav_area, SURFACE_HOVER, 10.0)?;
             }
-            self.text(
-                icon,
-                LogicalRect {
-                    left: rect.left + 15.0,
-                    top: top + 8.0,
-                    right: rect.right,
-                    bottom: top + 32.0,
-                },
-                &self.body.clone(),
+            self.glyph(
+                *icon,
+                rect(
+                    if wide_sidebar { 24.0 } else { 25.0 },
+                    top + 12.0,
+                    if wide_sidebar { 44.0 } else { 47.0 },
+                    top + 32.0,
+                ),
                 if active { PRIMARY } else { SECONDARY },
             )?;
-            self.hits.push(HitRegion {
-                rect,
-                action: Action::Navigate(*page),
-            });
-            if !compact && width > 1050.0 {
+            if wide_sidebar {
                 self.text(
                     label,
-                    LogicalRect {
-                        left: rail + 12.0,
-                        top: top + 10.0,
-                        right: rail + 100.0,
-                        bottom: top + 30.0,
-                    },
-                    &self.small.clone(),
-                    SECONDARY,
+                    rect(60.0, top, rail - 16.0, top + 44.0),
+                    &self.body.clone(),
+                    if active { PRIMARY } else { SECONDARY },
                 )?;
             }
+            self.hits.push(HitRegion {
+                rect: nav_area,
+                action: Action::Navigate(*page),
+            });
         }
 
-        let padding = if compact {
-            16.0
-        } else if width < 980.0 {
-            24.0
-        } else {
-            40.0
-        };
+        let padding = if width < 980.0 { 24.0 } else { 32.0 };
         let left = rail + padding;
         let right = width - padding;
         match model.page {
-            Page::Home => self.render_home(model, left, right)?,
+            Page::Home => self.render_home(model, left, right, height)?,
             Page::Library => self.render_library(model, left, right, height)?,
             Page::Collections => self.render_collections(model, left, right, height)?,
             Page::Settings => self.render_settings(model, left, right, height)?,
@@ -290,12 +332,18 @@ impl Renderer {
         Ok(())
     }
 
-    fn render_home(&mut self, model: &UiModel, left: f32, right: f32) -> Result<(), String> {
+    fn render_home(
+        &mut self,
+        model: &UiModel,
+        left: f32,
+        right: f32,
+        height: f32,
+    ) -> Result<(), String> {
         let greeting = greeting();
         let user = std::env::var("USERNAME").unwrap_or_else(|_| "there".into());
         self.text(
             &format!("{greeting}, {user}"),
-            rect(left, 52.0, right, 94.0),
+            rect(left, 52.0, right - 156.0, 94.0),
             &self.title.clone(),
             PRIMARY,
         )?;
@@ -351,7 +399,7 @@ impl Renderer {
             left,
             right,
             318.0,
-            720.0,
+            height - 72.0,
         )
     }
 
@@ -506,15 +554,16 @@ impl Renderer {
             (SettingsSection::Storage, "Storage"),
         ];
         let mut x = left;
+        let tab_width = (((right - left) - 32.0) / 5.0).min(112.0);
         for (section, label) in tabs {
-            let tab = rect(x, 126.0, x + 92.0, 162.0);
+            let tab = rect(x, 126.0, x + tab_width, 164.0);
             if model.settings_section == section {
                 self.fill(tab, SURFACE_HOVER, 9.0)?;
             }
             self.text(
                 label,
-                rect(x + 14.0, 137.0, x + 86.0, 156.0),
-                &self.small.clone(),
+                tab,
+                &self.body_center.clone(),
                 if model.settings_section == section {
                     PRIMARY
                 } else {
@@ -525,23 +574,32 @@ impl Renderer {
                 rect: tab,
                 action: Action::SettingsSection(section),
             });
-            x += 98.0;
+            x += tab_width + 8.0;
         }
         match model.settings_section {
             SettingsSection::Display => {
+                let display_label = model
+                    .selected_display()
+                    .map_or("Primary display", |display| display.label.as_str());
                 self.setting_row(
                     "Capture display",
-                    model
-                        .config
-                        .capture
-                        .monitor
-                        .as_deref()
-                        .unwrap_or("Primary display"),
-                    "Select the monitor used for replay capture.",
+                    display_label,
+                    "Choose a monitor and use its current Windows refresh rate.",
                     left,
                     right,
                     196.0,
-                    Action::CycleDisplay,
+                    Action::ChooseDisplay,
+                    SettingControl::Dropdown,
+                )?;
+                self.setting_row(
+                    "Frame rate",
+                    &format!("{} fps", model.config.capture.frames_per_second),
+                    "Available rates follow the selected monitor.",
+                    left,
+                    right,
+                    284.0,
+                    Action::ChooseFrameRate,
+                    SettingControl::Dropdown,
                 )?;
                 self.setting_row(
                     "Capture cursor",
@@ -549,8 +607,9 @@ impl Renderer {
                     "Include the pointer in saved clips.",
                     left,
                     right,
-                    284.0,
+                    372.0,
                     Action::ToggleCursor,
+                    SettingControl::Toggle,
                 )?;
             }
             SettingsSection::Quality => {
@@ -561,16 +620,8 @@ impl Renderer {
                     left,
                     right,
                     196.0,
-                    Action::CycleDuration,
-                )?;
-                self.setting_row(
-                    "Frame rate",
-                    &format!("{} fps", model.config.capture.frames_per_second),
-                    "Higher rates require more encoder bandwidth.",
-                    left,
-                    right,
-                    284.0,
-                    Action::CycleFrameRate,
+                    Action::ChooseDuration,
+                    SettingControl::Dropdown,
                 )?;
                 self.setting_row(
                     "Codec",
@@ -578,8 +629,9 @@ impl Renderer {
                     "Hardware encoder selection; Auto is recommended.",
                     left,
                     right,
-                    372.0,
-                    Action::CycleCodec,
+                    284.0,
+                    Action::ChooseCodec,
+                    SettingControl::Dropdown,
                 )?;
                 self.setting_row(
                     "Quality",
@@ -587,8 +639,9 @@ impl Renderer {
                     "Balances image detail and replay memory.",
                     left,
                     right,
-                    460.0,
-                    Action::CycleQuality,
+                    372.0,
+                    Action::ChooseQuality,
+                    SettingControl::Dropdown,
                 )?;
             }
             SettingsSection::Audio => {
@@ -612,6 +665,7 @@ impl Renderer {
                     right,
                     196.0,
                     Action::ToggleDesktopAudio,
+                    SettingControl::Toggle,
                 )?;
                 self.setting_row(
                     "Microphone",
@@ -621,15 +675,17 @@ impl Renderer {
                     right,
                     284.0,
                     Action::ToggleMicrophone,
+                    SettingControl::Toggle,
                 )?;
                 self.setting_row(
                     "Input device",
                     microphone_name,
-                    "Cycle through active Windows input endpoints.",
+                    "Choose an active Windows input endpoint.",
                     left,
                     right,
                     372.0,
-                    Action::CycleMicrophone,
+                    Action::ChooseMicrophone,
+                    SettingControl::Dropdown,
                 )?;
                 self.setting_row(
                     "Recording level",
@@ -638,27 +694,29 @@ impl Renderer {
                     left,
                     right,
                     460.0,
-                    Action::CycleMicrophoneGain,
+                    Action::ChooseMicrophoneGain,
+                    SettingControl::Dropdown,
                 )?;
             }
             SettingsSection::Controls => {
-                let shortcut = model
-                    .pending_hotkey
-                    .as_ref()
-                    .unwrap_or(&model.config.hotkey)
-                    .to_string();
+                let shortcut = if model.hotkey_capture {
+                    "Press shortcut…".into()
+                } else {
+                    model.config.hotkey.to_string()
+                };
                 self.setting_row(
                     "Save replay",
                     &shortcut,
                     if model.hotkey_capture {
-                        "Press the shortcut, Enter to confirm, Escape to cancel."
+                        "Press the new shortcut now, or Escape to cancel."
                     } else {
-                        "Click to capture a new global shortcut."
+                        "Change the global shortcut; no Enter confirmation needed."
                     },
                     left,
                     right,
                     196.0,
                     Action::CaptureHotkey,
+                    SettingControl::Button,
                 )?;
             }
             SettingsSection::Storage => {
@@ -670,6 +728,7 @@ impl Renderer {
                     right,
                     196.0,
                     Action::ChooseStorage,
+                    SettingControl::Button,
                 )?;
                 self.setting_row(
                     "Storage limit",
@@ -678,7 +737,8 @@ impl Renderer {
                     left,
                     right,
                     284.0,
-                    Action::CycleStorageLimit,
+                    Action::ChooseStorageLimit,
+                    SettingControl::Dropdown,
                 )?;
             }
         }
@@ -896,29 +956,76 @@ impl Renderer {
         right: f32,
         top: f32,
         action: Action,
+        control: SettingControl,
     ) -> Result<(), String> {
-        let area = rect(left, top, right, top + 74.0);
+        let area = rect(left, top, right, top + 76.0);
         self.fill(area, SURFACE, 11.0)?;
+        let available = right - left;
+        let control_width = (available * 0.38).clamp(190.0, 360.0);
+        let control_area = rect(
+            right - control_width - 16.0,
+            top + 17.0,
+            right - 16.0,
+            top + 59.0,
+        );
+        let text_right = control_area.left - 18.0;
         self.text(
             title,
-            rect(left + 18.0, top + 14.0, right * 0.62, top + 34.0),
+            rect(left + 18.0, top + 8.0, text_right, top + 34.0),
             &self.body.clone(),
             PRIMARY,
         )?;
         self.text(
             description,
-            rect(left + 18.0, top + 40.0, right * 0.7, top + 60.0),
+            rect(left + 18.0, top + 34.0, text_right, top + 66.0),
             &self.small.clone(),
             SECONDARY,
         )?;
-        self.pill(
-            rect((left + right) * 0.66, top + 17.0, right - 16.0, top + 57.0),
-            SURFACE_HOVER,
-            value,
-            PRIMARY,
-            None,
+        let enabled_toggle = matches!(control, SettingControl::Toggle) && value == "On";
+        self.fill(
+            control_area,
+            if enabled_toggle {
+                SUCCESS
+            } else {
+                SURFACE_HOVER
+            },
+            9.0,
         )?;
-        self.hits.push(HitRegion { rect: area, action });
+        match control {
+            SettingControl::Dropdown => {
+                self.text(
+                    value,
+                    rect(
+                        control_area.left + 14.0,
+                        control_area.top,
+                        control_area.right - 38.0,
+                        control_area.bottom,
+                    ),
+                    &self.body.clone(),
+                    PRIMARY,
+                )?;
+                self.glyph(
+                    Glyph::ChevronDown,
+                    rect(
+                        control_area.right - 29.0,
+                        control_area.top + 13.0,
+                        control_area.right - 13.0,
+                        control_area.bottom - 13.0,
+                    ),
+                    SECONDARY,
+                )?;
+            }
+            SettingControl::Button | SettingControl::Toggle => self.text(
+                value,
+                control_area,
+                &self.body_center.clone(),
+                if enabled_toggle { CANVAS } else { PRIMARY },
+            )?,
+        }
+        self.hits.push(HitRegion {
+            rect: control_area,
+            action,
+        });
         Ok(())
     }
 
@@ -946,17 +1053,7 @@ impl Renderer {
         action: Option<Action>,
     ) -> Result<(), String> {
         self.fill(area, background, 9.0)?;
-        self.text(
-            label,
-            rect(
-                area.left + 12.0,
-                area.top + 10.0,
-                area.right - 8.0,
-                area.bottom - 5.0,
-            ),
-            &self.body.clone(),
-            foreground,
-        )?;
+        self.text(label, area, &self.body_center.clone(), foreground)?;
         if let Some(action) = action {
             self.hits.push(HitRegion { rect: area, action });
         }
@@ -979,6 +1076,96 @@ impl Renderer {
                 );
             } else {
                 target.FillRectangle(&area.d2d(), &brush);
+            }
+        }
+        Ok(())
+    }
+
+    fn glyph(&self, glyph: Glyph, area: LogicalRect, fill: u32) -> Result<(), String> {
+        use windows::Win32::Graphics::Direct2D::ID2D1StrokeStyle;
+
+        let target = self.target.as_ref().expect("render target exists");
+        let brush = unsafe { target.CreateSolidColorBrush(&color(fill), None) }
+            .map_err(|error| error.to_string())?;
+        let width = area.right - area.left;
+        let height = area.bottom - area.top;
+        let point = |x: f32, y: f32| Vector2 {
+            X: area.left + width * x / 24.0,
+            Y: area.top + height * y / 24.0,
+        };
+        let stroke = width.min(height).mul_add(0.085, 0.25).clamp(1.4, 2.2);
+        let line = |from_x: f32, from_y: f32, to_x: f32, to_y: f32| unsafe {
+            target.DrawLine(
+                point(from_x, from_y),
+                point(to_x, to_y),
+                &brush,
+                stroke,
+                None::<&ID2D1StrokeStyle>,
+            );
+        };
+        match glyph {
+            Glyph::Logo => {
+                line(8.0, 3.0, 3.0, 3.0);
+                line(3.0, 3.0, 3.0, 8.0);
+                line(16.0, 3.0, 21.0, 3.0);
+                line(21.0, 3.0, 21.0, 8.0);
+                line(3.0, 16.0, 3.0, 21.0);
+                line(3.0, 21.0, 8.0, 21.0);
+                line(21.0, 16.0, 21.0, 21.0);
+                line(21.0, 21.0, 16.0, 21.0);
+                line(9.0, 8.0, 9.0, 16.0);
+                line(15.0, 8.0, 15.0, 16.0);
+            }
+            Glyph::Home => {
+                line(3.0, 11.0, 12.0, 3.5);
+                line(12.0, 3.5, 21.0, 11.0);
+                line(5.5, 9.0, 5.5, 20.0);
+                line(5.5, 20.0, 18.5, 20.0);
+                line(18.5, 20.0, 18.5, 9.0);
+                line(10.0, 20.0, 10.0, 14.0);
+                line(10.0, 14.0, 14.0, 14.0);
+                line(14.0, 14.0, 14.0, 20.0);
+            }
+            Glyph::Library => {
+                line(4.0, 4.0, 20.0, 4.0);
+                line(20.0, 4.0, 20.0, 20.0);
+                line(20.0, 20.0, 4.0, 20.0);
+                line(4.0, 20.0, 4.0, 4.0);
+                line(10.0, 8.5, 16.0, 12.0);
+                line(16.0, 12.0, 10.0, 15.5);
+                line(10.0, 15.5, 10.0, 8.5);
+            }
+            Glyph::Collections => {
+                line(3.0, 7.0, 9.0, 7.0);
+                line(9.0, 7.0, 11.0, 4.5);
+                line(11.0, 4.5, 20.0, 4.5);
+                line(20.0, 4.5, 21.0, 19.5);
+                line(21.0, 19.5, 3.0, 19.5);
+                line(3.0, 19.5, 3.0, 7.0);
+                line(3.0, 9.5, 21.0, 9.5);
+            }
+            Glyph::Settings => {
+                for (y, knob) in [(6.0, 9.0), (12.0, 16.0), (18.0, 7.0)] {
+                    line(3.0, y, 21.0, y);
+                    unsafe {
+                        target.FillEllipse(
+                            &D2D1_ELLIPSE {
+                                point: point(knob, y),
+                                radiusX: stroke * 1.45,
+                                radiusY: stroke * 1.45,
+                            },
+                            &brush,
+                        );
+                    }
+                }
+            }
+            Glyph::ChevronDown => {
+                line(5.0, 9.0, 12.0, 16.0);
+                line(12.0, 16.0, 19.0, 9.0);
+            }
+            Glyph::Close => {
+                line(7.0, 7.0, 17.0, 17.0);
+                line(17.0, 7.0, 7.0, 17.0);
             }
         }
         Ok(())
@@ -1067,8 +1254,9 @@ fn text_format(
     factory: &IDWriteFactory,
     size: f32,
     semibold: bool,
+    centered: bool,
 ) -> Result<IDWriteTextFormat, String> {
-    unsafe {
+    let format = unsafe {
         factory.CreateTextFormat(
             w!("Segoe UI Variable"),
             None::<&IDWriteFontCollection>,
@@ -1083,7 +1271,23 @@ fn text_format(
             w!("en-US"),
         )
     }
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+    unsafe {
+        format
+            .SetTextAlignment(if centered {
+                DWRITE_TEXT_ALIGNMENT_CENTER
+            } else {
+                DWRITE_TEXT_ALIGNMENT_LEADING
+            })
+            .map_err(|error| error.to_string())?;
+        format
+            .SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
+            .map_err(|error| error.to_string())?;
+        format
+            .SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(format)
 }
 
 fn rect(left: f32, top: f32, right: f32, bottom: f32) -> LogicalRect {
@@ -1092,6 +1296,14 @@ fn rect(left: f32, top: f32, right: f32, bottom: f32) -> LogicalRect {
         top,
         right,
         bottom,
+    }
+}
+
+fn sidebar_width(width: f32) -> f32 {
+    if width >= WIDE_SIDEBAR_BREAKPOINT {
+        214.0
+    } else {
+        72.0
     }
 }
 

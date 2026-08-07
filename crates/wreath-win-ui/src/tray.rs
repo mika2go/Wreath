@@ -11,11 +11,10 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
     DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetCursorPos, GetMessageW, GetWindowLongPtrW,
-    HMENU, HWND_MESSAGE, IDI_APPLICATION, LoadIconW, MF_SEPARATOR, MF_STRING, MSG, PostQuitMessage,
-    RegisterClassW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, TPM_BOTTOMALIGN,
-    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
-    WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NCCREATE, WM_RBUTTONUP, WM_TIMER,
-    WNDCLASSW,
+    HMENU, HWND_MESSAGE, MF_SEPARATOR, MF_STRING, MSG, PostQuitMessage, RegisterClassW,
+    SetForegroundWindow, SetTimer, SetWindowLongPtrW, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON,
+    TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND,
+    WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NCCREATE, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::ipc::{DaemonState, Request, Response};
@@ -316,7 +315,7 @@ fn tray_icon(window: HWND, tooltip: &str) -> NOTIFYICONDATAW {
         uID: TRAY_ID,
         uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
         uCallbackMessage: TRAY_MESSAGE,
-        hIcon: unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default(),
+        hIcon: crate::icon::load(),
         ..Default::default()
     };
     copy_wide(&mut icon.szTip, tooltip);

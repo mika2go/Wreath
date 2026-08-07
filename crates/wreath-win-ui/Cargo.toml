@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+description = "Native Windows interface and tray for Wreath"
 
 [dependencies]
 wreath-core = { path = "../wreath-core" }
@@ -12,6 +13,7 @@ wreath-windows = { path = "../wreath-windows" }
 
 [target.'cfg(windows)'.dependencies]
 windows-core = "0.62.2"
+windows-numerics = "0.3.1"
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct2D",
@@ -24,6 +26,7 @@ windows = { version = "0.62.2", features = [
     "Win32_Security",
     "Win32_System_Registry",
     "Win32_System_Com",
+    "Win32_System_LibraryLoader",
     "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_Shell_PropertiesSystem",
@@ -31,3 +34,6 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1.31"

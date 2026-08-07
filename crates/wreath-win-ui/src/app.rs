@@ -10,20 +10,21 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CREATESTRUCTW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyMenu, DispatchMessageW, FindWindowW, GWLP_USERDATA, GetClientRect, GetCursorPos,
-    GetMessageW, GetWindowLongPtrW, HMENU, MF_SEPARATOR, MF_STRING, MSG, PostQuitMessage,
-    RegisterClassW, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
-    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, TPM_RIGHTBUTTON,
-    TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_CHAR, WM_COMMAND, WM_DESTROY,
-    WM_DPICHANGED, WM_KEYDOWN, WM_LBUTTONUP, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE,
-    WNDCLASSW, WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW,
+    AppendMenuW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreatePopupMenu,
+    CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, FindWindowW, GWLP_USERDATA,
+    GetClientRect, GetCursorPos, GetMessageW, GetWindowLongPtrW, HMENU, IDC_ARROW, LoadCursorW,
+    MF_CHECKED, MF_SEPARATOR, MF_STRING, MINMAXINFO, MSG, PostQuitMessage, RegisterClassW, SW_HIDE,
+    SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
+    WINDOW_EX_STYLE, WM_CHAR, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_KEYDOWN,
+    WM_LBUTTONUP, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE, WNDCLASSW, WS_CHILD, WS_DISABLED,
+    WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::config::Codec;
 use wreath_core::ipc::{Request, Response};
 
-use crate::model::{Action, UiModel};
+use crate::model::{Action, DisplayOption, UiModel};
 use crate::player::{PLAYER_EVENT, Player};
 use crate::renderer::{Renderer, player_bounds};
 
@@ -68,9 +69,13 @@ fn run_initialized() -> Result<(), String> {
     }
     ensure_tray()?;
 
+    let icon = crate::icon::load();
     let class = WNDCLASSW {
         lpfnWndProc: Some(window_proc),
         lpszClassName: WINDOW_CLASS,
+        style: CS_HREDRAW | CS_VREDRAW,
+        hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default(),
+        hIcon: icon,
         ..Default::default()
     };
     if unsafe { RegisterClassW(&class) } == 0 {
@@ -79,6 +84,7 @@ fn run_initialized() -> Result<(), String> {
     }
 
     let mut model = UiModel::load()?;
+    refresh_displays(&mut model);
     refresh_microphones(&mut model);
     let state = Box::new(AppState {
         model,
@@ -186,8 +192,22 @@ unsafe extern "system" fn window_proc(
             if let Some(state) = state_mut(window) {
                 state.width = low_word(lparam.0) as u32;
                 state.height = high_word(lparam.0) as u32;
-                state.renderer.resize(state.width, state.height);
-                update_player_window(state);
+                if state.width > 0 && state.height > 0 {
+                    state.renderer.resize(state.width, state.height);
+                    update_player_window(state);
+                    redraw(window);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_GETMINMAXINFO => {
+            let info = lparam.0 as *mut MINMAXINFO;
+            if !info.is_null() {
+                let scale = state_mut(window).map_or(1.0, |state| state.dpi as f32 / 96.0);
+                unsafe {
+                    (*info).ptMinTrackSize.x = (900.0 * scale).round() as i32;
+                    (*info).ptMinTrackSize.y = (640.0 * scale).round() as i32;
+                }
             }
             LRESULT(0)
         }
@@ -288,7 +308,6 @@ unsafe extern "system" fn window_proc(
                 if let Some(state) = state_mut(window) {
                     state.model.search_focused = false;
                     state.model.hotkey_capture = false;
-                    state.model.pending_hotkey = None;
                     state.model.notice = None;
                 }
                 redraw(window);
@@ -344,6 +363,7 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             state.model.query.clear();
             state.model.active_collection = None;
         }
+        Action::DismissNotice => state.model.notice = None,
         Action::ToggleCursor => {
             state.model.config.capture.cursor = !state.model.config.capture.cursor
         }
@@ -353,49 +373,17 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         Action::ToggleMicrophone => {
             state.model.config.audio.microphone = !state.model.config.audio.microphone
         }
-        Action::CycleDuration => {
-            state.model.config.capture.duration_seconds = cycle(
-                &[15, 30, 45, 60, 90, 120],
-                state.model.config.capture.duration_seconds,
-            )
-        }
-        Action::CycleFrameRate => {
-            state.model.config.capture.frames_per_second = cycle(
-                &[30, 60, 120, 144],
-                state.model.config.capture.frames_per_second,
-            )
-        }
-        Action::CycleCodec => {
-            state.model.config.capture.codec = match state.model.config.capture.codec {
-                Codec::Auto => Codec::H264,
-                Codec::H264 => Codec::Hevc,
-                Codec::Hevc => Codec::Av1,
-                Codec::Av1 => Codec::Auto,
-            }
-        }
-        Action::CycleQuality => {
-            state.model.config.capture.quality =
-                cycle(&[50, 65, 75, 85, 95], state.model.config.capture.quality)
-        }
-        Action::CycleDisplay => cycle_display(&mut state.model),
-        Action::CycleMicrophone => cycle_microphone(&mut state.model),
-        Action::CycleMicrophoneGain => {
-            state.model.config.audio.microphone_gain_percent = cycle(
-                &[50, 75, 100, 125, 150, 200],
-                state.model.config.audio.microphone_gain_percent,
-            )
-        }
-        Action::CycleStorageLimit => {
-            state.model.config.storage.max_megabytes = cycle(
-                &[1_024, 5_120, 10_240, 25_600, 51_200, 102_400],
-                state.model.config.storage.max_megabytes,
-            )
-        }
+        Action::ChooseDuration => choose_duration(window, &mut state.model),
+        Action::ChooseFrameRate => choose_frame_rate(window, &mut state.model),
+        Action::ChooseCodec => choose_codec(window, &mut state.model),
+        Action::ChooseQuality => choose_quality(window, &mut state.model),
+        Action::ChooseDisplay => choose_display(window, &mut state.model),
+        Action::ChooseMicrophone => choose_microphone(window, &mut state.model),
+        Action::ChooseMicrophoneGain => choose_microphone_gain(window, &mut state.model),
+        Action::ChooseStorageLimit => choose_storage_limit(window, &mut state.model),
         Action::CaptureHotkey => {
             state.model.hotkey_capture = true;
-            state.model.pending_hotkey = None;
-            state.model.notice =
-                Some("Press the shortcut, then Enter to confirm or Escape to cancel".into());
+            state.model.notice = Some("Press the new shortcut, or Escape to cancel".into());
         }
         Action::ChooseStorage => choose_storage(&mut state.model),
         Action::SaveSettings => save_settings(&mut state.model),
@@ -419,17 +407,7 @@ fn capture_hotkey(model: &mut UiModel, virtual_key: u32) {
     match virtual_key {
         0x1b => {
             model.hotkey_capture = false;
-            model.pending_hotkey = None;
             model.notice = Some("Shortcut change cancelled".into());
-        }
-        0x0d => {
-            let Some(hotkey) = model.pending_hotkey.take() else {
-                model.notice = Some("Press a shortcut before confirming".into());
-                return;
-            };
-            model.config.hotkey = hotkey;
-            model.hotkey_capture = false;
-            model.notice = Some("Shortcut captured; save settings to apply it".into());
         }
         0x10 | 0x11 | 0x12 | 0x5b | 0x5c => {}
         key if key <= 0xff && (key as u8).is_ascii_alphanumeric() => {
@@ -450,8 +428,13 @@ fn capture_hotkey(model: &mut UiModel, virtual_key: u32) {
                 modifiers,
                 key: char::from(key as u8).to_ascii_uppercase().to_string(),
             };
-            model.notice = Some(format!("Captured {hotkey} — press Enter to confirm"));
-            model.pending_hotkey = Some(hotkey);
+            if hotkey.modifiers.is_empty() {
+                model.notice = Some("Hold at least one modifier with the key".into());
+                return;
+            }
+            model.notice = Some(format!("Captured {hotkey}; save settings to apply it"));
+            model.config.hotkey = hotkey;
+            model.hotkey_capture = false;
         }
         _ => model.notice = Some("Use modifiers plus one letter or number".into()),
     }
@@ -683,7 +666,7 @@ fn handle_character(state: &mut AppState, character: u32) {
 
 fn save_settings(model: &mut UiModel) {
     match model.config.save(&model.paths) {
-        Ok(()) => match send(Request::Reload) {
+        Ok(()) => match reload_capture() {
             Ok(Response::Ok) => model.notice = Some("Settings saved and capture reloaded".into()),
             Ok(Response::Error { message }) | Err(message) => {
                 model.notice = Some(format!("Saved, but reload failed: {message}"))
@@ -694,38 +677,222 @@ fn save_settings(model: &mut UiModel) {
     }
 }
 
-fn cycle_display(model: &mut UiModel) {
-    match wreath_windows::display::displays() {
-        Ok(displays) if !displays.is_empty() => {
-            let current = model.config.capture.monitor.as_deref();
-            let next = displays
-                .iter()
-                .position(|display| Some(display.name.as_str()) == current)
-                .map_or(0, |index| (index + 1) % displays.len());
-            model.config.capture.monitor = Some(displays[next].name.clone());
+fn reload_capture() -> Result<Response, String> {
+    let first_error = match send(Request::Reload) {
+        Ok(response) => return Ok(response),
+        Err(error) => error,
+    };
+    start_daemon().map_err(|start_error| {
+        format!("{first_error}; recorder could not be started: {start_error}")
+    })?;
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        match send(Request::Reload) {
+            Ok(response) => return Ok(response),
+            Err(_) => continue,
         }
-        Ok(_) => model.notice = Some("Windows reported no displays".into()),
-        Err(error) => model.notice = Some(error.to_string()),
+    }
+    Err(format!(
+        "{first_error}; recorder did not become ready after 3 seconds"
+    ))
+}
+
+fn choose_duration(window: HWND, model: &mut UiModel) {
+    let values = [15, 30, 45, 60, 90, 120];
+    let labels = values
+        .iter()
+        .map(|seconds| format!("{seconds} seconds"))
+        .collect::<Vec<_>>();
+    let current = values
+        .iter()
+        .position(|value| *value == model.config.capture.duration_seconds);
+    if let Some(index) = show_choice_menu(window, &labels, current) {
+        model.config.capture.duration_seconds = values[index];
     }
 }
 
-fn cycle_microphone(model: &mut UiModel) {
-    match wreath_windows::audio::microphones() {
-        Ok(devices) if !devices.is_empty() => {
-            model.microphone_names = devices
-                .iter()
-                .map(|device| (device.id.clone(), device.name.clone()))
-                .collect();
-            let current = model.config.audio.microphone_device.as_deref();
-            let next = devices
-                .iter()
-                .position(|device| Some(device.id.as_str()) == current)
-                .map_or(0, |index| (index + 1) % devices.len());
-            model.config.audio.microphone_device = Some(devices[next].id.clone());
-        }
-        Ok(_) => model.notice = Some("Windows reported no microphones".into()),
-        Err(error) => model.notice = Some(error.to_string()),
+fn choose_frame_rate(window: HWND, model: &mut UiModel) {
+    let values = model.frame_rate_options();
+    let labels = values
+        .iter()
+        .map(|rate| format!("{rate} fps"))
+        .collect::<Vec<_>>();
+    let current = values
+        .iter()
+        .position(|value| *value == model.config.capture.frames_per_second);
+    if let Some(index) = show_choice_menu(window, &labels, current) {
+        model.config.capture.frames_per_second = values[index];
     }
+}
+
+fn choose_codec(window: HWND, model: &mut UiModel) {
+    let values = [Codec::Auto, Codec::H264, Codec::Hevc, Codec::Av1];
+    let labels = ["Auto (recommended)", "H.264", "HEVC", "AV1"]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let current = values
+        .iter()
+        .position(|value| *value == model.config.capture.codec);
+    if let Some(index) = show_choice_menu(window, &labels, current) {
+        model.config.capture.codec = values[index];
+    }
+}
+
+fn choose_quality(window: HWND, model: &mut UiModel) {
+    let values = [50, 65, 75, 85, 95, 100];
+    let labels = values
+        .iter()
+        .map(|quality| format!("{quality}%"))
+        .collect::<Vec<_>>();
+    let current = values
+        .iter()
+        .position(|value| *value == model.config.capture.quality);
+    if let Some(index) = show_choice_menu(window, &labels, current) {
+        model.config.capture.quality = values[index];
+    }
+}
+
+fn choose_display(window: HWND, model: &mut UiModel) {
+    if let Err(error) = load_displays(model) {
+        model.notice = Some(error);
+        return;
+    }
+    let labels = model
+        .displays
+        .iter()
+        .map(|display| display.label.clone())
+        .collect::<Vec<_>>();
+    let current = model.config.capture.monitor.as_deref().and_then(|name| {
+        model
+            .displays
+            .iter()
+            .position(|display| display.name.eq_ignore_ascii_case(name))
+    });
+    let Some(index) = show_choice_menu(window, &labels, current) else {
+        return;
+    };
+    let display = &model.displays[index];
+    model.config.capture.monitor = Some(display.name.clone());
+    let native_rate = (display.refresh_rate.round() as u16).clamp(15, 240);
+    model.config.capture.frames_per_second =
+        model.config.capture.frames_per_second.min(native_rate);
+}
+
+fn choose_microphone(window: HWND, model: &mut UiModel) {
+    refresh_microphones(model);
+    let mut labels = vec!["Windows default".to_string()];
+    labels.extend(model.microphone_names.iter().map(|(_, name)| name.clone()));
+    let current = model
+        .config
+        .audio
+        .microphone_device
+        .as_deref()
+        .and_then(|id| {
+            model
+                .microphone_names
+                .iter()
+                .position(|(device_id, _)| device_id == id)
+        })
+        .map_or(Some(0), |index| Some(index + 1));
+    if let Some(index) = show_choice_menu(window, &labels, current) {
+        model.config.audio.microphone_device = index
+            .checked_sub(1)
+            .and_then(|index| model.microphone_names.get(index))
+            .map(|(id, _)| id.clone());
+    }
+}
+
+fn choose_microphone_gain(window: HWND, model: &mut UiModel) {
+    let values = [50, 75, 100, 125, 150, 200];
+    let labels = values
+        .iter()
+        .map(|gain| format!("{gain}%"))
+        .collect::<Vec<_>>();
+    let current = values
+        .iter()
+        .position(|value| *value == model.config.audio.microphone_gain_percent);
+    if let Some(index) = show_choice_menu(window, &labels, current) {
+        model.config.audio.microphone_gain_percent = values[index];
+    }
+}
+
+fn choose_storage_limit(window: HWND, model: &mut UiModel) {
+    let values = [1_024, 5_120, 10_240, 25_600, 51_200, 102_400];
+    let labels = ["1 GiB", "5 GiB", "10 GiB", "25 GiB", "50 GiB", "100 GiB"]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let current = values
+        .iter()
+        .position(|value| *value == model.config.storage.max_megabytes);
+    if let Some(index) = show_choice_menu(window, &labels, current) {
+        model.config.storage.max_megabytes = values[index];
+    }
+}
+
+fn show_choice_menu(window: HWND, labels: &[String], current: Option<usize>) -> Option<usize> {
+    let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
+        return None;
+    };
+    for (index, label) in labels.iter().enumerate() {
+        let label = wide(label);
+        let flags = if current == Some(index) {
+            MF_STRING | MF_CHECKED
+        } else {
+            MF_STRING
+        };
+        let _ = unsafe { AppendMenuW(menu, flags, index + 1, PCWSTR(label.as_ptr())) };
+    }
+    let mut point = POINT::default();
+    let selected = if unsafe { GetCursorPos(&mut point) }.is_ok() {
+        unsafe {
+            let _ = SetForegroundWindow(window);
+            TrackPopupMenu(
+                menu,
+                TPM_RIGHTBUTTON | TPM_RETURNCMD,
+                point.x,
+                point.y,
+                None,
+                window,
+                None,
+            )
+            .0 as usize
+        }
+    } else {
+        0
+    };
+    let _ = unsafe { DestroyMenu(menu) };
+    selected
+        .checked_sub(1)
+        .filter(|index| *index < labels.len())
+}
+
+fn load_displays(model: &mut UiModel) -> Result<(), String> {
+    let displays = wreath_windows::display::displays().map_err(|error| error.to_string())?;
+    if displays.is_empty() {
+        return Err("Windows reported no displays".into());
+    }
+    model.displays = displays
+        .into_iter()
+        .map(|display| {
+            let friendly_name = display.name.trim_start_matches(r#"\\.\"#);
+            let primary = if display.primary { " · Primary" } else { "" };
+            DisplayOption {
+                label: format!(
+                    "{} · {}×{} · {:.0} Hz{}",
+                    friendly_name, display.width, display.height, display.refresh_rate, primary
+                ),
+                name: display.name,
+                refresh_rate: display.refresh_rate,
+            }
+        })
+        .collect();
+    Ok(())
+}
+
+fn refresh_displays(model: &mut UiModel) {
+    let _ = load_displays(model);
 }
 
 fn refresh_microphones(model: &mut UiModel) {
@@ -768,13 +935,6 @@ fn set_result(model: &mut UiModel, result: Result<(), String>, success: &str) {
     model.notice = Some(result.map_or_else(|error| error, |_| success.into()));
 }
 
-fn cycle<T: Copy + PartialEq>(values: &[T], current: T) -> T {
-    values
-        .iter()
-        .position(|value| *value == current)
-        .map_or(values[0], |index| values[(index + 1) % values.len()])
-}
-
 fn send(request: Request) -> Result<Response, String> {
     let paths = wreath_core::paths::AppPaths::discover();
     wreath_windows::control::send_request(paths.pipe_name(), &request)
@@ -791,6 +951,22 @@ fn ensure_tray() -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("cannot start {}: {error}", tray.display()))
+}
+
+fn start_daemon() -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let daemon = executable
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("wreathd.exe");
+    std::process::Command::new(&daemon)
+        .creation_flags(CREATE_NO_WINDOW.0)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("cannot start {}: {error}", daemon.display()))
 }
 
 fn open_path(path: &Path) {

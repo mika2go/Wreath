@@ -19,6 +19,8 @@ OutFile "${OUTFILE}"
 InstallDir "$LOCALAPPDATA\Wreath"
 InstallDirRegKey HKCU "Software\Wreath" "InstallDir"
 BrandingText "Wreath"
+Icon "${__FILEDIR__}\wreath.ico"
+UninstallIcon "${__FILEDIR__}\wreath.ico"
 
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey /LANG=1033 "ProductName" "Wreath"
