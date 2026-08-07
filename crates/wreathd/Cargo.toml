@@ -8,3 +8,6 @@ rust-version.workspace = true
 
 [dependencies]
 wreath-core = { path = "../wreath-core" }
+
+[target.'cfg(windows)'.dependencies]
+wreath-windows = { path = "../wreath-windows" }

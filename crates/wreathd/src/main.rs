@@ -1,24 +1,45 @@
+#[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::io::{self, BufReader};
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "linux")]
 use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 use std::process::ExitCode;
+#[cfg(target_os = "linux")]
 use std::thread;
+#[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "linux")]
 use wreath_core::config::Config;
+#[cfg(target_os = "linux")]
 use wreath_core::display;
+#[cfg(target_os = "linux")]
 use wreath_core::engine::{GpuScreenRecorder, GpuScreenRecorderBackend};
+#[cfg(target_os = "linux")]
 use wreath_core::ipc::{self, DaemonState, Request, Response};
+#[cfg(target_os = "linux")]
 use wreath_core::paths::AppPaths;
+#[cfg(target_os = "linux")]
 use wreath_core::replay::{ReplayBackend, ReplaySpec};
+#[cfg(target_os = "linux")]
 use wreath_core::shortcuts;
 
+#[cfg(target_os = "windows")]
+mod windows;
+
+#[cfg(target_os = "linux")]
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+#[cfg(target_os = "linux")]
 const RECORDER_READY_DELAY: Duration = Duration::from_millis(750);
+#[cfg(target_os = "linux")]
 const SHORTCUT_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
+#[cfg(target_os = "linux")]
 struct Daemon {
     paths: AppPaths,
     config: Config,
@@ -36,6 +57,7 @@ struct Daemon {
     shutdown: bool,
 }
 
+#[cfg(target_os = "linux")]
 fn main() -> ExitCode {
     if let Err(error) = run() {
         eprintln!("wreathd: {error}");
@@ -44,6 +66,16 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[cfg(target_os = "windows")]
+fn main() -> ExitCode {
+    if let Err(error) = windows::run() {
+        eprintln!("wreathd: {error}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+#[cfg(target_os = "linux")]
 fn run() -> Result<(), String> {
     let paths = AppPaths::discover();
     let config = Config::load(&paths).map_err(|error| error.to_string())?;
@@ -119,6 +151,7 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 impl Daemon {
     fn handle(&mut self, mut stream: UnixStream) -> Result<(), String> {
         stream
@@ -357,6 +390,7 @@ impl Daemon {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn control_executable() -> PathBuf {
     if let Some(path) = std::env::var_os("WREATH_CONTROL") {
         return PathBuf::from(path);
@@ -370,11 +404,12 @@ fn control_executable() -> PathBuf {
     PathBuf::from("/usr/bin/wreathctl")
 }
 
+#[cfg(target_os = "linux")]
 fn restart_delay(attempt: u32) -> Duration {
     Duration::from_secs((1_u64 << attempt.min(5)).min(30))
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

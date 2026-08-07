@@ -862,6 +862,7 @@ name = "wreathd"
 version = "0.1.0"
 dependencies = [
  "wreath-core",
+ "wreath-windows",
 ]
 
 [[package]]
