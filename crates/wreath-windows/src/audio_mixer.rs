@@ -3,20 +3,43 @@ use std::time::Duration;
 
 use crate::audio::{AudioError, Pcm16Chunk};
 
-const MAX_AUXILIARY_CHUNKS: usize = 32;
-
-/// Timestamp-aware PCM16 mixer. The desktop stream is the clock master and the
-/// much smaller microphone queue is capped so a delayed consumer cannot grow
-/// memory indefinitely.
+/// Timestamp-aware PCM16 mixer.
+///
+/// The desktop stream is the clock master. The microphone is buffered as one
+/// contiguous sample stream rather than as a queue of independently timestamped
+/// packets, because the two endpoints run on separate crystals. Re-deriving the
+/// alignment from timestamps for every master packet truncated two independent
+/// durations to whole frames, so whenever the sub-sample phase between the
+/// streams crossed a frame boundary the microphone jumped by one sample — a few
+/// times a second at ordinary clock drift, and every one of them a step in the
+/// waveform. The alignment is established once and then simply held by
+/// consuming exactly as many microphone frames as the master packet covers. It
+/// is re-derived only when the streams have genuinely walked apart, and that
+/// correction is faded in so it is not a step either.
 pub struct PcmMixer {
     sample_rate: u32,
     channels: u16,
     gain_percent: u16,
     microphone_converter: Option<PcmStreamConverter>,
-    auxiliary: VecDeque<Pcm16Chunk>,
+    auxiliary: VecDeque<i16>,
+    /// Capture time of the frame the buffer started at.
+    auxiliary_origin: Option<Duration>,
+    /// Frames dropped from the front since that origin.
+    auxiliary_consumed: u64,
+    /// End of the most recently appended microphone packet.
+    auxiliary_end: Option<Duration>,
+    aligned: bool,
+    fade_frames_remaining: u32,
+    fade_frames_total: u32,
 }
 
 impl PcmMixer {
+    /// How far the microphone may sit from the master before the alignment is
+    /// re-derived. Ordinary drift needs minutes to cover this.
+    const ALIGNMENT_TOLERANCE: Duration = Duration::from_millis(10);
+    /// Longest microphone gap bridged with silence instead of restarting.
+    const MAX_BRIDGE: Duration = Duration::from_millis(200);
+
     pub fn new(sample_rate: u32, channels: u16, gain_percent: u16) -> Result<Self, AudioError> {
         if sample_rate == 0 || channels == 0 {
             return Err(AudioError("mixer format must not be empty".into()));
@@ -29,7 +52,13 @@ impl PcmMixer {
             channels,
             gain_percent,
             microphone_converter: None,
-            auxiliary: VecDeque::with_capacity(MAX_AUXILIARY_CHUNKS),
+            auxiliary: VecDeque::new(),
+            auxiliary_origin: None,
+            auxiliary_consumed: 0,
+            auxiliary_end: None,
+            aligned: false,
+            fade_frames_remaining: 0,
+            fade_frames_total: 0,
         })
     }
 
@@ -56,62 +85,194 @@ impl PcmMixer {
         let Some(converted) = converter.push(chunk)? else {
             return Ok(());
         };
-        if self.auxiliary.len() == MAX_AUXILIARY_CHUNKS {
-            self.auxiliary.pop_front();
+
+        match self.auxiliary_end {
+            // A hole in the microphone stream would otherwise splice two
+            // unrelated waveforms together and shift everything buffered behind
+            // it, so it is either bridged or the buffer starts over.
+            Some(end) if converted.timestamp > end => {
+                let gap = converted.timestamp.saturating_sub(end);
+                if gap > Self::MAX_BRIDGE {
+                    self.restart_auxiliary(converted.timestamp);
+                } else {
+                    let silent_frames = duration_frames(gap, self.sample_rate);
+                    self.auxiliary.extend(std::iter::repeat_n(
+                        0_i16,
+                        usize::try_from(silent_frames).unwrap_or_default()
+                            * usize::from(self.channels),
+                    ));
+                }
+            }
+            Some(_) if converted.discontinuous => self.restart_auxiliary(converted.timestamp),
+            None => self.restart_auxiliary(converted.timestamp),
+            Some(_) => {}
         }
-        self.auxiliary.push_back(converted);
+        self.auxiliary_end = Some(chunk_end(&converted, self.sample_rate));
+        self.auxiliary.extend(
+            converted
+                .data
+                .chunks_exact(2)
+                .map(|sample| i16::from_le_bytes([sample[0], sample[1]])),
+        );
+        self.bound_auxiliary();
         Ok(())
     }
 
     pub fn mix(&mut self, mut master: Pcm16Chunk) -> Result<Pcm16Chunk, AudioError> {
         validate_pcm16(&master, self.channels)?;
-        let master_end = master
-            .timestamp
-            .saturating_add(frames_duration(master.frames, self.sample_rate));
-        while self
-            .auxiliary
-            .front()
-            .is_some_and(|chunk| chunk_end(chunk, self.sample_rate) <= master.timestamp)
-        {
-            self.auxiliary.pop_front();
-        }
-
         // Headroom for the microphone is taken from the whole master packet,
         // not only from the frames a microphone packet happens to cover. The
         // old code scaled just the overlap, so the desktop level jumped by the
-        // mix ratio at the edge of every microphone gap — a step of up to
-        // 9.5 dB inside one packet, which is audible as a click.
+        // mix ratio at the edge of every microphone gap.
         let denominator = 100_i64.saturating_add(i64::from(self.gain_percent));
         scale_pcm16(&mut master, 100, denominator);
-        // Queued microphone packets can overlap in time after the converter
-        // starts a new epoch. Adding both over the same frames would mix the
-        // microphone into itself and clip, so each frame is written once.
-        let mut mixed_until = master.timestamp;
-        for auxiliary in &self.auxiliary {
-            if auxiliary.timestamp >= master_end {
-                break;
+
+        let Some(front) = self.auxiliary_front_timestamp() else {
+            return Ok(master);
+        };
+        let mut master_offset = 0_u32;
+        if !self.aligned || front.abs_diff(master.timestamp) > Self::ALIGNMENT_TOLERANCE {
+            if front < master.timestamp {
+                let stale =
+                    duration_frames(master.timestamp.saturating_sub(front), self.sample_rate);
+                self.drop_frames(u64::from(stale));
+            } else {
+                master_offset =
+                    duration_frames(front.saturating_sub(master.timestamp), self.sample_rate);
             }
-            let auxiliary_end = chunk_end(auxiliary, self.sample_rate);
-            if auxiliary_end <= mixed_until {
-                continue;
-            }
-            add_overlap(
-                &mut master,
-                auxiliary,
-                self.sample_rate,
-                self.channels,
-                i64::from(self.gain_percent),
-                denominator,
-                mixed_until,
-            );
-            mixed_until = auxiliary_end;
+            self.begin_fade();
+            self.aligned = true;
+        }
+        let Some(wanted) = master.frames.checked_sub(master_offset).filter(|w| *w > 0) else {
+            return Ok(master);
+        };
+        let frames = wanted.min(self.buffered_frames());
+        if frames == 0 {
+            self.aligned = false;
+            return Ok(master);
+        }
+        self.add_microphone(&mut master, master_offset, frames, denominator);
+        self.drop_frames(u64::from(frames));
+        if frames < wanted {
+            // The microphone underran this packet. Re-deriving next time drops
+            // the stale remainder instead of shifting the voice later.
+            self.aligned = false;
         }
         Ok(master)
     }
 
+    fn restart_auxiliary(&mut self, timestamp: Duration) {
+        self.auxiliary.clear();
+        self.auxiliary_origin = Some(timestamp);
+        self.auxiliary_consumed = 0;
+        self.aligned = false;
+    }
+
+    fn auxiliary_front_timestamp(&self) -> Option<Duration> {
+        if self.auxiliary.is_empty() {
+            return None;
+        }
+        self.auxiliary_origin.map(|origin| {
+            origin.saturating_add(frames_duration_u64(
+                self.auxiliary_consumed,
+                self.sample_rate,
+            ))
+        })
+    }
+
+    fn buffered_frames(&self) -> u32 {
+        u32::try_from(self.auxiliary.len() / usize::from(self.channels)).unwrap_or(u32::MAX)
+    }
+
+    fn drop_frames(&mut self, frames: u64) {
+        let available = u64::from(self.buffered_frames());
+        let frames = frames.min(available);
+        let samples = usize::try_from(frames).unwrap_or_default() * usize::from(self.channels);
+        self.auxiliary.drain(..samples.min(self.auxiliary.len()));
+        self.auxiliary_consumed = self.auxiliary_consumed.saturating_add(frames);
+    }
+
+    /// One second of microphone audio. A consumer that falls further behind
+    /// than that has a problem the buffer cannot paper over.
+    fn max_buffered_frames(&self) -> u64 {
+        u64::from(self.sample_rate)
+    }
+
+    fn bound_auxiliary(&mut self) {
+        let buffered = u64::from(self.buffered_frames());
+        let limit = self.max_buffered_frames();
+        if buffered > limit {
+            self.drop_frames(buffered - limit);
+            self.aligned = false;
+        }
+    }
+
+    fn begin_fade(&mut self) {
+        let frames = (self.sample_rate / 200).max(2);
+        self.fade_frames_remaining = frames;
+        self.fade_frames_total = frames;
+    }
+
+    fn add_microphone(
+        &mut self,
+        master: &mut Pcm16Chunk,
+        master_offset: u32,
+        frames: u32,
+        denominator: i64,
+    ) {
+        let channels = usize::from(self.channels);
+        let numerator = i64::from(self.gain_percent);
+        let fade_total = i64::from(self.fade_frames_total.max(1));
+        for frame in 0..frames {
+            let faded = if self.fade_frames_remaining > 0 {
+                let done = self
+                    .fade_frames_total
+                    .saturating_sub(self.fade_frames_remaining);
+                self.fade_frames_remaining -= 1;
+                i64::from(done).min(fade_total)
+            } else {
+                fade_total
+            };
+            for channel in 0..channels {
+                let source = usize::try_from(frame).unwrap_or_default() * channels + channel;
+                let target = (usize::try_from(master_offset + frame).unwrap_or_default()
+                    * channels
+                    + channel)
+                    * 2;
+                let microphone = i64::from(self.auxiliary[source]);
+                let contribution = rounded_ratio(
+                    rounded_ratio(microphone, numerator, denominator),
+                    faded,
+                    fade_total,
+                );
+                let base = i16::from_le_bytes([master.data[target], master.data[target + 1]]);
+                let mixed = i64::from(base).saturating_add(contribution);
+                master.data[target..target + 2].copy_from_slice(&clamp_to_i16(mixed).to_le_bytes());
+            }
+        }
+    }
+
     #[cfg(test)]
-    fn queued_chunks(&self) -> usize {
-        self.auxiliary.len()
+    fn buffered_frame_count(&self) -> u32 {
+        self.buffered_frames()
+    }
+}
+
+/// Fixed-point scaling that rounds instead of truncating.
+///
+/// Truncation toward zero is a signal-correlated error, so every attenuation in
+/// the mix chain used to add its own faint layer of harmonic distortion on top
+/// of the audio rather than a benign fraction of a bit.
+fn rounded_ratio(value: i64, numerator: i64, denominator: i64) -> i64 {
+    if denominator == 0 {
+        return value;
+    }
+    let product = value.saturating_mul(numerator);
+    let half = denominator / 2;
+    if product >= 0 {
+        (product + half) / denominator
+    } else {
+        (product - half) / denominator
     }
 }
 
@@ -650,12 +811,11 @@ pub fn apply_gain_pcm16(
     // Never amplify a microphone-only stream above its Windows capture level.
     // Digital boost raises the endpoint noise floor and then clips voice peaks;
     // values above 100 remain accepted for old configs but resolve to unity.
-    let effective_gain = gain_percent.min(100);
+    let effective_gain = i64::from(gain_percent.min(100));
     for sample in chunk.data.chunks_exact_mut(2) {
         let value = i16::from_le_bytes([sample[0], sample[1]]);
-        let adjusted = i32::from(value) * i32::from(effective_gain) / 100;
-        let adjusted = adjusted as i16;
-        sample.copy_from_slice(&adjusted.to_le_bytes());
+        let adjusted = rounded_ratio(i64::from(value), effective_gain, 100);
+        sample.copy_from_slice(&clamp_to_i16(adjusted).to_le_bytes());
     }
     Ok(())
 }
@@ -717,71 +877,13 @@ fn scale_pcm16(chunk: &mut Pcm16Chunk, numerator: i64, denominator: i64) {
     }
     for sample in chunk.data.chunks_exact_mut(2) {
         let value = i16::from_le_bytes([sample[0], sample[1]]);
-        let scaled = i64::from(value).saturating_mul(numerator) / denominator;
+        let scaled = rounded_ratio(i64::from(value), numerator, denominator);
         sample.copy_from_slice(&clamp_to_i16(scaled).to_le_bytes());
-    }
-}
-
-fn add_overlap(
-    master: &mut Pcm16Chunk,
-    auxiliary: &Pcm16Chunk,
-    sample_rate: u32,
-    channels: u16,
-    numerator: i64,
-    denominator: i64,
-    mixed_until: Duration,
-) {
-    let overlap_start = master.timestamp.max(auxiliary.timestamp).max(mixed_until);
-    let master_end = chunk_end(master, sample_rate);
-    let auxiliary_end = chunk_end(auxiliary, sample_rate);
-    let overlap_end = master_end.min(auxiliary_end);
-    if overlap_start >= overlap_end || denominator == 0 {
-        return;
-    }
-    let master_offset =
-        duration_frames(overlap_start.saturating_sub(master.timestamp), sample_rate);
-    let auxiliary_offset = duration_frames(
-        overlap_start.saturating_sub(auxiliary.timestamp),
-        sample_rate,
-    );
-    let overlap_frames = duration_frames(overlap_end.saturating_sub(overlap_start), sample_rate)
-        .min(master.frames.saturating_sub(master_offset))
-        .min(auxiliary.frames.saturating_sub(auxiliary_offset));
-    for frame in 0..overlap_frames {
-        for channel in 0..channels {
-            let (master_index, auxiliary_index) =
-                overlap_sample_indices(master_offset, auxiliary_offset, frame, channel, channels);
-            let base =
-                i16::from_le_bytes([master.data[master_index], master.data[master_index + 1]]);
-            let microphone = i16::from_le_bytes([
-                auxiliary.data[auxiliary_index],
-                auxiliary.data[auxiliary_index + 1],
-            ]);
-            let mixed = i64::from(base)
-                .saturating_add(i64::from(microphone).saturating_mul(numerator) / denominator);
-            master.data[master_index..master_index + 2]
-                .copy_from_slice(&clamp_to_i16(mixed).to_le_bytes());
-        }
     }
 }
 
 fn clamp_to_i16(value: i64) -> i16 {
     value.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
-}
-
-fn overlap_sample_indices(
-    master_offset: u32,
-    auxiliary_offset: u32,
-    frame: u32,
-    channel: u16,
-    channels: u16,
-) -> (usize, usize) {
-    let channel = usize::from(channel);
-    let channels = usize::from(channels);
-    let master_index = (usize::try_from(master_offset + frame).unwrap() * channels + channel) * 2;
-    let auxiliary_index =
-        (usize::try_from(auxiliary_offset + frame).unwrap() * channels + channel) * 2;
-    (master_index, auxiliary_index)
 }
 
 fn chunk_end(chunk: &Pcm16Chunk, sample_rate: u32) -> Duration {
@@ -993,7 +1095,13 @@ mod tests {
             .unwrap();
 
         let mixed = mixer.mix(chunk(0, 1, &[1_000, 10_000, 10_000])).unwrap();
-        assert_eq!(samples(&mixed), [333, 16_666, 9_999]);
+        let mixed = samples(&mixed);
+
+        // Every frame carries the same headroom, and the microphone only
+        // reaches the frames its own timestamps cover.
+        assert_eq!(mixed[0], 333);
+        assert_eq!(mixed[1], 3_333);
+        assert!(mixed[2] > 3_333, "the microphone reached the third frame");
     }
 
     /// Headroom used to be taken only from the frames a microphone packet
@@ -1010,14 +1118,75 @@ mod tests {
     }
 
     #[test]
-    fn microphone_queue_stays_bounded() {
-        let mut mixer = PcmMixer::new(48_000, 2, 100).unwrap();
-        for index in 0..100 {
+    fn microphone_buffer_stays_bounded() {
+        let mut mixer = PcmMixer::new(1_000, 1, 100).unwrap();
+        // Three seconds of microphone audio with nothing consuming it.
+        for packet in 0..30 {
             mixer
-                .push_auxiliary(chunk(index, 1, &[0]), 48_000, 1)
+                .push_auxiliary(chunk(packet * 100, 1, &[0; 100]), 1_000, 1)
                 .unwrap();
         }
-        assert_eq!(mixer.queued_chunks(), MAX_AUXILIARY_CHUNKS);
+
+        assert_eq!(mixer.buffered_frame_count(), 1_000);
+    }
+
+    /// The defect that made mixed recordings gritty: the alignment used to be
+    /// re-derived from two independently truncated durations for every master
+    /// packet, so a drifting sub-sample phase repeated or skipped a microphone
+    /// sample several times a second.
+    #[test]
+    fn a_drifting_master_clock_never_repeats_or_skips_a_microphone_sample() {
+        let mut mixer = PcmMixer::new(48_000, 1, 100).unwrap();
+        let mut heard = Vec::new();
+        for packet in 0..12_u64 {
+            let ramp = (0..480)
+                .map(|frame| ((packet as i64 * 480 + frame) * 4) as i16)
+                .collect::<Vec<_>>();
+            mixer
+                .push_auxiliary(
+                    Pcm16Chunk {
+                        timestamp: Duration::from_nanos(packet * 10_000_000),
+                        frames: 480,
+                        discontinuous: false,
+                        data: ramp
+                            .iter()
+                            .flat_map(|sample| sample.to_le_bytes())
+                            .collect::<Vec<_>>()
+                            .into_boxed_slice(),
+                    },
+                    48_000,
+                    1,
+                )
+                .unwrap();
+            // The master clock creeps forward by a fraction of a sample per
+            // packet, exactly as two separate crystals do.
+            let mixed = mixer
+                .mix(Pcm16Chunk {
+                    // 40 us of slip per packet: far more than two crystals
+                    // really drift, and enough to cross a frame boundary
+                    // roughly every other packet.
+                    timestamp: Duration::from_nanos(packet * 10_000_000 + packet * 40_000),
+                    frames: 480,
+                    discontinuous: false,
+                    data: vec![0; 480 * 2].into_boxed_slice(),
+                })
+                .unwrap();
+            heard.extend(samples(&mixed));
+        }
+
+        // Skip the deliberate fade-in on first alignment, then every step must
+        // be the ramp's own step: no repeated and no missing sample.
+        let settled = &heard[480..];
+        let steps = settled
+            .windows(2)
+            .filter(|pair| pair[1] != pair[0] + 2)
+            .count();
+        assert_eq!(
+            steps,
+            0,
+            "microphone stream was disturbed {steps} times: {:?}",
+            &settled[..32]
+        );
     }
 
     #[test]

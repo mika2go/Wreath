@@ -2,7 +2,12 @@ use crate::audio::AudioError;
 #[cfg(target_os = "windows")]
 use crate::audio::Pcm16Chunk;
 
-pub const AAC_BYTES_PER_SECOND: u32 = 16_000;
+/// 192 kbit/s, the highest rate the Microsoft AAC encoder accepts.
+///
+/// AAC-LC at 128 kbit/s is not transparent on stereo material, and speech over
+/// game audio is exactly the noisy, broadband content its artefacts show up on
+/// as a faint gritty edge. The extra 8 kB/s is nothing against the video.
+pub const AAC_BYTES_PER_SECOND: u32 = 24_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioEncoderSettings {
@@ -528,11 +533,11 @@ mod tests {
     #[test]
     fn selects_bounded_aac_lc_rates() {
         let stereo = AudioEncoderSettings::for_capture(48_000, 2).unwrap();
-        assert_eq!(stereo.bytes_per_second, 16_000);
+        assert_eq!(stereo.bytes_per_second, 24_000);
         assert_eq!(stereo.pcm_bytes_per_second(), 192_000);
 
         let surround = AudioEncoderSettings::for_capture(48_000, 6).unwrap();
-        assert_eq!(surround.bytes_per_second, 96_000);
+        assert_eq!(surround.bytes_per_second, 144_000);
         assert_eq!(surround.block_align(), 12);
     }
 
