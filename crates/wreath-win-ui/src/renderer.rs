@@ -38,7 +38,6 @@ const SURFACE_HOVER: u32 = 0x202024;
 const PRIMARY: u32 = 0xf4f5f9;
 const SECONDARY: u32 = 0x777e8e;
 const SUCCESS: u32 = 0x76d9a3;
-const DANGER: u32 = 0xe58b8b;
 const WIDE_SIDEBAR_BREAKPOINT: f32 = 1080.0;
 
 #[derive(Debug, Clone, Copy)]
