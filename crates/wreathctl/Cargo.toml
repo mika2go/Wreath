@@ -9,3 +9,6 @@ rust-version.workspace = true
 [dependencies]
 wreath-core = { path = "../wreath-core" }
 toml.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+wreath-windows = { path = "../wreath-windows" }

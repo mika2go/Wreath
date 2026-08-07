@@ -1,26 +1,51 @@
+#[cfg(target_os = "linux")]
 use std::env;
+#[cfg(target_os = "linux")]
 use std::io::{BufReader, Write};
+#[cfg(target_os = "linux")]
 use std::os::unix::net::UnixStream;
+#[cfg(target_os = "linux")]
 use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::process::Command;
+use std::process::ExitCode;
+#[cfg(target_os = "linux")]
 use std::process::Stdio;
-use std::process::{Command, ExitCode};
+#[cfg(target_os = "linux")]
 use std::thread;
+#[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "linux")]
 use wreath_core::display;
+#[cfg(target_os = "linux")]
 use wreath_core::engine;
+#[cfg(target_os = "linux")]
 use wreath_core::ipc::{self, Request, Response};
+#[cfg(target_os = "linux")]
 use wreath_core::paths::AppPaths;
+#[cfg(target_os = "linux")]
 use wreath_core::replay::ReplaySpec;
+#[cfg(target_os = "linux")]
 use wreath_core::shortcuts::{self, ShortcutInstall};
+#[cfg(target_os = "linux")]
 use wreath_core::{config::Codec, config::Config, config::HotkeyConfig};
 
+#[cfg(target_os = "windows")]
+mod windows;
+
+#[cfg(target_os = "linux")]
 const SOUND_SAMPLE_RATE: usize = 48_000;
+#[cfg(target_os = "linux")]
 const SOUND_DURATION_SECONDS: f32 = 0.48;
+#[cfg(target_os = "linux")]
 const SOUND_PLAYBACK_VOLUME: &str = "9175";
+#[cfg(target_os = "linux")]
 const DAEMON_START_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(target_os = "linux")]
 const DAEMON_CONNECT_INTERVAL: Duration = Duration::from_millis(100);
 
+#[cfg(target_os = "linux")]
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -31,6 +56,18 @@ fn main() -> ExitCode {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn main() -> ExitCode {
+    match windows::run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("wreathctl: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn run() -> Result<(), String> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     let command = arguments.first().map(String::as_str).unwrap_or("status");
@@ -116,6 +153,7 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn show_clip_saved_feedback(path: &Path) {
     let detail = clip_saved_detail(path);
 
@@ -133,6 +171,7 @@ fn show_clip_saved_feedback(path: &Path) {
     play_clip_saved_sound();
 }
 
+#[cfg(target_os = "linux")]
 fn clip_saved_detail(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -140,6 +179,7 @@ fn clip_saved_detail(path: &Path) -> String {
         .unwrap_or_else(|| "Replay saved successfully".to_owned())
 }
 
+#[cfg(target_os = "linux")]
 fn spawn_quiet(program: &str, arguments: &[&str]) {
     let _ = Command::new(program)
         .args(arguments)
@@ -149,6 +189,7 @@ fn spawn_quiet(program: &str, arguments: &[&str]) {
         .spawn();
 }
 
+#[cfg(target_os = "linux")]
 fn play_clip_saved_sound() {
     let Ok(mut player) = Command::new("paplay")
         .args([
@@ -171,6 +212,7 @@ fn play_clip_saved_sound() {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn render_clip_saved_sound() -> Vec<u8> {
     let sample_count = (SOUND_SAMPLE_RATE as f32 * SOUND_DURATION_SECONDS) as usize;
     let mut audio = Vec::with_capacity(sample_count * size_of::<i16>());
@@ -184,6 +226,7 @@ fn render_clip_saved_sound() -> Vec<u8> {
     audio
 }
 
+#[cfg(target_os = "linux")]
 fn chime_tone(time: f32, start: f32, frequency: f32, duration: f32, level: f32) -> f32 {
     let local_time = time - start;
     if !(0.0..duration).contains(&local_time) {
@@ -197,6 +240,7 @@ fn chime_tone(time: f32, start: f32, frequency: f32, duration: f32, level: f32) 
     level * attack * release * decay * timbre
 }
 
+#[cfg(target_os = "linux")]
 fn doctor() -> Result<(), String> {
     let paths = AppPaths::discover();
     let config = Config::load(&paths).map_err(|error| error.to_string())?;
@@ -246,6 +290,7 @@ fn doctor() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn command_available(command: &str) -> bool {
     env::var_os("PATH")
         .map(|path| {
@@ -256,6 +301,7 @@ fn command_available(command: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(target_os = "linux")]
 fn configure(arguments: &[String]) -> Result<(), String> {
     let paths = AppPaths::discover();
     let mut config = Config::load(&paths).map_err(|error| error.to_string())?;
@@ -316,6 +362,7 @@ fn configure(arguments: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn parse_number<T>(value: &str, name: &str) -> Result<T, String>
 where
     T: std::str::FromStr,
@@ -325,6 +372,7 @@ where
         .map_err(|_| format!("{name} must be a number"))
 }
 
+#[cfg(target_os = "linux")]
 fn send(paths: &AppPaths, request: &Request) -> Result<Response, String> {
     let mut stream = match UnixStream::connect(paths.socket_file()) {
         Ok(stream) => stream,
@@ -363,6 +411,7 @@ fn send(paths: &AppPaths, request: &Request) -> Result<Response, String> {
     ipc::read_response(&mut BufReader::new(stream)).map_err(|error| error.to_string())
 }
 
+#[cfg(target_os = "linux")]
 fn start_daemon() -> Result<(), String> {
     let output = Command::new("systemctl")
         .args(["--user", "start", "wreathd.service"])
@@ -380,6 +429,7 @@ fn start_daemon() -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn print_help() {
     println!(
         "wreathctl <command>\n\n\
@@ -395,7 +445,7 @@ fn print_help() {
     );
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

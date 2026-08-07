@@ -855,6 +855,7 @@ version = "0.1.0"
 dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "wreath-core",
+ "wreath-windows",
 ]
 
 [[package]]
