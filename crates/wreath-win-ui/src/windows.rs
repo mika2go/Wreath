@@ -27,6 +27,7 @@ const COMMAND_PAUSE: usize = 101;
 const COMMAND_RESUME: usize = 102;
 const COMMAND_OPEN_CLIPS: usize = 103;
 const COMMAND_OPEN_CONFIG: usize = 104;
+const COMMAND_TOGGLE_AUTOSTART: usize = 105;
 const COMMAND_EXIT: usize = 109;
 
 struct AppState {
@@ -180,6 +181,22 @@ fn handle_command(window: HWND, command: usize) {
                 open_path(&state.paths.config_file);
             }
         }
+        COMMAND_TOGGLE_AUTOSTART => {
+            let enable = !crate::autostart::is_enabled();
+            match crate::autostart::set_enabled(enable) {
+                Ok(()) => notify(
+                    window,
+                    "Wreath",
+                    if enable {
+                        "Wreath will start with Windows"
+                    } else {
+                        "Wreath autostart disabled"
+                    },
+                    false,
+                ),
+                Err(error) => notify(window, "Wreath error", &error, true),
+            }
+        }
         COMMAND_EXIT => {
             let _ = send(Request::Shutdown);
             let _ = unsafe { DestroyWindow(window) };
@@ -267,6 +284,15 @@ fn show_menu(window: HWND) {
     append_separator(menu);
     append_item(menu, COMMAND_OPEN_CLIPS, "Open clips");
     append_item(menu, COMMAND_OPEN_CONFIG, "Open settings file");
+    append_item(
+        menu,
+        COMMAND_TOGGLE_AUTOSTART,
+        if crate::autostart::is_enabled() {
+            "Disable start with Windows"
+        } else {
+            "Start with Windows"
+        },
+    );
     append_separator(menu);
     append_item(menu, COMMAND_EXIT, "Exit Wreath");
     let mut point = POINT::default();
