@@ -100,14 +100,15 @@ impl PcmMixer {
 /// Continuous PCM converter for a live capture stream. Unlike a packet-local
 /// resampler it carries the fractional source position and the final source
 /// frame across WASAPI packet boundaries, preventing a repeated/skipped sample
-/// at every callback. The voice mode downmixes microphone arrays to one clean
-/// voice channel before duplicating it into the output layout.
+/// at every callback. Voice mode selects one stable microphone input instead
+/// of averaging unrelated USB-interface or array channels together.
 pub struct PcmStreamConverter {
     source_rate: u32,
     source_channels: u16,
     target_rate: u32,
     target_channels: u16,
     voice: bool,
+    voice_channel: VoiceChannelSelector,
     source: VecDeque<i16>,
     source_start_frame: u64,
     source_frames_received: u64,
@@ -150,6 +151,7 @@ impl PcmStreamConverter {
             target_rate,
             target_channels,
             voice,
+            voice_channel: VoiceChannelSelector::default(),
             source: VecDeque::new(),
             source_start_frame: 0,
             source_frames_received: 0,
@@ -187,12 +189,23 @@ impl PcmStreamConverter {
             self.epoch_timestamp = Some(chunk.timestamp);
         }
 
+        let selected_voice_channel = if self.voice {
+            let changed =
+                self.voice_channel
+                    .observe(&chunk.data, chunk.frames, self.source_channels);
+            if changed {
+                self.begin_restart_fade();
+            }
+            Some(self.voice_channel.selected())
+        } else {
+            None
+        };
         let mapped = map_channels(
             &chunk.data,
             chunk.frames,
             self.source_channels,
             self.target_channels,
-            self.voice,
+            selected_voice_channel,
         );
         if self.source_rate == self.target_rate {
             let mut data = mapped
@@ -271,13 +284,17 @@ impl PcmStreamConverter {
         self.epoch_timestamp = Some(timestamp);
         self.expected_source_timestamp = None;
         if fade_in {
-            let frames = (self.target_rate / 200).max(2);
-            self.restart_fade_frames_remaining = frames;
-            self.restart_fade_frames_total = frames;
+            self.begin_restart_fade();
         } else {
             self.restart_fade_frames_remaining = 0;
             self.restart_fade_frames_total = 0;
         }
+    }
+
+    fn begin_restart_fade(&mut self) {
+        let frames = (self.target_rate / 200).max(2);
+        self.restart_fade_frames_remaining = frames;
+        self.restart_fade_frames_total = frames;
     }
 
     fn apply_restart_fade(&mut self, data: &mut [u8], frames: u32) {
@@ -335,26 +352,127 @@ impl PcmStreamConverter {
     }
 }
 
+#[derive(Default)]
+struct VoiceChannelSelector {
+    selected: u16,
+    candidate: Option<u16>,
+    candidate_packets: u8,
+    locked: bool,
+}
+
+impl VoiceChannelSelector {
+    const SIGNAL_LEVEL: u64 = 512;
+    const SWITCH_CONFIRMATION_PACKETS: u8 = 3;
+
+    fn selected(&self) -> u16 {
+        self.selected
+    }
+
+    fn observe(&mut self, data: &[u8], frames: u32, channels: u16) -> bool {
+        if channels <= 1 || frames == 0 {
+            self.selected = 0;
+            self.locked = true;
+            return false;
+        }
+        if self.selected >= channels {
+            self.selected = 0;
+            self.locked = false;
+        }
+
+        let metrics = (0..channels)
+            .map(|channel| channel_metrics(data, frames, channels, channel))
+            .collect::<Vec<_>>();
+        let current = metrics[usize::from(self.selected)];
+        if !self.locked && current.mean_absolute >= Self::SIGNAL_LEVEL {
+            self.locked = true;
+            self.clear_candidate();
+            return false;
+        }
+
+        let best_alternative = (0..channels)
+            .filter(|channel| *channel != self.selected)
+            .max_by_key(|channel| metrics[usize::from(*channel)].mean_absolute);
+        let candidate = best_alternative.filter(|channel| {
+            let alternative = metrics[usize::from(*channel)];
+            let current_is_clipped =
+                current.clipped_samples.saturating_mul(10) >= u64::from(frames);
+            let clean_clipping_fallback = current_is_clipped
+                && alternative.clipped_samples == 0
+                && alternative.mean_absolute >= Self::SIGNAL_LEVEL;
+            let inactive_default_fallback = !self.locked
+                && alternative.mean_absolute >= Self::SIGNAL_LEVEL
+                && alternative.mean_absolute >= current.mean_absolute.saturating_mul(3);
+            clean_clipping_fallback || inactive_default_fallback
+        });
+
+        let Some(candidate) = candidate else {
+            self.clear_candidate();
+            return false;
+        };
+        if self.candidate == Some(candidate) {
+            self.candidate_packets = self.candidate_packets.saturating_add(1);
+        } else {
+            self.candidate = Some(candidate);
+            self.candidate_packets = 1;
+        }
+        if self.candidate_packets < Self::SWITCH_CONFIRMATION_PACKETS {
+            return false;
+        }
+
+        self.selected = candidate;
+        self.locked = true;
+        self.clear_candidate();
+        eprintln!(
+            "Wreath microphone: selected input channel {} from {} native channels",
+            self.selected + 1,
+            channels
+        );
+        true
+    }
+
+    fn clear_candidate(&mut self) {
+        self.candidate = None;
+        self.candidate_packets = 0;
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ChannelMetrics {
+    mean_absolute: u64,
+    clipped_samples: u64,
+}
+
+fn channel_metrics(data: &[u8], frames: u32, channels: u16, channel: u16) -> ChannelMetrics {
+    let mut absolute_sum = 0_u64;
+    let mut clipped_samples = 0_u64;
+    for frame in 0..frames {
+        let sample = read_sample(data, frame, channels, channel);
+        let absolute = u64::from(sample.unsigned_abs());
+        absolute_sum = absolute_sum.saturating_add(absolute);
+        if absolute >= 32_000 {
+            clipped_samples = clipped_samples.saturating_add(1);
+        }
+    }
+    ChannelMetrics {
+        mean_absolute: absolute_sum / u64::from(frames.max(1)),
+        clipped_samples,
+    }
+}
+
 fn map_channels(
     data: &[u8],
     frames: u32,
     source_channels: u16,
     target_channels: u16,
-    voice: bool,
+    voice_channel: Option<u16>,
 ) -> Vec<i16> {
     let mut mapped = Vec::with_capacity(
         usize::try_from(frames).unwrap_or_default() * usize::from(target_channels),
     );
     for frame in 0..frames {
-        if voice {
-            let voice = (0..source_channels)
-                .map(|channel| i64::from(read_sample(data, frame, source_channels, channel)))
-                .sum::<i64>()
-                / i64::from(source_channels);
-            mapped.extend(std::iter::repeat_n(
-                voice as i16,
-                usize::from(target_channels),
-            ));
+        if let Some(voice_channel) = voice_channel {
+            let voice = read_sample(data, frame, source_channels, voice_channel);
+            mapped.extend(std::iter::repeat_n(voice, usize::from(target_channels)));
         } else {
             for channel in 0..target_channels {
                 mapped.push(mapped_sample(
@@ -641,14 +759,52 @@ mod tests {
     }
 
     #[test]
-    fn voice_converter_downmixes_microphone_arrays_before_duplication() {
+    fn voice_converter_does_not_mix_an_unrelated_second_input() {
         let mut converter = PcmStreamConverter::new_voice(48_000, 2, 48_000, 2).unwrap();
         let converted = converter
             .push(chunk(0, 2, &[1_000, -1_000, 3_000, 1_000]))
             .unwrap()
             .unwrap();
 
-        assert_eq!(samples(&converted), [0, 0, 2_000, 2_000]);
+        assert_eq!(samples(&converted), [1_000, 1_000, 3_000, 3_000]);
+    }
+
+    #[test]
+    fn voice_converter_selects_an_active_non_default_input_stably() {
+        let mut converter = PcmStreamConverter::new_voice(48_000, 2, 48_000, 1).unwrap();
+        for packet in 0..2 {
+            let converted = converter
+                .push(chunk(packet, 2, &[20, 4_000, -20, -4_000]))
+                .unwrap()
+                .unwrap();
+            assert_eq!(samples(&converted), [20, -20]);
+        }
+
+        let switched = converter
+            .push(chunk(2, 2, &[20, 4_000, -20, -4_000]))
+            .unwrap()
+            .unwrap();
+        let switched_samples = samples(&switched);
+        assert_eq!(switched_samples[0], 0);
+        assert!(switched_samples[1] < 0);
+
+        let remains_selected = converter
+            .push(chunk(3, 2, &[8_000, 1_000, -8_000, -1_000]))
+            .unwrap()
+            .unwrap();
+        assert!(samples(&remains_selected)[0] > 0);
+    }
+
+    #[test]
+    fn voice_converter_keeps_a_working_first_input() {
+        let mut converter = PcmStreamConverter::new_voice(48_000, 2, 48_000, 1).unwrap();
+        for packet in 0..4 {
+            let converted = converter
+                .push(chunk(packet, 2, &[2_000, 12_000, -2_000, -12_000]))
+                .unwrap()
+                .unwrap();
+            assert_eq!(samples(&converted), [2_000, -2_000]);
+        }
     }
 
     #[test]

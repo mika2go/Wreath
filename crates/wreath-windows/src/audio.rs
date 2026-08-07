@@ -152,9 +152,9 @@ pub struct LoopbackCapture {
     stream: CaptureStream,
 }
 
-/// Event-driven WASAPI microphone capture using the endpoint's native shared
-/// mix format. Conversion happens continuously downstream so driver-specific
-/// format conversion cannot introduce packet-edge artifacts.
+/// Timer-driven WASAPI microphone capture. Windows' shared audio engine is
+/// asked for a processed mono communications stream first; unusual drivers
+/// transparently fall back to their native shared mix format.
 #[cfg(target_os = "windows")]
 pub struct MicrophoneCapture {
     stream: CaptureStream,
@@ -375,7 +375,7 @@ fn capture_loop(
         eCapture, eCommunications, eConsole, eRender,
     };
     use windows::Win32::System::Com::{
-        CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+        CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
     };
     use windows::Win32::System::Threading::{
         AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, CreateEventW, INFINITE,
@@ -384,7 +384,9 @@ fn capture_loop(
 
     const MICROPHONE_BUFFER_DURATION_HNS: i64 = 2_000_000;
 
-    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
+    // Microsoft documents the first IAudioClient activation on Windows 8+
+    // from an STA. Each capture stream owns this dedicated COM apartment.
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
         .ok()
         .map_err(|error| AudioError(error.to_string()))?;
     let mut task_index = 0;
@@ -432,8 +434,21 @@ fn capture_loop(
                 true,
             ),
         };
-        let (client, format, device_period_hns) =
+        let (client, format, device_period_hns, format_mode) =
             initialize_capture_client(&device, stream_flags, buffer_duration_hns, category)?;
+        let endpoint_name = if timer_driven {
+            "microphone"
+        } else {
+            "desktop"
+        };
+        let endpoint_buffer_frames = unsafe { client.GetBufferSize() }.unwrap_or_default();
+        eprintln!(
+            "Wreath {endpoint_name} capture: {format_mode}, {} Hz, {} channel(s), {}-bit, buffer {} frames",
+            format.sample_rate, format.channels, format.bits_per_sample, endpoint_buffer_frames
+        );
+        if timer_driven {
+            log_audio_effects(&client);
+        }
         let audio_event = if timer_driven {
             None
         } else {
@@ -456,6 +471,7 @@ fn capture_loop(
 
         let mut clock = CapturePacketClock::default();
         let mut dropped_packet = false;
+        let mut diagnostics = CaptureDiagnostics::new(endpoint_name);
         if timer_driven {
             let poll_interval_ms = capture_poll_interval_ms(device_period_hns);
             loop {
@@ -474,6 +490,7 @@ fn capture_loop(
                         &sender,
                         &mut clock,
                         &mut dropped_packet,
+                        &mut diagnostics,
                     )?;
                 }
             }
@@ -489,7 +506,14 @@ fn capture_loop(
                 if wait.0 == WAIT_OBJECT_0.0 + 1 {
                     break;
                 }
-                read_available_packets(&capture, format, &sender, &mut clock, &mut dropped_packet)?;
+                read_available_packets(
+                    &capture,
+                    format,
+                    &sender,
+                    &mut clock,
+                    &mut dropped_packet,
+                    &mut diagnostics,
+                )?;
             }
         }
         let _ = unsafe { client.Stop() };
@@ -516,11 +540,128 @@ fn initialize_capture_client(
         windows::Win32::Media::Audio::IAudioClient2,
         AudioFormat,
         i64,
+        CaptureFormatMode,
     ),
     AudioError,
 > {
     use windows::Win32::Media::Audio::{
-        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMOPTIONS_NONE, AudioClientProperties, IAudioClient2,
+        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, WAVEFORMATEX,
+    };
+    if let Some(category) = category {
+        let (client, native_format, device_period_hns) =
+            prepare_capture_client(device, Some(category))?;
+        let sample_rate = preferred_microphone_sample_rate(native_format.sample_rate);
+        let desired = WAVEFORMATEX {
+            wFormatTag: windows::Win32::Media::Audio::WAVE_FORMAT_PCM as u16,
+            nChannels: 1,
+            nSamplesPerSec: sample_rate,
+            nAvgBytesPerSec: sample_rate.saturating_mul(2),
+            nBlockAlign: 2,
+            wBitsPerSample: 16,
+            cbSize: 0,
+        };
+        let preferred_flags = stream_flags
+            | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+            | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+        match unsafe {
+            client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                preferred_flags,
+                buffer_duration_hns,
+                0,
+                &desired,
+                None,
+            )
+        } {
+            Ok(()) => {
+                return Ok((
+                    client,
+                    AudioFormat {
+                        sample_rate,
+                        channels: 1,
+                        bits_per_sample: 16,
+                        block_align: 2,
+                        floating_point: false,
+                    },
+                    device_period_hns,
+                    CaptureFormatMode::SystemMono,
+                ));
+            }
+            Err(preferred_error) => {
+                eprintln!(
+                    "Wreath microphone: Windows mono conversion unavailable ({preferred_error}); retrying the endpoint's native format"
+                );
+            }
+        }
+
+        // IAudioClient cannot be reinitialized reliably after Initialize has
+        // failed. Activate a fresh client for the native-format fallback.
+        let (fallback, native_format, fallback_period_hns) =
+            prepare_capture_client(device, Some(category))?;
+        initialize_native_client(
+            fallback,
+            native_format,
+            fallback_period_hns,
+            stream_flags,
+            buffer_duration_hns,
+            CaptureFormatMode::NativeMicrophoneFallback,
+        )
+    } else {
+        let (client, native_format, device_period_hns) = prepare_capture_client(device, None)?;
+        initialize_native_client(
+            client,
+            native_format,
+            device_period_hns,
+            stream_flags,
+            buffer_duration_hns,
+            CaptureFormatMode::NativeLoopback,
+        )
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy)]
+enum CaptureFormatMode {
+    SystemMono,
+    NativeMicrophoneFallback,
+    NativeLoopback,
+}
+
+#[cfg(target_os = "windows")]
+impl fmt::Display for CaptureFormatMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::SystemMono => "Windows-processed communications mono",
+            Self::NativeMicrophoneFallback => "native microphone fallback",
+            Self::NativeLoopback => "native loopback",
+        })
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn preferred_microphone_sample_rate(native_sample_rate: u32) -> u32 {
+    if native_sample_rate == 44_100 {
+        44_100
+    } else {
+        48_000
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn prepare_capture_client(
+    device: &windows::Win32::Media::Audio::IMMDevice,
+    category: Option<windows::Win32::Media::Audio::AUDIO_STREAM_CATEGORY>,
+) -> Result<
+    (
+        windows::Win32::Media::Audio::IAudioClient2,
+        AudioFormat,
+        i64,
+    ),
+    AudioError,
+> {
+    use windows::Win32::Media::Audio::{
+        AUDCLNT_STREAMOPTIONS_NONE, AudioClientProperties, IAudioClient2,
     };
     use windows::Win32::System::Com::{CLSCTX_ALL, CoTaskMemFree};
 
@@ -543,10 +684,37 @@ fn initialize_capture_client(
         return Err(AudioError("WASAPI returned no mix format".into()));
     }
     let format = unsafe { describe_format(mix_format) };
+    unsafe { CoTaskMemFree(Some(mix_format.cast())) };
     let mut device_period_hns = 0_i64;
-    if let Err(error) = unsafe { client.GetDevicePeriod(Some(&mut device_period_hns), None) } {
-        unsafe { CoTaskMemFree(Some(mix_format.cast())) };
-        return Err(AudioError(error.to_string()));
+    unsafe { client.GetDevicePeriod(Some(&mut device_period_hns), None) }
+        .map_err(|error| AudioError(error.to_string()))?;
+    Ok((client, format, device_period_hns))
+}
+
+#[cfg(target_os = "windows")]
+fn initialize_native_client(
+    client: windows::Win32::Media::Audio::IAudioClient2,
+    format: AudioFormat,
+    device_period_hns: i64,
+    stream_flags: u32,
+    buffer_duration_hns: i64,
+    mode: CaptureFormatMode,
+) -> Result<
+    (
+        windows::Win32::Media::Audio::IAudioClient2,
+        AudioFormat,
+        i64,
+        CaptureFormatMode,
+    ),
+    AudioError,
+> {
+    use windows::Win32::Media::Audio::AUDCLNT_SHAREMODE_SHARED;
+    use windows::Win32::System::Com::CoTaskMemFree;
+
+    let mix_format =
+        unsafe { client.GetMixFormat() }.map_err(|error| AudioError(error.to_string()))?;
+    if mix_format.is_null() {
+        return Err(AudioError("WASAPI returned no mix format".into()));
     }
     let initialized = unsafe {
         client.Initialize(
@@ -560,13 +728,127 @@ fn initialize_capture_client(
     };
     unsafe { CoTaskMemFree(Some(mix_format.cast())) };
     initialized.map_err(|error| AudioError(error.to_string()))?;
-    Ok((client, format, device_period_hns))
+    Ok((client, format, device_period_hns, mode))
 }
 
 #[cfg(target_os = "windows")]
 fn capture_poll_interval_ms(device_period_hns: i64) -> u32 {
     let half_period_ms = device_period_hns.max(0) as u64 / 20_000;
     u32::try_from(half_period_ms.clamp(2, 10)).unwrap_or(10)
+}
+
+#[cfg(target_os = "windows")]
+fn log_audio_effects(client: &windows::Win32::Media::Audio::IAudioClient2) {
+    use windows::Win32::Media::Audio::{AUDIO_EFFECT_STATE_ON, IAudioEffectsManager};
+    use windows::Win32::System::Com::CoTaskMemFree;
+
+    let Ok(manager) = (unsafe { client.GetService::<IAudioEffectsManager>() }) else {
+        eprintln!("Wreath microphone: Windows audio-effect enumeration is unavailable");
+        return;
+    };
+    let mut effects = std::ptr::null_mut();
+    let mut count = 0_u32;
+    if let Err(error) = unsafe { manager.GetAudioEffects(&mut effects, &mut count) } {
+        eprintln!("Wreath microphone: cannot enumerate Windows audio effects: {error}");
+        return;
+    }
+    if effects.is_null() || count == 0 {
+        eprintln!("Wreath microphone: no endpoint audio effects reported");
+        if !effects.is_null() {
+            unsafe { CoTaskMemFree(Some(effects.cast())) };
+        }
+        return;
+    }
+    let effects_slice = unsafe { std::slice::from_raw_parts(effects, count as usize) };
+    let summary = effects_slice
+        .iter()
+        .map(|effect| {
+            format!(
+                "{}:{}",
+                audio_effect_name(effect.id),
+                if effect.state == AUDIO_EFFECT_STATE_ON {
+                    "on"
+                } else {
+                    "off"
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    eprintln!("Wreath microphone Windows audio effects: {summary}");
+    unsafe { CoTaskMemFree(Some(effects.cast())) };
+}
+
+#[cfg(target_os = "windows")]
+fn audio_effect_name(id: windows::core::GUID) -> String {
+    use windows::Win32::Media::KernelStreaming::{
+        AUDIO_EFFECT_TYPE_ACOUSTIC_ECHO_CANCELLATION, AUDIO_EFFECT_TYPE_AUTOMATIC_GAIN_CONTROL,
+        AUDIO_EFFECT_TYPE_BEAMFORMING, AUDIO_EFFECT_TYPE_DEEP_NOISE_SUPPRESSION,
+        AUDIO_EFFECT_TYPE_FAR_FIELD_BEAMFORMING, AUDIO_EFFECT_TYPE_NOISE_SUPPRESSION,
+    };
+
+    if id == AUDIO_EFFECT_TYPE_ACOUSTIC_ECHO_CANCELLATION {
+        "echo-cancellation".into()
+    } else if id == AUDIO_EFFECT_TYPE_AUTOMATIC_GAIN_CONTROL {
+        "automatic-gain".into()
+    } else if id == AUDIO_EFFECT_TYPE_BEAMFORMING {
+        "beamforming".into()
+    } else if id == AUDIO_EFFECT_TYPE_FAR_FIELD_BEAMFORMING {
+        "far-field-beamforming".into()
+    } else if id == AUDIO_EFFECT_TYPE_NOISE_SUPPRESSION {
+        "noise-suppression".into()
+    } else if id == AUDIO_EFFECT_TYPE_DEEP_NOISE_SUPPRESSION {
+        "deep-noise-suppression".into()
+    } else {
+        format!("{id:?}")
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct CaptureDiagnostics {
+    endpoint: &'static str,
+    discontinuities: u64,
+    timestamp_errors: u64,
+    queue_drops: u64,
+}
+
+#[cfg(target_os = "windows")]
+impl CaptureDiagnostics {
+    fn new(endpoint: &'static str) -> Self {
+        Self {
+            endpoint,
+            discontinuities: 0,
+            timestamp_errors: 0,
+            queue_drops: 0,
+        }
+    }
+
+    fn discontinuity(&mut self) {
+        Self::record(
+            self.endpoint,
+            "WASAPI discontinuities",
+            &mut self.discontinuities,
+        );
+    }
+
+    fn timestamp_error(&mut self) {
+        Self::record(
+            self.endpoint,
+            "WASAPI timestamp errors",
+            &mut self.timestamp_errors,
+        );
+    }
+
+    fn queue_drop(&mut self) {
+        Self::record(self.endpoint, "queue drops", &mut self.queue_drops);
+    }
+
+    fn record(endpoint: &str, label: &str, counter: &mut u64) {
+        *counter = counter.saturating_add(1);
+        if counter.is_power_of_two() {
+            eprintln!("Wreath {endpoint} capture diagnostics: {label}={counter}");
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -632,6 +914,7 @@ fn read_available_packets(
     sender: &crossbeam_channel::Sender<PcmChunk>,
     clock: &mut CapturePacketClock,
     dropped_packet: &mut bool,
+    diagnostics: &mut CaptureDiagnostics,
 ) -> Result<(), AudioError> {
     use windows::Win32::Media::Audio::{
         AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
@@ -663,8 +946,14 @@ fn read_available_packets(
             .ok_or_else(|| AudioError("WASAPI packet size overflow".into()))?;
         let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
         let timestamp_error = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 != 0;
-        let discontinuous =
-            *dropped_packet || flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0;
+        let wasapi_discontinuous = flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0;
+        if wasapi_discontinuous {
+            diagnostics.discontinuity();
+        }
+        if timestamp_error {
+            diagnostics.timestamp_error();
+        }
+        let discontinuous = *dropped_packet || wasapi_discontinuous;
         let bytes = if silent {
             vec![0; length].into_boxed_slice()
         } else if data.is_null() {
@@ -684,7 +973,10 @@ fn read_available_packets(
         };
         match sender.try_send(chunk) {
             Ok(()) => *dropped_packet = false,
-            Err(crossbeam_channel::TrySendError::Full(_)) => *dropped_packet = true,
+            Err(crossbeam_channel::TrySendError::Full(_)) => {
+                diagnostics.queue_drop();
+                *dropped_packet = true;
+            }
             Err(crossbeam_channel::TrySendError::Disconnected(_)) => return Ok(()),
         }
     }
@@ -705,6 +997,13 @@ mod tests {
         };
 
         assert_eq!(format.bytes_for_frames(480), Some(3_840));
+    }
+
+    #[test]
+    fn microphone_conversion_uses_standard_communications_rates() {
+        assert_eq!(preferred_microphone_sample_rate(44_100), 44_100);
+        assert_eq!(preferred_microphone_sample_rate(48_000), 48_000);
+        assert_eq!(preferred_microphone_sample_rate(96_000), 48_000);
     }
 
     #[cfg(target_os = "windows")]
