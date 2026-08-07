@@ -47,6 +47,24 @@ impl LogicalRect {
     }
 }
 
+pub fn player_bounds(width: u32, height: u32) -> LogicalRect {
+    let width = width as f32;
+    let rail = if width < 760.0 { 54.0 } else { 62.0 };
+    let padding = if width < 820.0 {
+        16.0
+    } else if width < 980.0 {
+        24.0
+    } else {
+        40.0
+    };
+    LogicalRect {
+        left: rail + padding,
+        top: 184.0,
+        right: width - padding,
+        bottom: (height as f32 - 106.0).max(330.0),
+    }
+}
+
 #[derive(Clone)]
 struct HitRegion {
     rect: LogicalRect,

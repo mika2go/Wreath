@@ -11,16 +11,18 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW,
     GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowLongPtrW, MSG, PostQuitMessage,
-    RegisterClassW, SW_RESTORE, SetForegroundWindow, SetWindowLongPtrW, ShowWindow,
-    TranslateMessage, WINDOW_EX_STYLE, WM_CHAR, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONUP, WM_NCCREATE,
-    WM_PAINT, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    RegisterClassW, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOZORDER, SetForegroundWindow,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_CHAR,
+    WM_DESTROY, WM_KEYDOWN, WM_LBUTTONUP, WM_NCCREATE, WM_PAINT, WM_SIZE, WNDCLASSW, WS_CHILD,
+    WS_DISABLED, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::config::Codec;
 use wreath_core::ipc::{Request, Response};
 
 use crate::model::{Action, UiModel};
-use crate::renderer::Renderer;
+use crate::player::{PLAYER_EVENT, Player};
+use crate::renderer::{Renderer, player_bounds};
 
 const WINDOW_CLASS: windows::core::PCWSTR = w!("WreathApplicationWindow");
 
@@ -29,6 +31,8 @@ struct AppState {
     renderer: Renderer,
     width: u32,
     height: u32,
+    player: Option<Player>,
+    video_window: Option<HWND>,
 }
 
 pub fn run() -> Result<(), String> {
@@ -70,6 +74,8 @@ fn run_initialized() -> Result<(), String> {
         renderer: Renderer::new()?,
         width: 1280,
         height: 760,
+        player: None,
+        video_window: None,
     });
     let state = Box::into_raw(state);
     let window = unsafe {
@@ -96,6 +102,27 @@ fn run_initialized() -> Result<(), String> {
             return Err(error.to_string());
         }
     };
+    let video_window = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("STATIC"),
+            w!(""),
+            WS_CHILD | WS_DISABLED,
+            0,
+            0,
+            0,
+            0,
+            Some(window),
+            None,
+            None,
+            None,
+        )
+    }
+    .map_err(|error| error.to_string())?;
+    unsafe {
+        (*state).video_window = Some(video_window);
+        (*state).player = Some(Player::new(video_window, window));
+    }
     unsafe {
         let _ = ShowWindow(window, SW_RESTORE);
         let _ = UpdateWindow(window);
@@ -146,6 +173,7 @@ unsafe extern "system" fn window_proc(
                 state.width = low_word(lparam.0) as u32;
                 state.height = high_word(lparam.0) as u32;
                 state.renderer.resize(state.width, state.height);
+                update_player_window(state);
             }
             LRESULT(0)
         }
@@ -187,13 +215,30 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_KEYDOWN => {
-            if wparam.0 == 0x1b {
+            if wparam.0 == 0x20 {
+                if let Some(state) = state_mut(window)
+                    && state.model.page == crate::model::Page::Player
+                    && let Some(player) = &state.player
+                    && let Err(error) = player.toggle()
+                {
+                    state.model.notice = Some(error);
+                }
+                redraw(window);
+            } else if wparam.0 == 0x1b {
                 if let Some(state) = state_mut(window) {
                     state.model.search_focused = false;
                     state.model.hotkey_capture = false;
                     state.model.notice = None;
                 }
                 redraw(window);
+            }
+            LRESULT(0)
+        }
+        PLAYER_EVENT => {
+            if let Some(state) = state_mut(window)
+                && let Some(player) = &state.player
+            {
+                player.update_video();
             }
             LRESULT(0)
         }
@@ -208,10 +253,19 @@ unsafe extern "system" fn window_proc(
 fn handle_action(window: HWND, state: &mut AppState, action: Action) {
     state.model.notice = None;
     match action {
-        Action::Navigate(page) => state.model.navigate(page),
+        Action::Navigate(page) => {
+            state.model.navigate(page);
+            update_player_window(state);
+        }
         Action::SettingsSection(section) => state.model.settings_section = section,
-        Action::OpenClip(index) => state.model.open_clip(index),
-        Action::Back => state.model.navigate(state.model.previous_page),
+        Action::OpenClip(index) => {
+            state.model.open_clip(index);
+            open_current_clip(state);
+        }
+        Action::Back => {
+            state.model.navigate(state.model.previous_page);
+            update_player_window(state);
+        }
         Action::Refresh => {
             let result = state.model.refresh();
             set_result(&mut state.model, result, "Library refreshed");
@@ -282,13 +336,55 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         Action::DeleteActiveCollection => {
             state.model.notice = Some("Collection deletion requires confirmation".into())
         }
-        Action::PlayPause => {
-            if let Some(clip) = state.model.active_clip() {
-                open_path(&clip.path);
-            }
-        }
+        Action::PlayPause => match state.player.as_ref().map(Player::toggle) {
+            Some(Err(error)) => state.model.notice = Some(error),
+            None => state.model.notice = Some("No clip is loaded".into()),
+            Some(Ok(())) => {}
+        },
     }
     redraw(window);
+}
+
+fn open_current_clip(state: &mut AppState) {
+    update_player_window(state);
+    let Some(path) = state.model.active_clip().map(|clip| clip.path.clone()) else {
+        return;
+    };
+    if let Some(player) = &mut state.player
+        && let Err(error) = player.open(&path)
+    {
+        state.model.notice = Some(error);
+    }
+}
+
+fn update_player_window(state: &mut AppState) {
+    let Some(window) = state.video_window else {
+        return;
+    };
+    if state.model.page != crate::model::Page::Player {
+        unsafe {
+            let _ = ShowWindow(window, SW_HIDE);
+        }
+        return;
+    }
+    let bounds = player_bounds(state.width, state.height);
+    let _ = unsafe {
+        SetWindowPos(
+            window,
+            None,
+            bounds.left.round() as i32,
+            bounds.top.round() as i32,
+            (bounds.right - bounds.left).round().max(1.0) as i32,
+            (bounds.bottom - bounds.top).round().max(1.0) as i32,
+            SWP_NOZORDER,
+        )
+    };
+    unsafe {
+        let _ = ShowWindow(window, SW_SHOW);
+    }
+    if let Some(player) = &state.player {
+        player.update_video();
+    }
 }
 
 fn handle_character(state: &mut AppState, character: u32) {
