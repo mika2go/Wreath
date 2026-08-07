@@ -1,4 +1,4 @@
-use crate::video::HardwareCodec;
+use crate::video::{GraphicsAdapterInfo, HardwareCodec};
 
 pub const MAX_REPLAY_MEMORY_BYTES: u64 = 512 * 1_048_576;
 const MIN_REPLAY_MEMORY_BYTES: u64 = 8 * 1_048_576;
@@ -20,6 +20,7 @@ pub struct PipelineStatus {
     pub state: PipelineRunState,
     pub monitor: Option<String>,
     pub codec: Option<HardwareCodec>,
+    pub adapter: Option<GraphicsAdapterInfo>,
     pub buffered_seconds: u16,
     pub encoded_bytes: usize,
     pub error: Option<String>,
@@ -31,6 +32,7 @@ impl Default for PipelineStatus {
             state: PipelineRunState::Starting,
             monitor: None,
             codec: None,
+            adapter: None,
             buffered_seconds: 0,
             encoded_bytes: 0,
             error: None,
@@ -408,7 +410,7 @@ fn run_pipeline(
     })();
 
     let (
-        _runtime,
+        runtime,
         _capture,
         capture_info,
         frames,
@@ -429,6 +431,7 @@ fn run_pipeline(
         pipeline.state = PipelineRunState::Recording;
         pipeline.monitor = Some(capture_info.monitor.clone());
         pipeline.codec = Some(encoder.codec());
+        pipeline.adapter = Some(runtime.adapter().clone());
         pipeline.error = None;
     });
     if ready.send(Ok(())).is_err() {

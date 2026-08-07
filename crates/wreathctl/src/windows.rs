@@ -200,6 +200,7 @@ fn print_response(response: Response) -> Result<(), String> {
             state,
             monitor,
             codec,
+            adapter,
             replay_bytes,
             buffered_seconds,
             error,
@@ -207,6 +208,12 @@ fn print_response(response: Response) -> Result<(), String> {
             println!("state    {state:?}");
             println!("monitor  {}", monitor.as_deref().unwrap_or("none"));
             println!("codec    {}", codec.as_deref().unwrap_or("none"));
+            if let Some(adapter) = adapter {
+                println!(
+                    "adapter  {:04x}:{:04x} {}",
+                    adapter.vendor_id, adapter.device_id, adapter.name
+                );
+            }
             if let Some(replay_bytes) = replay_bytes {
                 println!("replay   {replay_bytes} bytes");
             }

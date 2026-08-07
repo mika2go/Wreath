@@ -292,6 +292,21 @@ function Get-WreathStatusCodec([string]$Status) {
     return $Match.Groups[1].Value
 }
 
+function Get-WreathStatusAdapter([string]$Status) {
+    $Match = [regex]::Match(
+        $Status,
+        '(?m)^adapter\s+([0-9a-fA-F]{4,8}):([0-9a-fA-F]{4,8})\s+(.+?)\s*$'
+    )
+    if (-not $Match.Success) {
+        throw "Wreath status did not report the active graphics adapter"
+    }
+    return [pscustomobject]@{
+        Name = $Match.Groups[3].Value
+        VendorId = [Convert]::ToUInt32($Match.Groups[1].Value, 16)
+        DeviceId = [Convert]::ToUInt32($Match.Groups[2].Value, 16)
+    }
+}
+
 function Get-WreathStatusBuffer([string]$Status) {
     $Match = [regex]::Match($Status, '(?m)^buffer\s+(\d+)s\s*$')
     if (-not $Match.Success) {
@@ -543,6 +558,11 @@ $ActiveHardwareCodec = if ($MeasureMedalOnly) {
 } else {
     Get-WreathStatusCodec $InitialWreathStatus
 }
+$ActiveGpuAdapter = if ($MeasureMedalOnly) {
+    $null
+} else {
+    Get-WreathStatusAdapter $InitialWreathStatus
+}
 if (-not $MeasureMedalOnly -and $AvailableHardwareCodecs -notcontains $ActiveHardwareCodec) {
     throw "active codec '$ActiveHardwareCodec' is absent from the hardware encoder inventory"
 }
@@ -735,9 +755,15 @@ if (-not $MeasureMedalOnly) {
             $Failures.Add("Wreath was not recording at the end of the measurement")
         }
         $FinalActiveHardwareCodec = Get-WreathStatusCodec $FinalWreathStatus
+        $FinalGpuAdapter = Get-WreathStatusAdapter $FinalWreathStatus
         $ObservedReplayBytes.Add((Get-WreathStatusReplaySize $FinalWreathStatus))
         if ($FinalActiveHardwareCodec -ne $ActiveHardwareCodec) {
             $Failures.Add("active hardware codec changed during the measurement")
+        }
+        if ($FinalGpuAdapter.VendorId -ne $ActiveGpuAdapter.VendorId -or
+            $FinalGpuAdapter.DeviceId -ne $ActiveGpuAdapter.DeviceId -or
+            $FinalGpuAdapter.Name -ne $ActiveGpuAdapter.Name) {
+            $Failures.Add("active graphics adapter changed during the measurement")
         }
         $FinalWreathConfiguration = Invoke-WreathControl $ControlExe "config"
         if ($FinalWreathConfiguration -ne $WreathConfiguration) {
@@ -823,6 +849,7 @@ $Summary = [ordered]@{
     WreathConfiguration = $WreathConfiguration
     AvailableHardwareCodecs = @($AvailableHardwareCodecs)
     ActiveHardwareCodec = $ActiveHardwareCodec
+    ActiveGpuAdapter = $ActiveGpuAdapter
     FinalWreathConfiguration = $FinalWreathConfiguration
     InitialWreathStatus = $InitialWreathStatus
     FinalWreathStatus = $FinalWreathStatus

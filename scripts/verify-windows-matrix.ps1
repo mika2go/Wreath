@@ -54,6 +54,16 @@ function Test-GpuInventory([object]$Summary, [string]$GpuTag) {
     }
 }
 
+function Test-ActiveGpuAdapter([object]$Adapter, [string]$GpuTag) {
+    $ExpectedVendorId = switch ($GpuTag) {
+        "gpu-amd" { 0x1002 }
+        "gpu-intel" { 0x8086 }
+        "gpu-nvidia" { 0x10DE }
+        default { return $false }
+    }
+    return [uint32]$Adapter.VendorId -eq [uint32]$ExpectedVendorId
+}
+
 $Files = @(Get-ChildItem -LiteralPath $ResolvedEvidenceDirectory -Filter "wreath-*.json" -File)
 if ($Files.Count -eq 0) {
     throw "no Wreath JSON summaries found in $ResolvedEvidenceDirectory"
@@ -69,7 +79,7 @@ foreach ($File in $Files) {
     }
     $RequiredProperties = @(
         "RunId", "Product", "Passed", "MatrixTags", "System", "AvailableHardwareCodecs",
-        "ActiveHardwareCodec", "RelativeGatesEvaluated", "DurationMinutes", "SaveAttempts",
+        "ActiveHardwareCodec", "ActiveGpuAdapter", "RelativeGatesEvaluated", "DurationMinutes", "SaveAttempts",
         "ConfiguredReplaySeconds", "ShortReplaySaves", "SlowReplaySaves",
         "PeakSaveDurationMs", "PeakEncodedReplayMb", "Gates"
     )
@@ -89,6 +99,23 @@ foreach ($File in $Files) {
     })
     if ($MissingSystemProperties.Count -gt 0) {
         $Failures.Add("$($File.Name): missing system fields: $($MissingSystemProperties -join ', ')")
+        continue
+    }
+    $MissingAdapterProperties = @(if ($null -eq $Summary.ActiveGpuAdapter) {
+        @("Name", "VendorId", "DeviceId")
+    } else {
+        @(@("Name", "VendorId", "DeviceId") | Where-Object {
+            $null -eq $Summary.ActiveGpuAdapter.PSObject.Properties[$_]
+        })
+    })
+    if ($MissingAdapterProperties.Count -gt 0) {
+        $Failures.Add("$($File.Name): missing active GPU adapter fields: $($MissingAdapterProperties -join ', ')")
+        continue
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$Summary.ActiveGpuAdapter.Name) -or
+        [uint32]$Summary.ActiveGpuAdapter.VendorId -eq 0 -or
+        [uint32]$Summary.ActiveGpuAdapter.DeviceId -eq 0) {
+        $Failures.Add("$($File.Name): active GPU adapter evidence is invalid")
         continue
     }
     $RequiredGateProperties = @(
@@ -151,6 +178,9 @@ foreach ($File in $Files) {
     }
     if ($GpuTags.Count -eq 1 -and -not (Test-GpuInventory $Summary $GpuTags[0])) {
         $Failures.Add("$($File.Name): GPU tag does not match the hardware inventory")
+    }
+    if ($GpuTags.Count -eq 1 -and -not (Test-ActiveGpuAdapter $Summary.ActiveGpuAdapter $GpuTags[0])) {
+        $Failures.Add("$($File.Name): GPU tag does not match the active D3D11 adapter")
     }
     if ($WindowsTags -contains "win10-22h2" -and (
         [string]$Summary.System.OsCaption -notmatch "Windows 10" -or

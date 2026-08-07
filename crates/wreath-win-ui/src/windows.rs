@@ -229,6 +229,7 @@ fn refresh_status(window: HWND) {
             state,
             monitor,
             codec,
+            adapter,
             replay_bytes: _,
             buffered_seconds,
             error,
@@ -255,8 +256,12 @@ fn refresh_status(window: HWND) {
                     DaemonState::Error => "Error",
                 };
                 let codec = codec.as_deref().unwrap_or("no codec");
+                let adapter = adapter
+                    .as_ref()
+                    .map(|adapter| adapter.name.as_str())
+                    .unwrap_or("no adapter");
                 format!(
-                    "Wreath — {state} — {codec} — {}s — {}",
+                    "Wreath — {state} — {codec} — {adapter} — {}s — {}",
                     buffered_seconds,
                     monitor.as_deref().unwrap_or("no display")
                 )

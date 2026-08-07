@@ -63,8 +63,10 @@ settings, duration, sample interval, Windows build, CPU, GPU, driver, logical CP
 count, or installed RAM differs. The summary records system metadata, executable
 versions, Wreath's complete TOML configuration, the hardware codecs exposed by
 Media Foundation, and the codec actually selected by the running pipeline. The
-active codec must remain stable and appear in that hardware inventory. It samples
-combined process CPU, average and peak working/private memory, GPU-engine
+active codec must remain stable and appear in that hardware inventory. It also
+records the exact D3D11 adapter name and PCI vendor/device IDs at the beginning
+and end; an adapter change fails the run. It samples combined process CPU,
+average and peak working/private memory, GPU-engine
 counters, I/O counters, handles, and threads. Relative Medal gates are evaluated
 only when a validated isolated baseline is supplied. A comparison also requires
 periodic replay saves; setting `SaveEverySeconds` to zero is rejected. Saves run
@@ -101,7 +103,7 @@ size, and replay saves remain hard gates.
 | Area | Minimum coverage |
 | --- | --- |
 | Windows | Windows 10 22H2 and current Windows 11 |
-| GPU | One current AMD, Intel, and NVIDIA system |
+| GPU | One current AMD, Intel, and NVIDIA adapter, proven as the active D3D11 adapter |
 | Resolution | 1080p60, 1440p60, and 4K60 where supported |
 | Codec | H.264 everywhere; HEVC and AV1 where hardware exposes them |
 | Audio | None, desktop only, microphone only, desktop + microphone |
@@ -140,5 +142,8 @@ Every Wreath summary must have exactly one Windows, GPU, resolution, audio, and
 display tag. Add lifecycle and manual-check tags only to runs where those checks
 were actually completed. The verifier requires three passing 30-minute Medal
 comparisons per GPU vendor, H.264 on every vendor, every additional codec exposed
-by each tested machine, and at least one passing four-hour Wreath-only soak. It
-writes `perf/windows/matrix-summary.json`; raw evidence remains outside Git.
+by each tested machine, and at least one passing four-hour Wreath-only soak. A
+GPU tag is accepted only when its vendor matches the adapter actually opened by
+D3D11, so an installed but unused discrete GPU cannot satisfy a hybrid-system
+row. The verifier writes `perf/windows/matrix-summary.json`; raw evidence remains
+outside Git.

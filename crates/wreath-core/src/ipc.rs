@@ -48,6 +48,13 @@ pub enum Request {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GraphicsAdapter {
+    pub name: String,
+    pub vendor_id: u32,
+    pub device_id: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "result", rename_all = "kebab-case")]
 pub enum Response {
     Status {
@@ -55,6 +62,8 @@ pub enum Response {
         monitor: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         codec: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        adapter: Option<GraphicsAdapter>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         replay_bytes: Option<u64>,
         buffered_seconds: u16,
@@ -128,6 +137,11 @@ mod tests {
             state: DaemonState::Recording,
             monitor: Some("DISPLAY-1".into()),
             codec: Some("h264".into()),
+            adapter: Some(GraphicsAdapter {
+                name: "Example GPU".into(),
+                vendor_id: 0x1002,
+                device_id: 0x73bf,
+            }),
             replay_bytes: Some(12_345_678),
             buffered_seconds: 30,
             error: None,
@@ -151,6 +165,7 @@ mod tests {
                 state: DaemonState::Recording,
                 monitor: Some("DISPLAY-1".into()),
                 codec: None,
+                adapter: None,
                 replay_bytes: None,
                 buffered_seconds: 30,
                 error: None,

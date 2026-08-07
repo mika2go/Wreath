@@ -9,6 +9,13 @@ pub enum HardwareCodec {
     Av1,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphicsAdapterInfo {
+    pub name: String,
+    pub vendor_id: u32,
+    pub device_id: u32,
+}
+
 impl HardwareCodec {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -84,6 +91,7 @@ pub struct VideoRuntime {
     _media_foundation: MediaFoundationRuntime,
     device: windows::Win32::Graphics::Direct3D11::ID3D11Device,
     context: windows::Win32::Graphics::Direct3D11::ID3D11DeviceContext,
+    adapter: GraphicsAdapterInfo,
     support: HardwareEncoderSupport,
 }
 
@@ -116,16 +124,20 @@ impl VideoRuntime {
             )
         }
         .map_err(|error| VideoError::Initialization(error.to_string()))?;
+        let device =
+            device.ok_or_else(|| VideoError::Initialization("D3D11 returned no device".into()))?;
+        let context = context.ok_or_else(|| {
+            VideoError::Initialization("D3D11 returned no immediate context".into())
+        })?;
+        let adapter = graphics_adapter_info(&device)?;
         let support = query_hardware_encoder_support()?;
 
         Ok(Self {
             _com: com,
             _media_foundation: media_foundation,
-            device: device
-                .ok_or_else(|| VideoError::Initialization("D3D11 returned no device".into()))?,
-            context: context.ok_or_else(|| {
-                VideoError::Initialization("D3D11 returned no immediate context".into())
-            })?,
+            device,
+            context,
+            adapter,
             support,
         })
     }
@@ -140,6 +152,10 @@ impl VideoRuntime {
         self.support
     }
 
+    pub fn adapter(&self) -> &GraphicsAdapterInfo {
+        &self.adapter
+    }
+
     pub fn device(&self) -> &windows::Win32::Graphics::Direct3D11::ID3D11Device {
         &self.device
     }
@@ -147,6 +163,41 @@ impl VideoRuntime {
     pub fn context(&self) -> &windows::Win32::Graphics::Direct3D11::ID3D11DeviceContext {
         &self.context
     }
+}
+
+#[cfg(target_os = "windows")]
+fn graphics_adapter_info(
+    device: &windows::Win32::Graphics::Direct3D11::ID3D11Device,
+) -> Result<GraphicsAdapterInfo, VideoError> {
+    use windows::Win32::Graphics::Dxgi::{IDXGIAdapter1, IDXGIDevice};
+    use windows::core::Interface;
+
+    let dxgi_device: IDXGIDevice = device
+        .cast()
+        .map_err(|error| VideoError::Initialization(error.to_string()))?;
+    let adapter = unsafe { dxgi_device.GetAdapter() }
+        .map_err(|error| VideoError::Initialization(error.to_string()))?;
+    let adapter: IDXGIAdapter1 = adapter
+        .cast()
+        .map_err(|error| VideoError::Initialization(error.to_string()))?;
+    let description = unsafe { adapter.GetDesc1() }
+        .map_err(|error| VideoError::Initialization(error.to_string()))?;
+    let name_end = description
+        .Description
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(description.Description.len());
+    let name = String::from_utf16_lossy(&description.Description[..name_end]);
+    if name.trim().is_empty() {
+        return Err(VideoError::Initialization(
+            "D3D11 returned an unnamed graphics adapter".into(),
+        ));
+    }
+    Ok(GraphicsAdapterInfo {
+        name,
+        vendor_id: description.VendorId,
+        device_id: description.DeviceId,
+    })
 }
 
 #[cfg(target_os = "windows")]

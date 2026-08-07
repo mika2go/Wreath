@@ -221,6 +221,7 @@ impl Daemon {
             state: self.state,
             monitor: self.monitor.clone(),
             codec: None,
+            adapter: None,
             replay_bytes: None,
             buffered_seconds: self
                 .capture_started_at

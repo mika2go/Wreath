@@ -1,7 +1,7 @@
 use std::io::BufReader;
 
 use wreath_core::config::Config;
-use wreath_core::ipc::{self, DaemonState, Request, Response};
+use wreath_core::ipc::{self, DaemonState, GraphicsAdapter, Request, Response};
 use wreath_core::paths::AppPaths;
 use wreath_windows::control::NamedPipeServer;
 use wreath_windows::hotkey::HotkeyListener;
@@ -43,6 +43,11 @@ pub fn run() -> Result<(), String> {
                     },
                     monitor: status.monitor,
                     codec: status.codec.map(|codec| codec.as_str().to_owned()),
+                    adapter: status.adapter.map(|adapter| GraphicsAdapter {
+                        name: adapter.name,
+                        vendor_id: adapter.vendor_id,
+                        device_id: adapter.device_id,
+                    }),
                     replay_bytes: Some(u64::try_from(status.encoded_bytes).unwrap_or(u64::MAX)),
                     buffered_seconds: status.buffered_seconds,
                     error: status.error,
