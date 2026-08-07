@@ -1,5 +1,5 @@
 pkgname=wreath-git
-pkgver=0.2.2.r0.g0000000
+pkgver=0.2.3.r0.g0000000
 pkgrel=1
 pkgdesc="Lightweight local-first instant replay recorder for Linux desktops"
 arch=('x86_64')
@@ -34,7 +34,7 @@ pkgver() {
   if description="$(git describe --long --tags 2>/dev/null)"; then
     printf '%s\n' "$description" | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
   else
-    printf '0.2.2.r%s.g%s' \
+    printf '0.2.3.r%s.g%s' \
       "$(git rev-list --count HEAD)" \
       "$(git rev-parse --short HEAD)"
   fi

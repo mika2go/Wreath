@@ -32,7 +32,10 @@ room for labels and otherwise remains icon-only. Settings with multiple choices
 open native Windows menus. Frame-rate choices follow the selected monitor's
 current Windows refresh rate, quality includes 100 percent, and changing the
 global shortcut completes as soon as the new modifier-plus-key combination is
-pressed. Status and error notices have a visible close button.
+pressed. The Windows default is `Ctrl+Alt+R`; installations that still use the
+old OS-reserved `Win+Shift+R` default are migrated automatically. Capture
+sessions request borderless presentation before recording starts. Status and
+error notices have a visible close button, and storage is shown only in MB/GB.
 
 The optional CLI can discover the exact Windows device identifiers and update
 the configuration without hand-editing TOML. Changes are validated, written
@@ -60,7 +63,7 @@ by capture, its current encoded replay size, and the buffered duration.
 `Reload settings` also rebuilds a pipeline in the error state, so a corrected
 display mode or temporarily lost device can be recovered without restarting the
 tray application. A Windows configuration whose estimated encoded replay would
-exceed 512 MiB is rejected explicitly instead of silently retaining a shorter
+exceed 512 MB is rejected explicitly instead of silently retaining a shorter
 clip. The tray checks health every five seconds and automatically attempts a
 failed pipeline recovery after sleep/resume or display-mode changes. Failed
 recovery attempts use a 30-second backoff to avoid a resource-heavy restart loop.
@@ -79,14 +82,14 @@ Requirements on a Windows x64 build host:
 From the repository root:
 
 ```powershell
-./scripts/build-windows.ps1 -Version 0.2.2
+./scripts/build-windows.ps1 -Version 0.2.3
 ```
 
 The script runs the locked Windows-target test suite and Clippy with warnings as
 errors, builds only the four Windows executables in release mode, enforces small
 binary-size budgets, and writes
-`dist/windows/Wreath-0.2.2-x64-setup.exe`. A matching
-`Wreath-0.2.2-x64-build.json` records the SHA-256 hash and size of every binary
+`dist/windows/Wreath-0.2.3-x64-setup.exe`. A matching
+`Wreath-0.2.3-x64-build.json` records the SHA-256 hash and size of every binary
 and the setup executable, the exact Git commit, Windows build, architecture, and
 Rust/Cargo/NSIS versions. The script refuses non-Windows hosts and modified
 tracked source, so the evidence always identifies the native, reproducible
@@ -94,8 +97,9 @@ release input. It also performs a clean installation into a temporary directory,
 starts the installed full application, verifies that exactly one independent
 tray starts, verifies embedded application icons and a native window resize,
 reinstalls while both processes are running, verifies the upgraded app starts
-again, and runs the uninstaller. The NSIS setup installs per user below
-`%LOCALAPPDATA%\Wreath`
+again, and verifies that uninstalling a running installation stops the app,
+tray, and recorder before removing their executables. The NSIS setup installs
+per user below `%LOCALAPPDATA%\Wreath`
 and adds Start-menu shortcuts for Wreath and its uninstaller. It does not ask for
 administrator rights. The finish page opens the full application, which starts
 the independent tray and recorder. Upgrades stop the old tray-only process

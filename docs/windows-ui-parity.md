@@ -104,7 +104,7 @@ out of scope.
 - Quality: clip length, frame rate, codec, and quality.
 - Audio: desktop audio, microphone toggle, friendly input-device name, and
   recording level.
-- Controls: shortcut capture; Enter confirms and Escape cancels.
+- Controls: shortcut capture applies immediately; Escape cancels.
 - Storage: absolute save location selected through the native folder picker.
 - Save validates and atomically writes the config, reloads the daemon over IPC,
   and reports a precise success or failure message.
