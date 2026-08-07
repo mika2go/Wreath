@@ -14,11 +14,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, FindWindowW, GWLP_USERDATA,
     GetClientRect, GetCursorPos, GetMessageW, GetWindowLongPtrW, HMENU, IDC_ARROW, LoadCursorW,
     MF_CHECKED, MF_SEPARATOR, MF_STRING, MINMAXINFO, MSG, PostQuitMessage, RegisterClassW, SW_HIDE,
-    SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
-    WINDOW_EX_STYLE, WM_CHAR, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_KEYDOWN,
-    WM_LBUTTONUP, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE, WNDCLASSW, WS_CHILD, WS_DISABLED,
-    WS_OVERLAPPEDWINDOW,
+    SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetTimer,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
+    TranslateMessage, WINDOW_EX_STYLE, WM_CHAR, WM_COMMAND, WM_DESTROY, WM_DPICHANGED,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONUP, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE,
+    WM_TIMER, WNDCLASSW, WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::config::Codec;
@@ -33,6 +33,7 @@ const COMMAND_CLIP_RENAME: usize = 500;
 const COMMAND_CLIP_DELETE: usize = 501;
 const COMMAND_CLIP_MOVE_LIBRARY: usize = 502;
 const COMMAND_CLIP_MOVE_COLLECTION_BASE: usize = 600;
+const PLAYER_TIMER: usize = 2;
 
 struct AppState {
     model: UiModel,
@@ -142,6 +143,7 @@ fn run_initialized() -> Result<(), String> {
         (*state).video_window = Some(video_window);
         (*state).player = Some(Player::new(video_window, window));
         (*state).dpi = GetDpiForWindow(window).max(96);
+        let _ = SetTimer(Some(window), PLAYER_TIMER, 250, None);
     }
     unsafe {
         let _ = ShowWindow(window, SW_RESTORE);
@@ -318,10 +320,24 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         PLAYER_EVENT => {
+            if let Some(state) = state_mut(window) {
+                if let Some(player) = &mut state.player
+                    && let Err(error) = player.handle_event(wparam.0 as i32, lparam.0 as i32)
+                {
+                    state.model.notice = Some(format!("Cannot play this clip: {error}"));
+                }
+                sync_player_state(state);
+                update_player_window(state);
+                redraw(window);
+            }
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == PLAYER_TIMER => {
             if let Some(state) = state_mut(window)
-                && let Some(player) = &state.player
+                && state.model.page == crate::model::Page::Player
             {
-                player.update_video();
+                sync_player_state(state);
+                redraw(window);
             }
             LRESULT(0)
         }
@@ -404,6 +420,14 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             None => state.model.notice = Some("No clip is loaded".into()),
             Some(Ok(())) => {}
         },
+        Action::SeekPercent(percent) => {
+            if let Some(player) = &state.player
+                && let Err(error) = player.seek_fraction(f64::from(percent) / 100.0)
+            {
+                state.model.notice = Some(error);
+            }
+            sync_player_state(state);
+        }
     }
     redraw(window);
 }
@@ -638,6 +662,7 @@ fn update_player_window(state: &mut AppState) {
     let bounds = player_bounds(
         (state.width as f32 / scale).round() as u32,
         (state.height as f32 / scale).round() as u32,
+        state.model.player_aspect_ratio,
     );
     let _ = unsafe {
         SetWindowPos(
@@ -656,6 +681,18 @@ fn update_player_window(state: &mut AppState) {
     if let Some(player) = &state.player {
         player.update_video();
     }
+}
+
+fn sync_player_state(state: &mut AppState) {
+    let Some(player) = &state.player else {
+        return;
+    };
+    let snapshot = player.snapshot();
+    state.model.player_ready = snapshot.ready;
+    state.model.player_playing = snapshot.playing;
+    state.model.player_position_seconds = snapshot.position_seconds;
+    state.model.player_duration_seconds = snapshot.duration_seconds;
+    state.model.player_aspect_ratio = snapshot.aspect_ratio;
 }
 
 fn handle_character(state: &mut AppState, character: u32) {

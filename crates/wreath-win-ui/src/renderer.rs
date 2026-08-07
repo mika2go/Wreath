@@ -81,7 +81,7 @@ impl LogicalRect {
     }
 }
 
-pub fn player_bounds(width: u32, height: u32) -> LogicalRect {
+pub fn player_bounds(width: u32, height: u32, aspect_ratio: f32) -> LogicalRect {
     let width = width as f32;
     let rail = sidebar_width(width);
     let padding = if width < 820.0 {
@@ -91,12 +91,33 @@ pub fn player_bounds(width: u32, height: u32) -> LogicalRect {
     } else {
         40.0
     };
-    LogicalRect {
-        left: rail + padding,
-        top: 184.0,
-        right: width - padding,
-        bottom: (height as f32 - 106.0).max(330.0),
-    }
+    fit_aspect(
+        rect(
+            rail + padding,
+            184.0,
+            width - padding,
+            (height as f32 - 142.0).max(330.0),
+        ),
+        aspect_ratio,
+    )
+}
+
+fn fit_aspect(area: LogicalRect, aspect_ratio: f32) -> LogicalRect {
+    let aspect_ratio = if aspect_ratio.is_finite() && aspect_ratio > 0.1 {
+        aspect_ratio
+    } else {
+        16.0 / 9.0
+    };
+    let available_width = (area.right - area.left).max(1.0);
+    let available_height = (area.bottom - area.top).max(1.0);
+    let (width, height) = if available_width / available_height > aspect_ratio {
+        (available_height * aspect_ratio, available_height)
+    } else {
+        (available_width, available_width / aspect_ratio)
+    };
+    let left = area.left + (available_width - width) / 2.0;
+    let top = area.top + (available_height - height) / 2.0;
+    rect(left, top, left + width, top + height)
 }
 
 #[derive(Clone)]
@@ -791,27 +812,67 @@ impl Renderer {
             PRIMARY,
             Some(Action::OpenClipsFolder),
         )?;
-        let stage = rect(left, 184.0, right, (height - 106.0).max(330.0));
+        let stage = fit_aspect(
+            rect(left, 184.0, right, (height - 142.0).max(330.0)),
+            model.player_aspect_ratio,
+        );
         self.fill(stage, STAGE, 12.0)?;
-        self.text(
-            "▶",
-            rect(
-                (left + right) / 2.0 - 16.0,
-                (stage.top + stage.bottom) / 2.0 - 18.0,
-                right,
-                stage.bottom,
-            ),
-            &self.heading.clone(),
-            PRIMARY,
-        )?;
         self.hits.push(HitRegion {
             rect: stage,
             action: Action::PlayPause,
         });
+        let controls_top = height - 112.0;
+        self.pill(
+            rect(left, controls_top, left + 42.0, controls_top + 38.0),
+            SURFACE,
+            if model.player_playing { "Ⅱ" } else { "▶" },
+            PRIMARY,
+            Some(Action::PlayPause),
+        )?;
+        let rail = rect(
+            left + 58.0,
+            controls_top + 16.0,
+            right - 112.0,
+            controls_top + 22.0,
+        );
+        self.fill(rail, SURFACE_HOVER, 3.0)?;
+        let progress = if model.player_duration_seconds > 0.0 {
+            (model.player_position_seconds / model.player_duration_seconds).clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        };
+        if progress > 0.0 {
+            self.fill(
+                rect(
+                    rail.left,
+                    rail.top,
+                    rail.left + (rail.right - rail.left) * progress,
+                    rail.bottom,
+                ),
+                SUCCESS,
+                3.0,
+            )?;
+        }
+        for percent in 0..100_u8 {
+            let segment = (rail.right - rail.left) / 100.0;
+            self.hits.push(HitRegion {
+                rect: rect(
+                    rail.left + segment * f32::from(percent),
+                    controls_top,
+                    rail.left + segment * f32::from(percent + 1),
+                    controls_top + 38.0,
+                ),
+                action: Action::SeekPercent(percent.saturating_add(1)),
+            });
+        }
         self.text(
-            "Native Media Foundation preview",
-            rect(left, height - 80.0, right, height - 56.0),
-            &self.body.clone(),
+            &format!(
+                "{} / {}",
+                format_player_time(model.player_position_seconds),
+                format_player_time(model.player_duration_seconds)
+            ),
+            rect(right - 100.0, controls_top, right, controls_top + 38.0),
+            &self.small.clone(),
             SECONDARY,
         )
     }
@@ -1342,6 +1403,11 @@ fn format_storage_limit(megabytes: u32) -> String {
     } else {
         format!("{megabytes} MB")
     }
+}
+
+fn format_player_time(seconds: f64) -> String {
+    let seconds = seconds.max(0.0).round() as u64;
+    format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
 fn age(modified: SystemTime) -> String {

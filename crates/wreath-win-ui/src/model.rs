@@ -52,6 +52,7 @@ pub enum Action {
     DeleteActiveCollection,
     SelectCollection(Option<usize>),
     PlayPause,
+    SeekPercent(u8),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +78,11 @@ pub struct UiModel {
     pub hotkey_capture: bool,
     pub displays: Vec<DisplayOption>,
     pub microphone_names: Vec<(String, String)>,
+    pub player_ready: bool,
+    pub player_playing: bool,
+    pub player_position_seconds: f64,
+    pub player_duration_seconds: f64,
+    pub player_aspect_ratio: f32,
 }
 
 impl UiModel {
@@ -99,6 +105,11 @@ impl UiModel {
             hotkey_capture: false,
             displays: Vec::new(),
             microphone_names: Vec::new(),
+            player_ready: false,
+            player_playing: false,
+            player_position_seconds: 0.0,
+            player_duration_seconds: 0.0,
+            player_aspect_ratio: 16.0 / 9.0,
         };
         model.refresh()?;
         Ok(model)
@@ -227,6 +238,11 @@ mod tests {
             hotkey_capture: false,
             displays: Vec::new(),
             microphone_names: Vec::new(),
+            player_ready: false,
+            player_playing: false,
+            player_position_seconds: 0.0,
+            player_duration_seconds: 0.0,
+            player_aspect_ratio: 16.0 / 9.0,
         }
     }
 
