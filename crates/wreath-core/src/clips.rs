@@ -103,9 +103,9 @@ pub fn move_to_collection(
     collection: &Path,
     thumbnail_directory: &Path,
 ) -> io::Result<PathBuf> {
-    let root = directory.canonicalize()?;
-    let collection = collection.canonicalize()?;
-    if collection.parent() != Some(root.as_path()) {
+    let canonical_root = directory.canonicalize()?;
+    let canonical_collection = collection.canonicalize()?;
+    if canonical_collection.parent() != Some(canonical_root.as_path()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "collection must be a direct child of the clip directory",
