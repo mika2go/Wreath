@@ -221,12 +221,10 @@ impl HardwareVideoEncoder {
         let mut data = std::ptr::null_mut();
         let mut length = 0_u32;
         unsafe { buffer.Lock(&mut data, None, Some(&mut length)) }.map_err(initialization_error)?;
-        let payload = if data.is_null() || length == 0 {
-            Box::default()
+        let payload: std::sync::Arc<[u8]> = if data.is_null() || length == 0 {
+            std::sync::Arc::from([])
         } else {
-            unsafe { std::slice::from_raw_parts(data, length as usize) }
-                .to_vec()
-                .into_boxed_slice()
+            std::sync::Arc::from(unsafe { std::slice::from_raw_parts(data, length as usize) })
         };
         unsafe { buffer.Unlock() }.map_err(initialization_error)?;
 

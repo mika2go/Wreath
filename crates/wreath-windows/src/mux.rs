@@ -188,7 +188,7 @@ mod tests {
             timestamp: std::time::Duration::from_millis(milliseconds),
             duration: std::time::Duration::from_millis(10),
             keyframe: track == TrackKind::Video,
-            payload: vec![1].into_boxed_slice(),
+            payload: vec![1].into(),
         }
     }
 

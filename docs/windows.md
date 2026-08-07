@@ -6,6 +6,10 @@ hardware-only Media Foundation video encoding, WASAPI audio capture, a bounded
 encoded-memory ring, and direct MP4 muxing. It does not ship GTK, Electron, a
 browser engine, telemetry, uploads, or a CPU video fallback.
 
+Replay muxing runs outside the capture loop. Saving snapshots only shared
+references to immutable encoded packets, so capture continues without copying
+the buffered video payload or introducing a save-time hole in the next replay.
+
 ## Runtime layout
 
 - `wreathd.exe` owns capture, encoding, the replay ring, the global hotkey, and

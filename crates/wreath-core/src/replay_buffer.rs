@@ -13,7 +13,7 @@ pub struct EncodedPacket {
     pub timestamp: Duration,
     pub duration: Duration,
     pub keyframe: bool,
-    pub payload: Box<[u8]>,
+    pub payload: std::sync::Arc<[u8]>,
 }
 
 impl EncodedPacket {
@@ -76,6 +76,12 @@ impl EncodedReplayBuffer {
 
     pub fn packets(&self) -> impl ExactSizeIterator<Item = &EncodedPacket> {
         self.packets.iter()
+    }
+
+    /// Takes a cheap immutable view for asynchronous muxing. Encoded payloads
+    /// are reference-counted, so saving does not copy the replay's video data.
+    pub fn snapshot(&self) -> Vec<EncodedPacket> {
+        self.packets.iter().cloned().collect()
     }
 
     pub fn payload_bytes(&self) -> usize {
@@ -154,7 +160,7 @@ mod tests {
             timestamp: Duration::from_secs(second),
             duration: Duration::from_secs(1),
             keyframe,
-            payload: vec![0; bytes].into_boxed_slice(),
+            payload: vec![0; bytes].into(),
         }
     }
 
@@ -164,7 +170,7 @@ mod tests {
             timestamp: Duration::from_secs(second),
             duration: Duration::from_secs(1),
             keyframe: false,
-            payload: vec![0; bytes].into_boxed_slice(),
+            payload: vec![0; bytes].into(),
         }
     }
 
@@ -248,5 +254,19 @@ mod tests {
         assert_eq!(buffer.payload_bytes(), 0);
         assert!(!buffer.push(video(100, false, 10)));
         assert!(buffer.push(video(101, true, 10)));
+    }
+
+    #[test]
+    fn snapshot_shares_encoded_payload_without_copying_it() {
+        let mut buffer = EncodedReplayBuffer::new(Duration::from_secs(30), 100).unwrap();
+        assert!(buffer.push(video(0, true, 10)));
+
+        let snapshot = buffer.snapshot();
+        let retained = buffer.packets().next().unwrap();
+
+        assert!(std::sync::Arc::ptr_eq(
+            &snapshot[0].payload,
+            &retained.payload
+        ));
     }
 }

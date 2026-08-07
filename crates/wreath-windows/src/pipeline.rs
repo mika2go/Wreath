@@ -495,11 +495,13 @@ fn run_pipeline(
                     let _ = command.reply.send(Ok(PipelineCommandResult::Ok));
                 }
                 PipelineCommandKind::Save => {
-                    let result =
-                        save_replay(&config.storage.directory, &encoder, audio.as_ref(), &buffer)
-                            .map(PipelineCommandResult::Saved)
-                            .map_err(|error| error.to_string());
-                    let _ = command.reply.send(result);
+                    spawn_save(
+                        config.storage.directory.clone(),
+                        &encoder,
+                        audio.as_ref(),
+                        buffer.snapshot(),
+                        command.reply,
+                    );
                 }
                 PipelineCommandKind::Stop => {
                     let result = encoder
@@ -577,9 +579,9 @@ fn run_pipeline(
 #[cfg(target_os = "windows")]
 fn save_replay(
     directory: &std::path::Path,
-    encoder: &crate::encoder::HardwareVideoEncoder,
-    audio: Option<&PipelineAudio>,
-    buffer: &wreath_core::replay_buffer::EncodedReplayBuffer,
+    video_media_type: &windows::Win32::Media::MediaFoundation::IMFMediaType,
+    audio_media_type: Option<&windows::Win32::Media::MediaFoundation::IMFMediaType>,
+    packets: &[wreath_core::replay_buffer::EncodedPacket],
 ) -> Result<std::path::PathBuf, crate::video::VideoError> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -595,16 +597,11 @@ fn save_replay(
         .and_then(|stem| stem.to_str())
         .unwrap_or("wreath-clip");
     let temporary_path = final_path.with_file_name(format!("{stem}.partial.mp4"));
-    let video_media_type = encoder.output_media_type()?;
-    let audio_media_type = audio
-        .map(PipelineAudio::output_media_type)
-        .transpose()
-        .map_err(|error| crate::video::VideoError::Initialization(error.to_string()))?;
     if let Err(error) = crate::mux::write_mp4(
         &temporary_path,
-        &video_media_type,
-        audio_media_type.as_ref(),
-        buffer.packets(),
+        video_media_type,
+        audio_media_type,
+        packets.iter(),
     ) {
         let _ = std::fs::remove_file(&temporary_path);
         return Err(error);
@@ -612,6 +609,117 @@ fn save_replay(
     std::fs::rename(&temporary_path, &final_path)
         .map_err(|error| crate::video::VideoError::Initialization(error.to_string()))?;
     Ok(final_path)
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_save(
+    directory: std::path::PathBuf,
+    encoder: &crate::encoder::HardwareVideoEncoder,
+    audio: Option<&PipelineAudio>,
+    packets: Vec<wreath_core::replay_buffer::EncodedPacket>,
+    reply: crossbeam_channel::Sender<Result<PipelineCommandResult, String>>,
+) {
+    use crate::video::VideoError;
+
+    let video_media_type = encoder
+        .output_media_type()
+        .and_then(|media_type| MarshaledMediaType::new(&media_type));
+    let audio_media_type = audio
+        .map(PipelineAudio::output_media_type)
+        .transpose()
+        .map_err(|error| VideoError::Initialization(error.to_string()))
+        .and_then(|media_type| media_type.as_ref().map(MarshaledMediaType::new).transpose());
+    let (video_media_type, audio_media_type) = match (video_media_type, audio_media_type) {
+        (Ok(video), Ok(audio)) => (video, audio),
+        (Err(error), _) | (_, Err(error)) => {
+            let _ = reply.send(Err(error.to_string()));
+            return;
+        }
+    };
+
+    let failure_reply = reply.clone();
+    let spawn = std::thread::Builder::new()
+        .name("wreath-save".into())
+        .spawn(move || {
+            use windows::Win32::System::Com::{
+                COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize,
+            };
+
+            let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
+                .ok()
+                .map_err(|error| VideoError::Initialization(error.to_string()));
+            let result = match com {
+                Ok(()) => {
+                    let result = {
+                        let video_media_type = video_media_type.unmarshal();
+                        let audio_media_type = audio_media_type
+                            .map(MarshaledMediaType::unmarshal)
+                            .transpose();
+                        match (video_media_type, audio_media_type) {
+                            (Ok(video), Ok(audio)) => {
+                                save_replay(&directory, &video, audio.as_ref(), &packets)
+                            }
+                            (Err(error), _) | (_, Err(error)) => Err(error),
+                        }
+                    };
+                    unsafe { CoUninitialize() };
+                    result
+                }
+                Err(error) => Err(error),
+            }
+            .map(PipelineCommandResult::Saved)
+            .map_err(|error| error.to_string());
+            let _ = reply.send(result);
+        });
+    if let Err(error) = spawn {
+        let _ = failure_reply.send(Err(format!("cannot start replay save worker: {error}")));
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct MarshaledMediaType(Option<windows::Win32::System::Com::IStream>);
+
+// SAFETY: the contained stream is created specifically by
+// CoMarshalInterThreadInterfaceInStream for transfer to one other COM apartment.
+// It is either consumed there or released normally if spawning the worker fails.
+#[cfg(target_os = "windows")]
+unsafe impl Send for MarshaledMediaType {}
+
+#[cfg(target_os = "windows")]
+impl MarshaledMediaType {
+    fn new(
+        media_type: &windows::Win32::Media::MediaFoundation::IMFMediaType,
+    ) -> Result<Self, crate::video::VideoError> {
+        use windows::Win32::System::Com::Marshal::CoMarshalInterThreadInterfaceInStream;
+        use windows::core::Interface;
+
+        let stream = unsafe {
+            CoMarshalInterThreadInterfaceInStream(
+                &windows::Win32::Media::MediaFoundation::IMFMediaType::IID,
+                media_type,
+            )
+        }
+        .map_err(|error| crate::video::VideoError::Initialization(error.to_string()))?;
+        Ok(Self(Some(stream)))
+    }
+
+    fn unmarshal(
+        mut self,
+    ) -> Result<windows::Win32::Media::MediaFoundation::IMFMediaType, crate::video::VideoError>
+    {
+        use windows::Win32::System::Com::StructuredStorage::CoGetInterfaceAndReleaseStream;
+
+        let stream = self.0.take().ok_or_else(|| {
+            crate::video::VideoError::Initialization(
+                "media type marshal stream was already consumed".into(),
+            )
+        })?;
+        let media_type = unsafe { CoGetInterfaceAndReleaseStream(&stream) };
+        // CoGetInterfaceAndReleaseStream owns the matching Release call even
+        // when unmarshalling fails, so the Rust wrapper must not release twice.
+        std::mem::forget(stream);
+        media_type.map_err(|error| crate::video::VideoError::Initialization(error.to_string()))
+    }
 }
 
 #[cfg(target_os = "windows")]
