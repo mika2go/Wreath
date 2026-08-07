@@ -6,7 +6,7 @@ on:
       version:
         description: Semantic version without the v prefix
         required: true
-        default: 0.2.8
+        default: 0.2.9
         type: string
 
 permissions:
@@ -68,4 +68,4 @@ jobs:
             --repo $env:GITHUB_REPOSITORY `
             --target $env:GITHUB_SHA `
             --title "Wreath $env:RELEASE_VERSION" `
-            --notes "Windows x64 NSIS microphone-quality hotfix. Microphones are now opened in their native shared communications format so Windows and the device driver can apply the intended voice-processing mode. A continuous stateful converter carries sample phase across WASAPI packets, downmixes microphone arrays to a stable mono voice signal, resets cleanly after real capture gaps, and prevents packet-edge repetition or skipping. The bounded microphone queue now has extra headroom for encoder and GPU stalls. Native Windows tests, build checks, and installer lifecycle gates pass; the full AMD/Intel/NVIDIA Medal performance matrix is still pending."
+            --notes "Windows x64 NSIS microphone-stability hotfix. Microphone capture now uses a 200 ms timer-driven WASAPI endpoint buffer while an MMCSS audio thread drains it every 2-10 ms based on the device period, giving short driver and DPC stalls room to recover without losing samples. Native device sample rates remain unchanged until the continuous stream converter, uncertain WASAPI timestamps continue from the prior packet, and both Windows discontinuity flags and internal queue loss trigger a clean converter restart with a 5 ms fade-in instead of a hard clicking edge. Desktop loopback capture remains event-driven. Native Windows tests, build checks, and installer lifecycle gates pass; the full AMD/Intel/NVIDIA Medal performance matrix is still pending."
