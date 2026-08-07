@@ -340,11 +340,11 @@ try {
                 throw "NSIS uninstall left $Executable installed"
             }
         }
-        $RemainingAutostart = Get-ItemPropertyValue `
-            -Path $RunKey `
-            -Name "Wreath" `
+        $RemainingRunValues = Get-ItemProperty `
+            -LiteralPath $RunKey `
             -ErrorAction SilentlyContinue
-        if ($null -ne $RemainingAutostart) {
+        if ($null -ne $RemainingRunValues -and
+            $null -ne $RemainingRunValues.PSObject.Properties["Wreath"]) {
             throw "NSIS uninstall left the Wreath autostart entry installed"
         }
         $SmokeUninstalled = $true
