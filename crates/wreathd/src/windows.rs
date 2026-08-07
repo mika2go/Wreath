@@ -89,11 +89,13 @@ fn reload(
             };
         }
     };
-    if &new_config == current_config {
+    let config_changed = &new_config != current_config;
+    let pipeline_state = pipeline.status().state;
+    if !config_changed && pipeline_state != PipelineRunState::Error {
         return Response::Ok;
     }
 
-    let was_paused = pipeline.status().state == PipelineRunState::Paused;
+    let was_paused = pipeline_state == PipelineRunState::Paused;
     let replacement = match ReplayPipeline::spawn(new_config.clone()) {
         Ok(pipeline) => pipeline,
         Err(error) => {
@@ -107,7 +109,7 @@ fn reload(
             message: format!("cannot preserve paused state while reloading: {error}"),
         };
     }
-    if let Err(error) = hotkey.rebind(&new_config.hotkey) {
+    if config_changed && let Err(error) = hotkey.rebind(&new_config.hotkey) {
         return Response::Error {
             message: format!("cannot activate the new Windows shortcut: {error}"),
         };

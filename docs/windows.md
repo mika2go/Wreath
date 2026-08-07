@@ -38,7 +38,9 @@ wreathctl config codec h264
 
 Use the endpoint ID printed by `wreathctl microphones` instead of `default` to
 pin capture to a specific microphone. `wreathctl config` prints the complete
-current configuration.
+current configuration. `Reload settings` also rebuilds a pipeline in the error
+state, so a corrected display mode or temporarily lost device can be recovered
+without restarting the tray application.
 
 ## Build an MSI
 
