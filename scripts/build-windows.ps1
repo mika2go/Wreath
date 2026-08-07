@@ -4,21 +4,69 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 $RepositoryRoot = Split-Path -Parent $PSScriptRoot
 $BinaryDirectory = Join-Path $RepositoryRoot "target/$Target/release"
 $DistributionDirectory = Join-Path $RepositoryRoot "dist/windows"
 $InstallerSource = Join-Path $RepositoryRoot "packaging/windows/wreath.wxs"
 $Installer = Join-Path $DistributionDirectory "Wreath-$Version-x64.msi"
+$Packages = @("wreath-core", "wreath-windows", "wreath-win-ui", "wreathd", "wreathctl")
+$Executables = [ordered]@{
+    "wreathd.exe" = 4MB
+    "wreath-win-ui.exe" = 2MB
+    "wreathctl.exe" = 2MB
+}
+
+if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Version must contain exactly three numeric components"
+}
+if ($Target -ne "x86_64-pc-windows-msvc") {
+    throw "The x64 MSI supports only the x86_64-pc-windows-msvc target"
+}
+if (-not (Test-Path -LiteralPath $InstallerSource -PathType Leaf)) {
+    throw "Missing WiX source: $InstallerSource"
+}
+
+function Invoke-CargoPackageSet(
+    [string[]]$Arguments,
+    [string[]]$SelectedPackages
+) {
+    $PackageArguments = foreach ($Package in $SelectedPackages) { "-p"; $Package }
+    & cargo @Arguments @PackageArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "cargo $($Arguments -join ' ') failed"
+    }
+}
 
 Push-Location $RepositoryRoot
 try {
-    & cargo test --locked --all-targets `
-        -p wreath-core -p wreath-windows -p wreath-win-ui -p wreathd -p wreathctl
-    if ($LASTEXITCODE -ne 0) { throw "cargo test failed" }
+    Invoke-CargoPackageSet `
+        -Arguments @("test", "--locked", "--target", $Target, "--all-targets") `
+        -SelectedPackages $Packages
 
-    & cargo build --locked --release --target $Target `
-        -p wreath-win-ui -p wreathd -p wreathctl
-    if ($LASTEXITCODE -ne 0) { throw "Windows release build failed" }
+    $PackageArguments = foreach ($Package in $Packages) { "-p"; $Package }
+    & cargo clippy --locked --target $Target --all-targets @PackageArguments -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "Windows clippy gate failed" }
+
+    Invoke-CargoPackageSet `
+        -Arguments @("build", "--locked", "--release", "--target", $Target) `
+        -SelectedPackages @("wreath-win-ui", "wreathd", "wreathctl")
+
+    $BinaryEvidence = foreach ($Entry in $Executables.GetEnumerator()) {
+        $Path = Join-Path $BinaryDirectory $Entry.Key
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            throw "Windows release build did not produce $Path"
+        }
+        $File = Get-Item -LiteralPath $Path
+        if ($File.Length -gt $Entry.Value) {
+            throw "$($Entry.Key) is $($File.Length) bytes; budget is $($Entry.Value) bytes"
+        }
+        [pscustomobject]@{
+            File = $Entry.Key
+            Bytes = $File.Length
+            Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
+        }
+    }
 
     New-Item -ItemType Directory -Force -Path $DistributionDirectory | Out-Null
     & wix build $InstallerSource `
@@ -28,7 +76,25 @@ try {
         -o $Installer
     if ($LASTEXITCODE -ne 0) { throw "WiX installer build failed" }
 
-    Write-Host "Built $Installer"
+    if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) {
+        throw "WiX reported success but did not produce $Installer"
+    }
+    $InstallerFile = Get-Item -LiteralPath $Installer
+    if ($InstallerFile.Length -eq 0) { throw "WiX produced an empty MSI" }
+    $Evidence = [ordered]@{
+        Version = $Version
+        Target = $Target
+        Binaries = @($BinaryEvidence)
+        Installer = [ordered]@{
+            File = $InstallerFile.Name
+            Bytes = $InstallerFile.Length
+            Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $Installer).Hash
+        }
+    }
+    $EvidencePath = Join-Path $DistributionDirectory "Wreath-$Version-x64-build.json"
+    $Evidence | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -Path $EvidencePath
+    Write-Output "Built $Installer"
+    Write-Output "Evidence $EvidencePath"
 } finally {
     Pop-Location
 }

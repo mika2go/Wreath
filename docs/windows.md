@@ -51,6 +51,7 @@ without restarting the tray application.
 Requirements on a Windows x64 build host:
 
 - Rust 1.85 or newer with the `x86_64-pc-windows-msvc` target;
+- the Rust `clippy` component for that toolchain;
 - Visual Studio Build Tools with the Windows SDK;
 - WiX Toolset 4 with `wix.exe` on `PATH`;
 - PowerShell 7 or Windows PowerShell 5.1.
@@ -61,8 +62,11 @@ From the repository root:
 ./scripts/build-windows.ps1 -Version 0.1.0
 ```
 
-The script runs the locked workspace test suite, builds only the three Windows
-executables in release mode, and writes `dist/windows/Wreath-0.1.0-x64.msi`.
+The script runs the locked Windows-target test suite and Clippy with warnings as
+errors, builds only the three Windows executables in release mode, enforces small
+binary-size budgets, and writes `dist/windows/Wreath-0.1.0-x64.msi`. A matching
+`Wreath-0.1.0-x64-build.json` records the SHA-256 hash and size of every binary
+and the MSI.
 The MSI installs per user below `%LOCALAPPDATA%\Wreath` and adds a Start-menu
 shortcut. Autostart remains opt-in from the tray menu.
 
