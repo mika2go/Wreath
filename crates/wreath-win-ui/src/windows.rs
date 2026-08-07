@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM,
@@ -22,6 +23,8 @@ use wreath_core::paths::AppPaths;
 const TRAY_MESSAGE: u32 = WM_APP + 1;
 const TRAY_ID: u32 = 1;
 const STATUS_TIMER: usize = 1;
+const STATUS_TIMER_INTERVAL_MS: u32 = 5_000;
+const RECOVERY_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 const COMMAND_SAVE: usize = 100;
 const COMMAND_PAUSE: usize = 101;
 const COMMAND_RESUME: usize = 102;
@@ -35,6 +38,7 @@ struct AppState {
     paths: AppPaths,
     clips_directory: std::path::PathBuf,
     icon: NOTIFYICONDATAW,
+    recovery: crate::recovery::RecoveryThrottle,
 }
 
 pub fn run() -> Result<(), String> {
@@ -66,6 +70,7 @@ pub fn run() -> Result<(), String> {
         paths,
         clips_directory,
         icon: NOTIFYICONDATAW::default(),
+        recovery: crate::recovery::RecoveryThrottle::new(Instant::now()),
     });
     let state = Box::into_raw(state);
     let window = unsafe {
@@ -91,7 +96,7 @@ pub fn run() -> Result<(), String> {
             return Err(error.to_string());
         }
     };
-    if unsafe { SetTimer(Some(window), STATUS_TIMER, 2_000, None) } == 0 {
+    if unsafe { SetTimer(Some(window), STATUS_TIMER, STATUS_TIMER_INTERVAL_MS, None) } == 0 {
         let _ = unsafe { DestroyWindow(window) };
         let _ = unsafe { Box::from_raw(state) };
         return Err(std::io::Error::last_os_error().to_string());
@@ -228,9 +233,21 @@ fn refresh_status(window: HWND) {
             buffered_seconds,
             error,
         }) => {
-            if let Some(error) = error {
-                format!("Wreath error: {error}")
+            if state == DaemonState::Error {
+                let detail = error.unwrap_or_else(|| "capture pipeline stopped".into());
+                if recovery_due(window) {
+                    match send(Request::Reload) {
+                        Ok(Response::Ok) => "Wreath — recovering capture".into(),
+                        Ok(Response::Error { message }) | Err(message) => {
+                            format!("Wreath error: {detail}; retry failed: {message}")
+                        }
+                        Ok(_) => format!("Wreath error: {detail}"),
+                    }
+                } else {
+                    format!("Wreath error: {detail}")
+                }
             } else {
+                reset_recovery(window);
                 let state = match state {
                     DaemonState::Starting => "Starting",
                     DaemonState::Recording => "Recording",
@@ -251,6 +268,20 @@ fn refresh_status(window: HWND) {
         copy_wide(&mut state.icon.szTip, &tooltip);
         state.icon.uFlags = NIF_TIP;
         let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &state.icon) };
+    }
+}
+
+fn recovery_due(window: HWND) -> bool {
+    let now = Instant::now();
+    let Some(state) = state_mut(window) else {
+        return false;
+    };
+    state.recovery.acquire(now, RECOVERY_RETRY_INTERVAL)
+}
+
+fn reset_recovery(window: HWND) {
+    if let Some(state) = state_mut(window) {
+        state.recovery.reset(Instant::now());
     }
 }
 

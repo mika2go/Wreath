@@ -50,7 +50,9 @@ pipeline selected, its current encoded replay size, and the buffered duration.
 display mode or temporarily lost device can be recovered without restarting the
 tray application. A Windows configuration whose estimated encoded replay would
 exceed 512 MiB is rejected explicitly instead of silently retaining a shorter
-clip.
+clip. The tray checks health every five seconds and automatically attempts a
+failed pipeline recovery after sleep/resume or display-mode changes. Failed
+recovery attempts use a 30-second backoff to avoid a resource-heavy restart loop.
 
 ## Build an MSI
 

@@ -1,5 +1,8 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+#[cfg(any(target_os = "windows", test))]
+mod recovery;
+
 #[cfg(target_os = "windows")]
 mod autostart;
 #[cfg(target_os = "windows")]
