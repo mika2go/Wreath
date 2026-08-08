@@ -12,6 +12,7 @@ pub fn run() -> Result<(), String> {
         "microphones" => return print_microphones(),
         "codecs" => return print_hardware_codecs(),
         "config" => return configure(&arguments[1..]),
+        "cut" => return crate::cut::run(&arguments[1..]),
         _ => {}
     }
     let request = match command {
@@ -238,12 +239,14 @@ fn print_help() {
         "wreathctl <command>\n\n\
          commands:\n  monitors     list active displays\n  microphones  list active microphone endpoint IDs\n  \
          codecs       list available hardware video encoders\n  config       show or change local settings\n  \
+         cut          cut a saved clip down to one span\n  \
          status       show daemon state\n  save         save the replay buffer\n  \
          pause     pause capture\n  resume    resume capture\n  reload    reload configuration\n  \
          shutdown  stop the daemon\n\n\
          examples:\n  wreathctl config monitor \\\\.\\DISPLAY1\n  \
          wreathctl config microphone default\n  wreathctl config microphone off\n  \
          wreathctl config duration 30\n  wreathctl config fps 60\n  \
-         wreathctl config codec h264"
+         wreathctl config codec h264\n  \
+         wreathctl cut C:\\Videos\\Wreath\\clip.mp4 8 20 --name \"Best bit\""
     );
 }
