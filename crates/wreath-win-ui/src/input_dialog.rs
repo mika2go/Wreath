@@ -1,20 +1,18 @@
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreateSolidBrush, DEFAULT_CHARSET,
-    DT_CENTER, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, FillRect, HBRUSH, HDC, HFONT,
-    HGDIOBJ, OUT_TT_PRECIS, SelectObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
+    DeleteObject, HBRUSH, HDC, HFONT, HGDIOBJ, OUT_TT_PRECIS, SetBkColor, SetTextColor,
 };
-use windows::Win32::UI::Controls::{DRAWITEMSTRUCT, EM_SETSEL, ODS_SELECTED};
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
-use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
+use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::{
-    BS_OWNERDRAW, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    ES_AUTOHSCROLL, GWLP_USERDATA, GetMessageW, GetWindowLongPtrW, GetWindowRect,
+    BS_DEFPUSHBUTTON, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow,
+    DispatchMessageW, ES_AUTOHSCROLL, GWLP_USERDATA, GetMessageW, GetWindowLongPtrW, GetWindowRect,
     GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, IsDialogMessageW, LoadCursorW, MSG,
-    PostQuitMessage, RegisterClassW, SW_SHOW, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
-    ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
-    WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DRAWITEM, WM_NCCREATE, WM_NCDESTROY, WM_SETFONT,
-    WNDCLASSW, WS_CAPTION, WS_CHILD, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    PostQuitMessage, RegisterClassW, SW_SHOW, SetWindowLongPtrW, ShowWindow, TranslateMessage,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC,
+    WM_NCCREATE, WM_NCDESTROY, WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_SYSMENU,
+    WS_TABSTOP, WS_VISIBLE,
 };
 use windows::core::{PCWSTR, w};
 
@@ -24,15 +22,14 @@ const ID_CANCEL: usize = 2;
 
 const STAGE: u32 = 0x101012;
 const SURFACE: u32 = 0x17171a;
-const SURFACE_HOVER: u32 = 0x202024;
 const PRIMARY: u32 = 0xf4f5f9;
 const SECONDARY: u32 = 0x777e8e;
 
 const DIALOG_WIDTH: i32 = 420;
 const DIALOG_HEIGHT: i32 = 168;
 const MARGIN: i32 = 20;
-const BUTTON_WIDTH: i32 = 88;
-const BUTTON_HEIGHT: i32 = 34;
+const BUTTON_WIDTH: i32 = 92;
+const BUTTON_HEIGHT: i32 = 30;
 
 struct DialogState {
     edit: Option<HWND>,
@@ -143,11 +140,15 @@ pub fn prompt(
                 WINDOW_EX_STYLE::default(),
                 w!("EDIT"),
                 PCWSTR(initial.as_ptr()),
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+                WS_CHILD
+                    | WS_VISIBLE
+                    | WS_BORDER
+                    | WS_TABSTOP
+                    | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
                 scale(MARGIN),
                 scale(46),
                 scale(DIALOG_WIDTH - 2 * MARGIN),
-                scale(32),
+                scale(30),
                 Some(window),
                 None,
                 None,
@@ -157,7 +158,7 @@ pub fn prompt(
                 WINDOW_EX_STYLE::default(),
                 w!("BUTTON"),
                 PCWSTR(confirm.as_ptr()),
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_DEFPUSHBUTTON as u32),
                 ok_left,
                 buttons_top,
                 scale(BUTTON_WIDTH),
@@ -173,7 +174,7 @@ pub fn prompt(
                 WINDOW_EX_STYLE::default(),
                 w!("BUTTON"),
                 w!("Cancel"),
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                 cancel_left,
                 buttons_top,
                 scale(BUTTON_WIDTH),
@@ -186,7 +187,7 @@ pub fn prompt(
                 None,
             )?;
             for control in [static_text, edit, ok, cancel] {
-                SendMessageW(
+                windows::Win32::UI::WindowsAndMessaging::SendMessageW(
                     control,
                     WM_SETFONT,
                     Some(WPARAM(font.0 as usize)),
@@ -194,7 +195,6 @@ pub fn prompt(
                 );
             }
             state.edit = Some(edit);
-            SendMessageW(edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
             Ok(edit)
         }
     })();
@@ -207,7 +207,6 @@ pub fn prompt(
         }
     };
 
-    let _ = unsafe { EnableWindow(owner, false) };
     unsafe {
         let _ = ShowWindow(window, SW_SHOW);
         let _ = SetFocus(Some(edit));
@@ -234,8 +233,6 @@ pub fn prompt(
         }
     }
 
-    let _ = unsafe { EnableWindow(owner, true) };
-    let _ = unsafe { SetForegroundWindow(owner) };
     if !state.done {
         let _ = unsafe { DestroyWindow(window) };
     }
@@ -309,15 +306,6 @@ unsafe extern "system" fn dialog_proc(
                 None => unsafe { DefWindowProcW(window, message, wparam, lparam) },
             }
         }
-        WM_DRAWITEM => {
-            let item = lparam.0 as *const DRAWITEMSTRUCT;
-            if item.is_null() {
-                return LRESULT(0);
-            }
-            let font = state_mut(window).map(|state| state.font);
-            unsafe { draw_button(&*item, font) };
-            LRESULT(1)
-        }
         WM_COMMAND => {
             let command = wparam.0 & 0xffff;
             if command == ID_OK {
@@ -339,48 +327,14 @@ unsafe extern "system" fn dialog_proc(
             LRESULT(0)
         }
         WM_NCDESTROY => {
+            if let Some(state) = state_mut(window) {
+                state.done = true;
+            }
             unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, 0) };
             unsafe { DefWindowProcW(window, message, wparam, lparam) }
         }
         _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
     }
-}
-
-unsafe fn draw_button(item: &DRAWITEMSTRUCT, font: Option<HFONT>) {
-    let pressed = item.itemState.0 & ODS_SELECTED.0 != 0;
-    let primary = item.CtlID as usize == ID_OK;
-    let (fill, text) = match (primary, pressed) {
-        (true, false) => (PRIMARY, STAGE),
-        (true, true) => (SECONDARY, STAGE),
-        (false, false) => (SURFACE_HOVER, PRIMARY),
-        (false, true) => (SURFACE, PRIMARY),
-    };
-    let brush = unsafe { CreateSolidBrush(colorref(fill)) };
-    let mut bounds = item.rcItem;
-    unsafe {
-        FillRect(item.hDC, &bounds, brush);
-        let _ = DeleteObject(brush.into());
-        if let Some(font) = font {
-            SelectObject(item.hDC, HGDIOBJ::from(font));
-        }
-        SetBkMode(item.hDC, TRANSPARENT);
-        SetTextColor(item.hDC, colorref(text));
-    }
-    let mut caption = read_text(item.hwndItem)
-        .unwrap_or_default()
-        .encode_utf16()
-        .collect::<Vec<_>>();
-    if caption.is_empty() {
-        return;
-    }
-    unsafe {
-        DrawTextW(
-            item.hDC,
-            &mut caption,
-            &mut bounds,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-        )
-    };
 }
 
 fn close(window: HWND) {

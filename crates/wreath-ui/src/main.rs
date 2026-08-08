@@ -97,8 +97,8 @@ fn build_ui(application: &Application) {
     content.set_vexpand(true);
     content.set_hhomogeneous(false);
     content.set_vhomogeneous(false);
-    content.set_transition_type(gtk::StackTransitionType::Crossfade);
-    content.set_transition_duration(140);
+    content.set_transition_type(gtk::StackTransitionType::None);
+    content.set_transition_duration(0);
 
     let home_view = home::build();
     let clip_views = library::build(&content);
