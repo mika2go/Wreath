@@ -390,13 +390,17 @@ unsafe extern "system" fn window_proc(
                     match wparam.0 as u32 {
                         13 => handle_action(window, state, Action::ConfirmPrompt),
                         27 => handle_action(window, state, Action::CancelPrompt),
-                        8 => {
-                            state.model.prompt_backspace();
-                            redraw(window);
-                        }
                         character => {
-                            if let Some(character) = char::from_u32(character) {
-                                state.model.prompt_push(character);
+                            if let Some(prompt) = &mut state.model.prompt {
+                                match character {
+                                    1 => prompt.select_all(),
+                                    8 => prompt.backspace(),
+                                    character => {
+                                        if let Some(character) = char::from_u32(character) {
+                                            prompt.insert(character);
+                                        }
+                                    }
+                                }
                             }
                             redraw(window);
                         }
@@ -407,6 +411,31 @@ unsafe extern "system" fn window_proc(
                 }
             }
             LRESULT(0)
+        }
+        WM_KEYDOWN if state_mut(window).is_some_and(|state| state.model.prompt.is_some()) => {
+            let extend = key_pressed(0x10);
+            let handled = match wparam.0 as u32 {
+                0x25 | 0x27 | 0x24 | 0x23 | 0x2e => true,
+                _ => false,
+            };
+            if handled
+                && let Some(state) = state_mut(window)
+                && let Some(prompt) = &mut state.model.prompt
+            {
+                match wparam.0 as u32 {
+                    0x25 => prompt.caret_left(extend),
+                    0x27 => prompt.caret_right(extend),
+                    0x24 => prompt.caret_home(extend),
+                    0x23 => prompt.caret_end(extend),
+                    _ => prompt.delete(),
+                }
+                redraw(window);
+            }
+            if handled {
+                LRESULT(0)
+            } else {
+                unsafe { DefWindowProcW(window, message, wparam, lparam) }
+            }
         }
         WM_KEYDOWN | WM_SYSKEYDOWN
             if state_mut(window).is_some_and(|state| state.model.hotkey_capture) =>

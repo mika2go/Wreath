@@ -4,7 +4,7 @@ pub mod app;
 pub mod autostart;
 #[cfg(target_os = "windows")]
 pub mod icon;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 pub mod model;
 #[cfg(target_os = "windows")]
 pub mod player;

@@ -80,13 +80,132 @@ pub enum PromptKind {
     NewCollection,
 }
 
+pub const PROMPT_MAX_CHARACTERS: usize = 80;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompt {
     pub kind: PromptKind,
     pub value: String,
+    pub caret: usize,
+    pub anchor: usize,
 }
 
 impl Prompt {
+    pub fn new(kind: PromptKind, value: String) -> Self {
+        let caret = value.chars().count();
+        Self {
+            kind,
+            value,
+            caret,
+            anchor: 0,
+        }
+    }
+
+    pub fn characters(&self) -> usize {
+        self.value.chars().count()
+    }
+
+    pub fn selection(&self) -> (usize, usize) {
+        (self.anchor.min(self.caret), self.anchor.max(self.caret))
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.anchor != self.caret
+    }
+
+    fn byte_index(&self, character: usize) -> usize {
+        self.value
+            .char_indices()
+            .nth(character)
+            .map_or(self.value.len(), |(index, _)| index)
+    }
+
+    fn delete_selection(&mut self) -> bool {
+        let (start, end) = self.selection();
+        if start == end {
+            return false;
+        }
+        let from = self.byte_index(start);
+        let to = self.byte_index(end);
+        self.value.replace_range(from..to, "");
+        self.caret = start;
+        self.anchor = start;
+        true
+    }
+
+    pub fn insert(&mut self, character: char) {
+        if character.is_control() {
+            return;
+        }
+        self.delete_selection();
+        if self.characters() >= PROMPT_MAX_CHARACTERS {
+            return;
+        }
+        let at = self.byte_index(self.caret);
+        self.value.insert(at, character);
+        self.caret += 1;
+        self.anchor = self.caret;
+    }
+
+    pub fn backspace(&mut self) {
+        if self.delete_selection() || self.caret == 0 {
+            return;
+        }
+        let from = self.byte_index(self.caret - 1);
+        let to = self.byte_index(self.caret);
+        self.value.replace_range(from..to, "");
+        self.caret -= 1;
+        self.anchor = self.caret;
+    }
+
+    pub fn delete(&mut self) {
+        if self.delete_selection() || self.caret >= self.characters() {
+            return;
+        }
+        let from = self.byte_index(self.caret);
+        let to = self.byte_index(self.caret + 1);
+        self.value.replace_range(from..to, "");
+        self.anchor = self.caret;
+    }
+
+    pub fn select_all(&mut self) {
+        self.anchor = 0;
+        self.caret = self.characters();
+    }
+
+    pub fn move_caret(&mut self, to: usize, extend: bool) {
+        self.caret = to.min(self.characters());
+        if !extend {
+            self.anchor = self.caret;
+        }
+    }
+
+    pub fn caret_left(&mut self, extend: bool) {
+        if !extend && self.has_selection() {
+            let (start, _) = self.selection();
+            self.move_caret(start, false);
+            return;
+        }
+        self.move_caret(self.caret.saturating_sub(1), extend);
+    }
+
+    pub fn caret_right(&mut self, extend: bool) {
+        if !extend && self.has_selection() {
+            let (_, end) = self.selection();
+            self.move_caret(end, false);
+            return;
+        }
+        self.move_caret(self.caret.saturating_add(1), extend);
+    }
+
+    pub fn caret_home(&mut self, extend: bool) {
+        self.move_caret(0, extend);
+    }
+
+    pub fn caret_end(&mut self, extend: bool) {
+        self.move_caret(self.characters(), extend);
+    }
+
     pub fn title(&self) -> &'static str {
         match self.kind {
             PromptKind::RenameClip(_) => "Rename clip",
@@ -223,33 +342,14 @@ impl UiModel {
         let Some(clip) = self.clips.get(index) else {
             return false;
         };
-        self.prompt = Some(Prompt {
-            kind: PromptKind::RenameClip(index),
-            value: clip.title.clone(),
-        });
+        let mut prompt = Prompt::new(PromptKind::RenameClip(index), clip.title.clone());
+        prompt.select_all();
+        self.prompt = Some(prompt);
         true
     }
 
     pub fn begin_new_collection(&mut self) {
-        self.prompt = Some(Prompt {
-            kind: PromptKind::NewCollection,
-            value: String::new(),
-        });
-    }
-
-    pub fn prompt_push(&mut self, character: char) {
-        if let Some(prompt) = &mut self.prompt
-            && !character.is_control()
-            && prompt.value.chars().count() < 80
-        {
-            prompt.value.push(character);
-        }
-    }
-
-    pub fn prompt_backspace(&mut self) {
-        if let Some(prompt) = &mut self.prompt {
-            prompt.value.pop();
-        }
+        self.prompt = Some(Prompt::new(PromptKind::NewCollection, String::new()));
     }
 
     pub fn edit_active_clip(&mut self) -> bool {
@@ -564,6 +664,146 @@ mod tests {
         model.config.capture.frames_per_second = 30;
 
         assert_eq!(model.frame_rate_options(), vec![30]);
+    }
+
+    fn prompt(value: &str) -> Prompt {
+        Prompt::new(PromptKind::NewCollection, value.to_owned())
+    }
+
+    #[test]
+    fn a_rename_starts_with_the_whole_name_selected() {
+        let mut prompt = prompt("Old name");
+        prompt.select_all();
+
+        assert_eq!(prompt.selection(), (0, 8));
+        assert!(prompt.has_selection());
+    }
+
+    #[test]
+    fn typing_over_a_selection_replaces_it() {
+        let mut prompt = prompt("Old name");
+        prompt.select_all();
+
+        prompt.insert('N');
+
+        assert_eq!(prompt.value, "N");
+        assert_eq!(prompt.caret, 1);
+        assert!(!prompt.has_selection());
+    }
+
+    #[test]
+    fn backspace_clears_a_selection_before_it_removes_characters() {
+        let mut prompt = prompt("Old name");
+        prompt.select_all();
+
+        prompt.backspace();
+
+        assert_eq!(prompt.value, "");
+        assert_eq!(prompt.caret, 0);
+
+        let mut prompt = prompt_at("Clip", 4);
+        prompt.backspace();
+        assert_eq!(prompt.value, "Cli");
+    }
+
+    #[test]
+    fn a_partial_selection_is_replaced_in_place() {
+        let mut prompt = prompt("abcdef");
+        prompt.move_caret(1, false);
+        prompt.move_caret(4, true);
+
+        assert_eq!(prompt.selection(), (1, 4));
+        prompt.insert('X');
+
+        assert_eq!(prompt.value, "aXef");
+        assert_eq!(prompt.caret, 2);
+    }
+
+    #[test]
+    fn a_backwards_selection_deletes_the_same_range() {
+        let mut prompt = prompt("abcdef");
+        prompt.move_caret(4, false);
+        prompt.move_caret(1, true);
+
+        assert_eq!(prompt.selection(), (1, 4));
+        prompt.delete();
+
+        assert_eq!(prompt.value, "aef");
+        assert_eq!(prompt.caret, 1);
+    }
+
+    #[test]
+    fn arrows_collapse_a_selection_to_its_edges() {
+        let mut prompt = prompt("abcdef");
+        prompt.select_all();
+        prompt.caret_left(false);
+        assert_eq!(prompt.caret, 0);
+
+        prompt.select_all();
+        prompt.caret_right(false);
+        assert_eq!(prompt.caret, 6);
+        assert!(!prompt.has_selection());
+    }
+
+    #[test]
+    fn home_and_end_extend_the_selection_when_asked() {
+        let mut prompt = prompt_at("abcdef", 3);
+
+        prompt.caret_end(true);
+        assert_eq!(prompt.selection(), (3, 6));
+
+        prompt.caret_home(true);
+        assert_eq!(prompt.selection(), (0, 3));
+
+        prompt.caret_home(false);
+        assert!(!prompt.has_selection());
+    }
+
+    #[test]
+    fn forward_delete_removes_the_character_after_the_caret() {
+        let mut prompt = prompt_at("abc", 1);
+
+        prompt.delete();
+
+        assert_eq!(prompt.value, "ac");
+        assert_eq!(prompt.caret, 1);
+    }
+
+    #[test]
+    fn editing_stays_on_character_boundaries_for_wide_names() {
+        let mut prompt = prompt("Grüße 🎬");
+        prompt.select_all();
+        assert_eq!(prompt.selection(), (0, 7));
+
+        prompt.caret_home(false);
+        prompt.caret_right(false);
+        prompt.caret_right(true);
+        prompt.insert('x');
+
+        assert_eq!(prompt.value, "Gxüße 🎬");
+
+        prompt.caret_end(false);
+        prompt.backspace();
+        assert_eq!(prompt.value, "Gxüße ");
+    }
+
+    #[test]
+    fn the_length_limit_still_holds_but_replacing_a_selection_is_allowed() {
+        let mut prompt = prompt(&"a".repeat(PROMPT_MAX_CHARACTERS));
+
+        prompt.caret_end(false);
+        prompt.insert('b');
+        assert_eq!(prompt.characters(), PROMPT_MAX_CHARACTERS);
+
+        prompt.select_all();
+        prompt.insert('b');
+        assert_eq!(prompt.value, "b");
+    }
+
+    fn prompt_at(value: &str, caret: usize) -> Prompt {
+        let mut prompt = Prompt::new(PromptKind::NewCollection, value.to_owned());
+        prompt.move_caret(caret, false);
+        prompt
     }
 
     #[test]

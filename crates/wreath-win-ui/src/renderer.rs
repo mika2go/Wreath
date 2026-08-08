@@ -15,8 +15,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
-    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection,
-    IDWriteTextFormat,
+    DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory,
+    IDWriteFontCollection, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Gdi::{DeleteObject, HPALETTE};
 use windows::Win32::Graphics::Imaging::{
@@ -38,6 +38,7 @@ const SURFACE_HOVER: u32 = 0x202024;
 const PRIMARY: u32 = 0xf4f5f9;
 const SECONDARY: u32 = 0x777e8e;
 const SUCCESS: u32 = 0x76d9a3;
+const SELECTION: u32 = 0x2f4a6b;
 
 #[derive(Debug, Clone, Copy)]
 enum Glyph {
@@ -178,6 +179,7 @@ struct HitRegion {
 
 pub struct Renderer {
     d2d_factory: ID2D1Factory,
+    write_factory: IDWriteFactory,
     target: Option<ID2D1HwndRenderTarget>,
     title: IDWriteTextFormat,
     heading: IDWriteTextFormat,
@@ -221,6 +223,7 @@ impl Renderer {
                 .map_err(|error| error.to_string())?;
         Ok(Self {
             d2d_factory,
+            write_factory,
             target: None,
             title,
             heading,
@@ -321,6 +324,24 @@ impl Renderer {
 
     pub fn is_failing(&self) -> bool {
         self.consecutive_failures > 1
+    }
+
+    fn measure(&self, value: &str, format: &IDWriteTextFormat) -> f32 {
+        if value.is_empty() {
+            return 0.0;
+        }
+        let wide = value.encode_utf16().collect::<Vec<_>>();
+        let Ok(layout) = (unsafe {
+            self.write_factory
+                .CreateTextLayout(&wide, format, 4096.0, 4096.0)
+        }) else {
+            return 0.0;
+        };
+        let mut metrics = DWRITE_TEXT_METRICS::default();
+        if unsafe { layout.GetMetrics(&mut metrics) }.is_err() {
+            return 0.0;
+        }
+        metrics.widthIncludingTrailingWhitespace
     }
 
     fn discard_target(&mut self) {
@@ -1523,19 +1544,50 @@ impl Renderer {
         )?;
         let field = rect(left + 28.0, top + 90.0, modal.right - 28.0, top + 134.0);
         self.fill(field, STAGE, 10.0)?;
+        let body = self.body.clone();
+        let text_left = field.left + 14.0;
+        let (start, end) = prompt.selection();
+        if end > start {
+            let before: String = prompt.value.chars().take(start).collect();
+            let selected: String = prompt.value.chars().skip(start).take(end - start).collect();
+            let offset = self.measure(&before, &body);
+            let width = self.measure(&selected, &body);
+            self.fill(
+                rect(
+                    text_left + offset,
+                    field.top + 9.0,
+                    text_left + offset + width,
+                    field.bottom - 9.0,
+                ),
+                SELECTION,
+                3.0,
+            )?;
+        }
         self.text(
-            &format!("{}|", prompt.value),
+            &prompt.value,
             rect(
-                field.left + 14.0,
+                text_left,
                 field.top + 11.0,
                 field.right - 14.0,
                 field.bottom - 9.0,
             ),
-            &self.body.clone(),
+            &body,
             PRIMARY,
         )?;
+        let caret_prefix: String = prompt.value.chars().take(prompt.caret).collect();
+        let caret_x = text_left + self.measure(&caret_prefix, &body);
+        self.fill(
+            rect(
+                caret_x,
+                field.top + 10.0,
+                caret_x + 1.5,
+                field.bottom - 10.0,
+            ),
+            PRIMARY,
+            0.0,
+        )?;
         self.text(
-            "Enter confirms · Esc cancels",
+            "Ctrl+A selects all · Enter confirms · Esc cancels",
             rect(left + 28.0, top + 142.0, modal.right - 28.0, top + 162.0),
             &self.small.clone(),
             SECONDARY,
