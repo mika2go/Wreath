@@ -214,7 +214,10 @@ pub fn prompt(
     }
 
     let mut message = MSG::default();
-    while !state.done {
+    loop {
+        if state.done {
+            break;
+        }
         let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
         if result.0 == 0 {
             unsafe { PostQuitMessage(message.wParam.0 as i32) };
