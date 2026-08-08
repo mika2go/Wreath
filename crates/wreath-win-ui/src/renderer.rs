@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -138,10 +138,20 @@ pub struct Renderer {
     hits: Vec<HitRegion>,
     wic_factory: IWICImagingFactory,
     thumbnails: HashMap<PathBuf, ID2D1Bitmap>,
+    /// Least recently drawn first, so the cache can be bounded.
+    thumbnail_order: VecDeque<PathBuf>,
     unavailable_thumbnails: HashSet<PathBuf>,
 }
 
 impl Renderer {
+    /// Decoded thumbnails kept resident.
+    ///
+    /// The cache used to grow for the lifetime of the window: every clip
+    /// scrolled past left a bitmap behind and nothing ever removed it, so a
+    /// large library turned into hundreds of megabytes that were never drawn
+    /// again. A few screens' worth is all that is ever needed at once.
+    const MAX_THUMBNAILS: usize = 96;
+
     pub fn new() -> Result<Self, String> {
         let d2d_factory =
             unsafe { D2D1CreateFactory::<ID2D1Factory>(D2D1_FACTORY_TYPE_SINGLE_THREADED, None) }
@@ -170,6 +180,7 @@ impl Renderer {
             hits: Vec::new(),
             wic_factory,
             thumbnails: HashMap::new(),
+            thumbnail_order: VecDeque::new(),
             unavailable_thumbnails: HashSet::new(),
         })
     }
@@ -184,12 +195,38 @@ impl Renderer {
             .is_some_and(|target| unsafe { target.Resize(&D2D_SIZE_U { width, height }) }.is_err());
         if resize_failed {
             self.target = None;
-            self.thumbnails.clear();
+            self.release_cached_images();
         }
     }
 
     pub fn retry_unavailable_thumbnails(&mut self) {
         self.unavailable_thumbnails.clear();
+    }
+
+    /// Drops the decoded thumbnails while the library is not on screen. They
+    /// cost nothing to rebuild and everything to keep for a hidden window.
+    pub fn release_cached_images(&mut self) {
+        self.thumbnails.clear();
+        self.thumbnail_order.clear();
+    }
+
+    fn touch_thumbnail(&mut self, path: &Path) {
+        if let Some(index) = self
+            .thumbnail_order
+            .iter()
+            .position(|cached| cached.as_path() == path)
+        {
+            let cached = self.thumbnail_order.remove(index).expect("index found");
+            self.thumbnail_order.push_back(cached);
+        }
+    }
+
+    fn evict_cold_thumbnails(&mut self) {
+        while self.thumbnail_order.len() > Self::MAX_THUMBNAILS {
+            if let Some(cold) = self.thumbnail_order.pop_front() {
+                self.thumbnails.remove(&cold);
+            }
+        }
     }
 
     pub fn hit_test(&self, x: f32, y: f32) -> Option<Action> {
@@ -253,6 +290,7 @@ impl Renderer {
         unsafe { target.EndDraw(None, None) }.map_err(|error| {
             self.target = None;
             self.thumbnails.clear();
+            self.thumbnail_order.clear();
             error.to_string()
         })
     }
@@ -1385,11 +1423,15 @@ impl Renderer {
             match self.load_thumbnail(path) {
                 Ok(bitmap) => {
                     self.thumbnails.insert(path.to_path_buf(), bitmap);
+                    self.thumbnail_order.push_back(path.to_path_buf());
+                    self.evict_cold_thumbnails();
                 }
                 Err(_) => {
                     self.unavailable_thumbnails.insert(path.to_path_buf());
                 }
             }
+        } else {
+            self.touch_thumbnail(path);
         }
         let Some(bitmap) = self.thumbnails.get(path) else {
             return Ok(false);

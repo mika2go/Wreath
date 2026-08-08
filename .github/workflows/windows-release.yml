@@ -6,7 +6,7 @@ on:
       version:
         description: Semantic version without the v prefix
         required: true
-        default: 0.2.19
+        default: 0.2.20
         type: string
 
 permissions:
@@ -68,4 +68,4 @@ jobs:
             --repo $env:GITHUB_REPOSITORY `
             --target $env:GITHUB_SHA `
             --title "Wreath $env:RELEASE_VERSION" `
-            --notes "Windows x64 NSIS release fixing the saved clip length at its source. A 30 second replay still saved as 24 seconds after 0.2.18, because the shortfall was never in the replay buffer - it was in the muxer. Every encoded video packet claims the nominal frame duration, but Windows Graphics Capture only delivers a frame when the picture changes, and the pipeline skips frames the encoder is not ready for. The MP4 sink builds the track from those durations, so a clip whose frames were sparse came out proportionally shorter than the span it actually covered: lose a fifth of the frames and 30 seconds becomes 24. Each sample is now given the gap to its successor on the same track, so a frame is held until the next one arrives - which is what happened on screen - and the track stays as long as the capture. Saved clips report their written length, packet count and video frame count to the log. Native Windows tests, clippy, release builds, application launch/resize, running-upgrade, NSIS install, and process-cleanup uninstall gates pass; the full AMD/Intel/NVIDIA Medal performance matrix is still pending."
+            --notes "Windows x64 NSIS memory release. The library kept every thumbnail it had ever decoded: the cache was only ever cleared on device loss and on resize, so scrolling through a large collection left hundreds of megabytes of bitmaps resident that were never drawn again. Decoded thumbnails are now capped at a few screens' worth on a least-recently-drawn basis, and released entirely while the window is minimised, since nothing is on screen to need them. The recorder now reports its own private footprint and how much of it is encoded replay to the log every 30 seconds, so the part that is inherent can be told from waste. That part is large and does not go away: instant replay means the clip is resident, so the recorder holds bitrate times duration - about 100 MB for a 30 second 1440p60 buffer at the default quality. The lever that moves it without touching quality is hevc, which cuts the resident buffer by about a third because it is the same bytes that go into the file. Audio capture, the mixer and the encoder timeline are untouched. Native Windows tests, clippy, release builds, application launch/resize, running-upgrade, NSIS install, and process-cleanup uninstall gates pass; the full AMD/Intel/NVIDIA Medal performance matrix is still pending."

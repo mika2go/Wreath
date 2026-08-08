@@ -59,6 +59,25 @@ wreathctl config codec h264
 wreathctl config quality 60
 ```
 
+## Memory
+
+Instant replay means the encoded clip is resident, so the recorder's footprint
+is mostly the replay itself: bitrate times duration. At the default quality
+that is roughly 37 MB at 1080p60, 100 MB at 1440p60 and 224 MB at 2160p60 for a
+30 second buffer, and no amount of tuning removes it — it is the clip.
+
+What that means in practice:
+
+- `wreathctl config codec hevc` cuts the resident buffer by about a third at
+  the same picture, because it is the same bytes that go into the file.
+- A shorter `duration` scales it directly.
+- The recorder reports its own footprint and how much of it is encoded replay
+  to the log every 30 seconds, so the inherent part can be told from waste.
+
+The library process is separate and exits when its window is closed. Decoded
+thumbnails are capped and released while the window is minimised, so browsing a
+large collection no longer grows the process for the rest of its life.
+
 ## Clip size
 
 Size follows resolution, quality and codec. At the default quality a 30 second

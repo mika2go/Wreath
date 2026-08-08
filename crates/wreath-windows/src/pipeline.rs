@@ -573,6 +573,7 @@ fn run_pipeline(
     let mut in_flight_surfaces = VecDeque::with_capacity(ENCODER_SURFACE_COUNT);
     let mut recording = true;
     let mut skipped_frames = 0_u64;
+    let mut last_report = std::time::Instant::now();
     loop {
         drain_encoder_events(
             &encoder,
@@ -582,6 +583,17 @@ fn run_pipeline(
             &mut available_surfaces,
             status,
         )?;
+        if last_report.elapsed() >= std::time::Duration::from_secs(30) {
+            last_report = std::time::Instant::now();
+            crate::memory::report(
+                "recorder",
+                &format!(
+                    "{} MB of encoded replay over {} s",
+                    buffer.payload_bytes() / 1_048_576,
+                    buffer.duration().as_secs()
+                ),
+            );
+        }
         let mut selector = crossbeam_channel::Select::new();
         let command_index = selector.recv(&commands);
         let frame_index = recording.then(|| selector.recv(&frames));
