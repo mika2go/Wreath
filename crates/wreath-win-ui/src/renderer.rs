@@ -141,11 +141,7 @@ pub struct Renderer {
     /// Least recently drawn first, so the cache can be bounded.
     thumbnail_order: VecDeque<PathBuf>,
     unavailable_thumbnails: HashSet<PathBuf>,
-    corner: Option<ID2D1Bitmap>,
-    corner_unavailable: bool,
 }
-
-const CORNER_IMAGE: &[u8] = include_bytes!("../assets/xp-chan.png");
 
 impl Renderer {
     /// Decoded thumbnails kept resident.
@@ -186,8 +182,6 @@ impl Renderer {
             thumbnails: HashMap::new(),
             thumbnail_order: VecDeque::new(),
             unavailable_thumbnails: HashSet::new(),
-            corner: None,
-            corner_unavailable: false,
         })
     }
 
@@ -214,7 +208,6 @@ impl Renderer {
     pub fn release_cached_images(&mut self) {
         self.thumbnails.clear();
         self.thumbnail_order.clear();
-        self.corner = None;
     }
 
     fn touch_thumbnail(&mut self, path: &Path) {
@@ -298,7 +291,6 @@ impl Renderer {
             self.target = None;
             self.thumbnails.clear();
             self.thumbnail_order.clear();
-            self.corner = None;
             error.to_string()
         })
     }
@@ -412,8 +404,6 @@ impl Renderer {
         right: f32,
         height: f32,
     ) -> Result<(), String> {
-        // Drawn first so every card and label stays on top of it.
-        self.draw_corner(right, height)?;
         let greeting = greeting();
         let user = std::env::var("USERNAME").unwrap_or_else(|_| "there".into());
         self.text(
@@ -1457,71 +1447,6 @@ impl Renderer {
             );
         }
         Ok(true)
-    }
-
-    fn draw_corner(&mut self, right: f32, height: f32) -> Result<(), String> {
-        if self.corner.is_none() && !self.corner_unavailable {
-            match self.load_embedded_bitmap(CORNER_IMAGE) {
-                Ok(bitmap) => self.corner = Some(bitmap),
-                Err(_) => self.corner_unavailable = true,
-            }
-        }
-        let Some(bitmap) = self.corner.as_ref() else {
-            return Ok(());
-        };
-        let size = unsafe { bitmap.GetSize() };
-        if size.width <= 0.0 || size.height <= 0.0 {
-            return Ok(());
-        }
-        let drawn_height = (height * 0.46).clamp(150.0, 320.0);
-        let scale = drawn_height / size.height;
-        let drawn_width = size.width * scale;
-        let destination = rect(right - drawn_width, height - drawn_height, right, height);
-        let target = self.target.as_ref().expect("render target exists");
-        unsafe {
-            target.DrawBitmap(
-                bitmap,
-                Some(&destination.d2d()),
-                1.0,
-                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                None,
-            );
-        }
-        Ok(())
-    }
-
-    fn load_embedded_bitmap(&self, bytes: &'static [u8]) -> Result<ID2D1Bitmap, String> {
-        use windows::Win32::Graphics::Imaging::{
-            GUID_WICPixelFormat32bppPBGRA, IWICPalette, WICBitmapDitherTypeNone,
-            WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnLoad,
-        };
-
-        let stream = unsafe { self.wic_factory.CreateStream() }.map_err(|e| e.to_string())?;
-        unsafe { stream.InitializeFromMemory(bytes) }.map_err(|e| e.to_string())?;
-        let decoder = unsafe {
-            self.wic_factory.CreateDecoderFromStream(
-                &stream,
-                std::ptr::null(),
-                WICDecodeMetadataCacheOnLoad,
-            )
-        }
-        .map_err(|e| e.to_string())?;
-        let frame = unsafe { decoder.GetFrame(0) }.map_err(|e| e.to_string())?;
-        let converter =
-            unsafe { self.wic_factory.CreateFormatConverter() }.map_err(|e| e.to_string())?;
-        unsafe {
-            converter.Initialize(
-                &frame,
-                &GUID_WICPixelFormat32bppPBGRA,
-                WICBitmapDitherTypeNone,
-                None::<&IWICPalette>,
-                0.0,
-                WICBitmapPaletteTypeCustom,
-            )
-        }
-        .map_err(|e| e.to_string())?;
-        let target = self.target.as_ref().expect("render target exists");
-        unsafe { target.CreateBitmapFromWicBitmap(&converter, None) }.map_err(|e| e.to_string())
     }
 
     fn load_thumbnail(&self, path: &Path) -> Result<ID2D1Bitmap, String> {
