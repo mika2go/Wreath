@@ -102,6 +102,40 @@ pub fn player_bounds(width: u32, height: u32, aspect_ratio: f32) -> LogicalRect 
     )
 }
 
+pub fn editor_player_bounds(width: u32, height: u32, aspect_ratio: f32) -> LogicalRect {
+    let width = width as f32;
+    let rail = sidebar_width(width);
+    let padding = if width < 980.0 { 24.0 } else { 32.0 };
+    fit_aspect(
+        rect(
+            rail + padding,
+            144.0,
+            width - padding,
+            (height as f32 - 286.0).max(330.0),
+        ),
+        aspect_ratio,
+    )
+}
+
+pub fn editor_timeline_rail(width: u32, height: u32, aspect_ratio: f32) -> LogicalRect {
+    let width_f = width as f32;
+    let padding = if width_f < 980.0 { 24.0 } else { 32.0 };
+    let left = sidebar_width(width_f) + padding;
+    let right = width_f - padding;
+    let stage = editor_player_bounds(width, height, aspect_ratio);
+    let timeline_top = (stage.bottom + 18.0).min(height as f32 - 220.0);
+    rect(
+        left + 20.0,
+        timeline_top + 60.0,
+        right - 20.0,
+        timeline_top + 72.0,
+    )
+}
+
+pub fn editor_timeline_fraction(rail: LogicalRect, x: f32) -> u16 {
+    (((x - rail.left) / (rail.right - rail.left).max(1.0)).clamp(0.0, 1.0) * 1000.0).round() as u16
+}
+
 fn fit_aspect(area: LogicalRect, aspect_ratio: f32) -> LogicalRect {
     let aspect_ratio = if aspect_ratio.is_finite() && aspect_ratio > 0.1 {
         aspect_ratio
@@ -349,8 +383,9 @@ impl Renderer {
         ];
         for (offset, (page, icon, label)) in nav.iter().enumerate() {
             let top = 88.0 + offset as f32 * 56.0;
-            let active =
-                model.page == *page || (model.page == Page::Player && model.previous_page == *page);
+            let active = model.page == *page
+                || (matches!(model.page, Page::Player | Page::Editor)
+                    && model.previous_page == *page);
             let nav_area = LogicalRect {
                 left: 10.0,
                 top,
@@ -393,6 +428,7 @@ impl Renderer {
             Page::Collections => self.render_collections(model, left, right, height)?,
             Page::Settings => self.render_settings(model, left, right, height)?,
             Page::Player => self.render_player(model, left, right, height)?,
+            Page::Editor => self.render_editor(model, left, right, height)?,
         }
         Ok(())
     }
@@ -862,6 +898,13 @@ impl Renderer {
             SECONDARY,
         )?;
         self.pill(
+            rect(right - 264.0, 96.0, right - 138.0, 134.0),
+            SUCCESS,
+            "Edit clip",
+            CANVAS,
+            Some(Action::EditActiveClip),
+        )?;
+        self.pill(
             rect(right - 130.0, 96.0, right, 134.0),
             SURFACE,
             "Open folder",
@@ -931,6 +974,175 @@ impl Renderer {
             &self.small.clone(),
             SECONDARY,
         )
+    }
+
+    fn render_editor(
+        &mut self,
+        model: &UiModel,
+        left: f32,
+        right: f32,
+        height: f32,
+    ) -> Result<(), String> {
+        self.pill(
+            rect(left, 36.0, left + 86.0, 72.0),
+            SURFACE,
+            "‹ Back",
+            PRIMARY,
+            Some(Action::Back),
+        )?;
+        let Some(clip) = model.active_clip() else {
+            self.empty_state("Clip unavailable", left, right, 240.0)?;
+            return Ok(());
+        };
+        self.text(
+            &format!("Edit {}", clip.title),
+            rect(left, 88.0, right - 170.0, 122.0),
+            &self.heading.clone(),
+            PRIMARY,
+        )?;
+        self.text(
+            if model.editor_loading {
+                "Reading duration and keyframes…"
+            } else {
+                "Choose the moment to keep"
+            },
+            rect(left, 122.0, right, 142.0),
+            &self.small.clone(),
+            SECONDARY,
+        )?;
+
+        let stage = fit_aspect(
+            rect(left, 144.0, right, (height - 286.0).max(330.0)),
+            model.player_aspect_ratio,
+        );
+        self.fill(stage, STAGE, 11.0)?;
+        self.hits.push(HitRegion {
+            rect: stage,
+            action: Action::PlayPause,
+        });
+
+        let timeline_top = (stage.bottom + 18.0).min(height - 220.0);
+        let timeline = rect(left, timeline_top, right, timeline_top + 104.0);
+        self.fill(timeline, SURFACE, 11.0)?;
+        self.text(
+            "KEEP THIS MOMENT",
+            rect(
+                left + 16.0,
+                timeline_top + 10.0,
+                right - 180.0,
+                timeline_top + 28.0,
+            ),
+            &self.small.clone(),
+            SECONDARY,
+        )?;
+        self.text(
+            &format!(
+                "{} — {}  ·  {} kept",
+                format_editor_time(model.editor_start),
+                format_editor_time(model.editor_end),
+                format_editor_time(model.editor_selected_duration())
+            ),
+            rect(
+                right - 300.0,
+                timeline_top + 10.0,
+                right - 16.0,
+                timeline_top + 28.0,
+            ),
+            &self.small.clone(),
+            PRIMARY,
+        )?;
+        self.trim_rail(model, timeline_top + 54.0, left + 20.0, right - 20.0)?;
+
+        let status = if model.editor_working {
+            "Cutting on a background worker…"
+        } else if let Some(timing) = &model.editor_timing {
+            if timing.keyframes.is_empty() {
+                "No clean cut points found · exact start will be re-encoded"
+            } else {
+                "Handles snap to nearby keyframes for a lossless cut"
+            }
+        } else {
+            "Finding clean cut points"
+        };
+        self.text(
+            status,
+            rect(
+                left,
+                timeline.bottom + 14.0,
+                right - 170.0,
+                timeline.bottom + 50.0,
+            ),
+            &self.small.clone(),
+            SECONDARY,
+        )?;
+        self.pill(
+            rect(
+                right - 154.0,
+                timeline.bottom + 10.0,
+                right,
+                timeline.bottom + 50.0,
+            ),
+            if model.editor_timing.is_some() && !model.editor_working {
+                SUCCESS
+            } else {
+                SURFACE_HOVER
+            },
+            if model.editor_working {
+                "Cutting…"
+            } else {
+                "Save new clip"
+            },
+            if model.editor_timing.is_some() && !model.editor_working {
+                CANVAS
+            } else {
+                SECONDARY
+            },
+            (model.editor_timing.is_some() && !model.editor_working).then_some(Action::SaveCut),
+        )
+    }
+
+    fn trim_rail(
+        &mut self,
+        model: &UiModel,
+        top: f32,
+        left: f32,
+        right: f32,
+    ) -> Result<(), String> {
+        let duration = model
+            .editor_timing
+            .as_ref()
+            .map_or(0.0, |timing| timing.duration.as_secs_f64());
+        let rail = rect(left, top + 6.0, right, top + 18.0);
+        self.fill(rail, SURFACE_HOVER, 6.0)?;
+        if duration > 0.0 {
+            if let Some(timing) = &model.editor_timing {
+                let stride = timing.keyframes.len().div_ceil(80).max(1);
+                for keyframe in timing.keyframes.iter().step_by(stride) {
+                    let fraction = (keyframe.as_secs_f64() / duration).clamp(0.0, 1.0) as f32;
+                    let x = rail.left + (rail.right - rail.left) * fraction;
+                    self.fill(rect(x, top + 22.0, x + 1.0, top + 27.0), SUCCESS, 0.0)?;
+                }
+            }
+            let start_fraction =
+                (model.editor_start.as_secs_f64() / duration).clamp(0.0, 1.0) as f32;
+            let end_fraction = (model.editor_end.as_secs_f64() / duration).clamp(0.0, 1.0) as f32;
+            let start_x = rail.left + (rail.right - rail.left) * start_fraction;
+            let end_x = rail.left + (rail.right - rail.left) * end_fraction;
+            self.fill(rect(start_x, rail.top, end_x, rail.bottom), SUCCESS, 0.0)?;
+            let start_handle = rect(start_x - 6.0, top - 6.0, start_x + 6.0, top + 30.0);
+            let end_handle = rect(end_x - 6.0, top - 6.0, end_x + 6.0, top + 30.0);
+            self.fill(start_handle, PRIMARY, 4.0)?;
+            self.fill(end_handle, PRIMARY, 4.0)?;
+            self.hits.push(HitRegion {
+                rect: rect(start_x - 13.0, top - 10.0, start_x + 13.0, top + 34.0),
+                action: Action::DragEditorStart,
+            });
+            self.hits.push(HitRegion {
+                rect: rect(end_x - 13.0, top - 10.0, end_x + 13.0, top + 34.0),
+                action: Action::DragEditorEnd,
+            });
+        }
+        Ok(())
     }
 
     fn page_heading(
@@ -1578,6 +1790,14 @@ fn format_storage_limit(megabytes: u32) -> String {
 fn format_player_time(seconds: f64) -> String {
     let seconds = seconds.max(0.0).round() as u64;
     format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+fn format_editor_time(value: Duration) -> String {
+    let total_millis = value.as_millis();
+    let minutes = total_millis / 60_000;
+    let seconds = total_millis % 60_000 / 1_000;
+    let millis = total_millis % 1_000;
+    format!("{minutes:02}:{seconds:02}.{millis:03}")
 }
 
 fn age(modified: SystemTime) -> String {

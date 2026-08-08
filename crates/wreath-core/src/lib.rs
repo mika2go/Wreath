@@ -13,3 +13,6 @@ pub mod replay;
 pub mod replay_buffer;
 #[cfg(target_os = "linux")]
 pub mod shortcuts;
+pub mod trim;
+#[cfg(target_os = "linux")]
+pub mod trim_ffmpeg;

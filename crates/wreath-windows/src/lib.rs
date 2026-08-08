@@ -11,4 +11,5 @@ pub mod hotkey;
 pub mod memory;
 pub mod mux;
 pub mod pipeline;
+pub mod trim;
 pub mod video;

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use wreath_core::clips::{self, Clip, Collection};
 use wreath_core::config::Config;
@@ -11,6 +12,7 @@ pub enum Page {
     Collections,
     Settings,
     Player,
+    Editor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +58,10 @@ pub enum Action {
     SelectCollection(Option<usize>),
     PlayPause,
     SeekPercent(u8),
+    EditActiveClip,
+    DragEditorStart,
+    DragEditorEnd,
+    SaveCut,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +101,12 @@ pub struct UiModel {
     pub player_duration_seconds: f64,
     pub player_aspect_ratio: f32,
     pub pending_delete: Option<DeleteTarget>,
+    pub editor_timing: Option<wreath_core::trim::ClipTiming>,
+    pub editor_source: Option<PathBuf>,
+    pub editor_start: Duration,
+    pub editor_end: Duration,
+    pub editor_loading: bool,
+    pub editor_working: bool,
 }
 
 impl UiModel {
@@ -123,6 +135,12 @@ impl UiModel {
             player_duration_seconds: 0.0,
             player_aspect_ratio: 16.0 / 9.0,
             pending_delete: None,
+            editor_timing: None,
+            editor_source: None,
+            editor_start: Duration::ZERO,
+            editor_end: Duration::ZERO,
+            editor_loading: false,
+            editor_working: false,
         };
         model.refresh()?;
         Ok(model)
@@ -144,7 +162,7 @@ impl UiModel {
     pub fn navigate(&mut self, page: Page) {
         self.search_focused = false;
         self.hotkey_capture = false;
-        if page != Page::Player {
+        if !matches!(page, Page::Player | Page::Editor) {
             self.active_clip = None;
         }
         self.page = page;
@@ -156,6 +174,58 @@ impl UiModel {
             self.active_clip = Some(index);
             self.page = Page::Player;
         }
+    }
+
+    pub fn edit_active_clip(&mut self) -> bool {
+        let Some(source) = self.active_clip().map(|clip| clip.path.clone()) else {
+            return false;
+        };
+        if self.page != Page::Player {
+            self.previous_page = self.page;
+        }
+        self.page = Page::Editor;
+        self.editor_source = Some(source);
+        self.editor_timing = None;
+        self.editor_start = Duration::ZERO;
+        self.editor_end = Duration::ZERO;
+        self.editor_loading = true;
+        self.editor_working = false;
+        true
+    }
+
+    pub fn apply_editor_timing(&mut self, timing: wreath_core::trim::ClipTiming) {
+        self.editor_start = Duration::ZERO;
+        self.editor_end = timing.duration;
+        self.editor_timing = Some(timing);
+        self.editor_loading = false;
+    }
+
+    pub fn set_editor_start(&mut self, thousandths: u16) {
+        let Some(timing) = &self.editor_timing else {
+            return;
+        };
+        let requested = fraction(timing.duration, thousandths);
+        let snapped = snap(timing, requested);
+        let latest = self
+            .editor_end
+            .saturating_sub(wreath_core::trim::MINIMUM_LENGTH);
+        self.editor_start = snapped.min(latest);
+    }
+
+    pub fn set_editor_end(&mut self, thousandths: u16) {
+        let Some(timing) = &self.editor_timing else {
+            return;
+        };
+        let requested = fraction(timing.duration, thousandths);
+        let snapped = snap(timing, requested);
+        let earliest = self
+            .editor_start
+            .saturating_add(wreath_core::trim::MINIMUM_LENGTH);
+        self.editor_end = snapped.max(earliest).min(timing.duration);
+    }
+
+    pub fn editor_selected_duration(&self) -> Duration {
+        self.editor_end.saturating_sub(self.editor_start)
     }
 
     pub fn visible_clip_indices(&self, limit: usize) -> Vec<usize> {
@@ -266,6 +336,17 @@ impl UiModel {
     }
 }
 
+fn fraction(duration: Duration, thousandths: u16) -> Duration {
+    duration.mul_f64(f64::from(thousandths.min(1_000)) / 1_000.0)
+}
+
+fn snap(timing: &wreath_core::trim::ClipTiming, position: Duration) -> Duration {
+    timing
+        .nearest_keyframe(position)
+        .filter(|keyframe| keyframe.abs_diff(position) <= wreath_core::trim::SNAP_TOLERANCE)
+        .unwrap_or(position)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +388,12 @@ mod tests {
             player_duration_seconds: 0.0,
             player_aspect_ratio: 16.0 / 9.0,
             pending_delete: None,
+            editor_timing: None,
+            editor_source: None,
+            editor_start: Duration::ZERO,
+            editor_end: Duration::ZERO,
+            editor_loading: false,
+            editor_working: false,
         }
     }
 
@@ -399,5 +486,27 @@ mod tests {
         model.config.capture.frames_per_second = 30;
 
         assert_eq!(model.frame_rate_options(), vec![30]);
+    }
+
+    #[test]
+    fn editor_handles_snap_to_nearby_keyframes_and_keep_a_valid_range() {
+        let mut model = model();
+        model.active_clip = Some(0);
+        assert!(model.edit_active_clip());
+        model.apply_editor_timing(wreath_core::trim::ClipTiming {
+            duration: Duration::from_secs(10),
+            keyframes: vec![
+                Duration::ZERO,
+                Duration::from_secs(2),
+                Duration::from_secs(8),
+            ],
+        });
+
+        model.set_editor_start(201);
+        model.set_editor_end(799);
+
+        assert_eq!(model.editor_start, Duration::from_secs(2));
+        assert_eq!(model.editor_end, Duration::from_secs(8));
+        assert_eq!(model.editor_selected_duration(), Duration::from_secs(6));
     }
 }

@@ -155,7 +155,7 @@ pub fn delete_collection(
     remove_empty_tree(&collection)
 }
 
-fn unique_destination(directory: &Path, file_name: &std::ffi::OsStr) -> PathBuf {
+pub(crate) fn unique_destination(directory: &Path, file_name: &std::ffi::OsStr) -> PathBuf {
     let original = directory.join(file_name);
     if !original.exists() {
         return original;
@@ -214,7 +214,7 @@ fn move_clip(clip: &Clip, destination: &Path, thumbnail_directory: &Path) -> io:
     Ok(destination.to_path_buf())
 }
 
-fn validate_name(name: &str) -> io::Result<&str> {
+pub(crate) fn validate_name(name: &str) -> io::Result<&str> {
     let name = name.trim();
     if name.is_empty()
         || name == "."

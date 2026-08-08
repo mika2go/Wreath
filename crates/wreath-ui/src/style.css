@@ -109,6 +109,7 @@ button.nav-button.active {
 .collections-page,
 .home-page,
 .player-page,
+.editor-page,
 .settings-page {
   background: transparent;
 }
@@ -129,6 +130,10 @@ button.nav-button.active {
   padding: 34px 42px 30px;
 }
 
+.editor-page {
+  padding: 28px 38px 24px;
+}
+
 .settings-page {
   padding: 42px 48px 38px;
 }
@@ -137,6 +142,7 @@ button.nav-button.active {
 .content-area.narrow .collections-page,
 .content-area.narrow .home-page,
 .content-area.narrow .player-page,
+.content-area.narrow .editor-page,
 .content-area.narrow .settings-page {
   padding-left: 24px;
   padding-right: 24px;
@@ -146,6 +152,7 @@ button.nav-button.active {
 .content-area.very-narrow .collections-page,
 .content-area.very-narrow .home-page,
 .content-area.very-narrow .player-page,
+.content-area.very-narrow .editor-page,
 .content-area.very-narrow .settings-page {
   padding: 24px 16px 20px;
 }
@@ -703,6 +710,37 @@ button.danger-action:hover {
   min-height: 180px;
   background: @wreath_stage;
   border-radius: 9px;
+}
+
+.editor-video {
+  min-height: 220px;
+  background: @wreath_stage;
+  border-radius: 10px;
+}
+
+.editor-timeline {
+  padding: 13px 16px 11px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+}
+
+.editor-kicker {
+  color: #6f7584;
+  font-size: 8px;
+  font-weight: 850;
+  letter-spacing: 0.8px;
+}
+
+.editor-selection {
+  color: #cfd2dc;
+  font-size: 10px;
+  font-weight: 700;
+  font-feature-settings: "tnum";
+}
+
+.editor-trim-bar {
+  min-height: 54px;
 }
 
 .section-title {

@@ -24,6 +24,7 @@ pub struct ClipViews {
     pub library: GtkBox,
     pub collections: GtkBox,
     pub player: GtkBox,
+    pub editor: GtkBox,
     header: Grid,
     heading: GtkBox,
     search: Entry,
@@ -100,6 +101,7 @@ struct LibraryState {
     preview_widgets: RefCell<HashMap<PathBuf, Vec<PreviewWidgets>>>,
     jobs: Vec<mpsc::Sender<Clip>>,
     player: Rc<PlayerState>,
+    editor: Rc<crate::editor::EditorController>,
     stack: Stack,
     collection_flow: FlowBox,
     collection_tiles: FlowBox,
@@ -112,14 +114,15 @@ struct PlayerState {
     video: Video,
     title: Label,
     meta: Label,
-    current: RefCell<Option<PathBuf>>,
+    current: RefCell<Option<Clip>>,
 }
 
 pub fn build(stack: &Stack) -> ClipViews {
     let paths = AppPaths::discover();
     let config = Config::load(&paths).unwrap_or_default();
     let _ = std::fs::create_dir_all(&config.storage.directory);
-    let (player_page, player) = build_player(stack);
+    let editor_view = crate::editor::build(stack);
+    let (player_page, player) = build_player(stack, &editor_view.controller);
     let (preview_sender, preview_receiver) = mpsc::channel::<PreviewUpdate>();
     let mut job_senders = Vec::with_capacity(2);
     for index in 0..2 {
@@ -254,12 +257,20 @@ pub fn build(stack: &Stack) -> ClipViews {
         preview_widgets: RefCell::new(HashMap::new()),
         jobs: job_senders,
         player,
+        editor: editor_view.controller.clone(),
         stack: stack.clone(),
         collection_flow: collection_flow.clone(),
         collection_tiles,
         collection_empty,
         collection_title,
         selected_collection: RefCell::new(None),
+    });
+
+    let completed_state = Rc::downgrade(&state);
+    editor_view.controller.set_on_complete(move || {
+        if let Some(state) = completed_state.upgrade() {
+            refresh_all(&state);
+        }
     });
 
     let preview_state = state.clone();
@@ -315,6 +326,7 @@ pub fn build(stack: &Stack) -> ClipViews {
         library: page,
         collections: collections_page,
         player: player_page,
+        editor: editor_view.page,
         header,
         heading,
         search: state.search.clone(),
@@ -917,6 +929,8 @@ fn show_clip_menu(button: &Button, clip: &Clip, state: &Rc<LibraryState>) {
 
     let rename = menu_action("Rename", "document-edit-symbolic");
     content.append(&rename);
+    let edit = menu_action("Edit clip", "media-playlist-shuffle-symbolic");
+    content.append(&edit);
     let move_label = Label::new(Some("MOVE TO"));
     move_label.add_css_class("menu-section-label");
     move_label.set_halign(Align::Start);
@@ -966,6 +980,13 @@ fn show_clip_menu(button: &Button, clip: &Clip, state: &Rc<LibraryState>) {
     rename.connect_clicked(move |_| {
         renamed_menu.popdown();
         show_rename(&rename_anchor, &renamed_clip, &rename_state);
+    });
+    let edited_menu = popover.clone();
+    let edited_clip = clip.clone();
+    let edit_state = state.clone();
+    edit.connect_clicked(move |_| {
+        edited_menu.popdown();
+        edit_state.editor.open(&edited_clip);
     });
     let library_menu = popover.clone();
     let library_clip = clip.clone();
@@ -1219,7 +1240,10 @@ fn empty_step(number: &str, title: &str, detail: &str) -> GtkBox {
     step
 }
 
-fn build_player(stack: &Stack) -> (GtkBox, Rc<PlayerState>) {
+fn build_player(
+    stack: &Stack,
+    editor: &Rc<crate::editor::EditorController>,
+) -> (GtkBox, Rc<PlayerState>) {
     let page = GtkBox::new(Orientation::Vertical, 0);
     page.add_css_class("player-page");
 
@@ -1240,8 +1264,11 @@ fn build_player(stack: &Stack) -> (GtkBox, Rc<PlayerState>) {
     titles.append(&meta);
     let reveal = Button::with_label("Open folder");
     reveal.add_css_class("secondary-action");
+    let edit = Button::with_label("Edit clip");
+    edit.add_css_class("primary-action");
     header.append(&back);
     header.append(&titles);
+    header.append(&edit);
     header.append(&reveal);
     page.append(&header);
 
@@ -1270,10 +1297,10 @@ fn build_player(stack: &Stack) -> (GtkBox, Rc<PlayerState>) {
 
     let reveal_player = player.clone();
     reveal.connect_clicked(move |_| {
-        let Some(path) = reveal_player.current.borrow().clone() else {
+        let Some(clip) = reveal_player.current.borrow().clone() else {
             return;
         };
-        let Some(parent) = path.parent() else {
+        let Some(parent) = clip.path.parent() else {
             return;
         };
         let _ = Command::new("xdg-open")
@@ -1282,6 +1309,15 @@ fn build_player(stack: &Stack) -> (GtkBox, Rc<PlayerState>) {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn();
+    });
+    let edit_player = player.clone();
+    let edit_controller = editor.clone();
+    edit.connect_clicked(move |_| {
+        let Some(clip) = edit_player.current.borrow().clone() else {
+            return;
+        };
+        edit_player.video.set_file(None::<&gio::File>);
+        edit_controller.open(&clip);
     });
     (page, player)
 }
@@ -1293,7 +1329,7 @@ fn show_player(player: &PlayerState, clip: &Clip) {
         clips::format_age(clip.modified),
         clips::format_size(clip.size_bytes)
     ));
-    player.current.replace(Some(clip.path.clone()));
+    player.current.replace(Some(clip.clone()));
     let file = gio::File::for_path(&clip.path);
     player.video.set_file(Some(&file));
 }

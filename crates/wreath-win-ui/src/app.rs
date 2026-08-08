@@ -1,4 +1,6 @@
 use std::path::Path;
+use std::path::PathBuf;
+use std::sync::mpsc;
 
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
@@ -14,12 +16,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, FindWindowW, GWLP_USERDATA,
     GetClientRect, GetCursorPos, GetMessageW, GetWindowLongPtrW, HMENU, IDC_ARROW, LoadCursorW,
     MF_CHECKED, MF_SEPARATOR, MF_STRING, MINMAXINFO, MSG, PostQuitMessage, RegisterClassW,
-    SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
-    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_CHAR, WM_COMMAND,
-    WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONUP, WM_NCCREATE, WM_PAINT,
-    WM_RBUTTONUP, WM_SIZE, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSW, WS_CHILD, WS_DISABLED,
-    WS_OVERLAPPEDWINDOW,
+    ReleaseCapture, SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
+    SetCapture, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_CHAR,
+    WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_SYSKEYDOWN,
+    WM_TIMER, WNDCLASSW, WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::config::Codec;
@@ -27,12 +29,15 @@ use wreath_core::ipc::{Request, Response};
 
 use crate::model::{Action, DeleteTarget, DisplayOption, UiModel};
 use crate::player::{PLAYER_EVENT, Player};
-use crate::renderer::{Renderer, player_bounds};
+use crate::renderer::{
+    Renderer, editor_player_bounds, editor_timeline_fraction, editor_timeline_rail, player_bounds,
+};
 
 const WINDOW_CLASS: windows::core::PCWSTR = w!("WreathApplicationWindow");
 const COMMAND_CLIP_RENAME: usize = 500;
 const COMMAND_CLIP_DELETE: usize = 501;
 const COMMAND_CLIP_MOVE_LIBRARY: usize = 502;
+const COMMAND_CLIP_EDIT: usize = 503;
 const COMMAND_CLIP_MOVE_COLLECTION_BASE: usize = 600;
 const PLAYER_TIMER: usize = 2;
 
@@ -45,6 +50,26 @@ struct AppState {
     player: Option<Player>,
     video_window: Option<HWND>,
     context_clip: Option<usize>,
+    trim_updates: mpsc::Receiver<TrimUpdate>,
+    trim_sender: mpsc::Sender<TrimUpdate>,
+    editor_drag: Option<EditorDrag>,
+}
+
+#[derive(Clone, Copy)]
+enum EditorDrag {
+    Start,
+    End,
+}
+
+enum TrimUpdate {
+    Timing {
+        source: PathBuf,
+        result: Result<wreath_core::trim::ClipTiming, String>,
+    },
+    Finished {
+        source: PathBuf,
+        result: Result<wreath_core::trim::TrimReport, String>,
+    },
 }
 
 pub fn run() -> Result<(), String> {
@@ -88,6 +113,7 @@ fn run_initialized() -> Result<(), String> {
     let mut model = UiModel::load()?;
     refresh_displays(&mut model);
     refresh_microphones(&mut model);
+    let (trim_sender, trim_updates) = mpsc::channel();
     let state = Box::new(AppState {
         model,
         renderer: Renderer::new()?,
@@ -97,6 +123,9 @@ fn run_initialized() -> Result<(), String> {
         player: None,
         video_window: None,
         context_clip: None,
+        trim_updates,
+        trim_sender,
+        editor_drag: None,
     });
     let state = Box::into_raw(state);
     let window = unsafe {
@@ -278,12 +307,46 @@ unsafe extern "system" fn window_proc(
             let _ = unsafe { EndPaint(window, &paint) };
             LRESULT(0)
         }
+        WM_LBUTTONDOWN => {
+            if let Some(state) = state_mut(window) {
+                let scale = state.dpi as f32 / 96.0;
+                let x = signed_low_word(lparam.0) as f32 / scale;
+                let y = signed_high_word(lparam.0) as f32 / scale;
+                state.editor_drag = match state.renderer.hit_test(x, y) {
+                    Some(Action::DragEditorStart) => Some(EditorDrag::Start),
+                    Some(Action::DragEditorEnd) => Some(EditorDrag::End),
+                    _ => None,
+                };
+                if state.editor_drag.is_some() {
+                    unsafe { SetCapture(window) };
+                    update_editor_drag(state, x);
+                    redraw(window);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE => {
+            if let Some(state) = state_mut(window)
+                && state.editor_drag.is_some()
+            {
+                let scale = state.dpi as f32 / 96.0;
+                let x = signed_low_word(lparam.0) as f32 / scale;
+                update_editor_drag(state, x);
+                redraw(window);
+            }
+            LRESULT(0)
+        }
         WM_LBUTTONUP => {
             if let Some(state) = state_mut(window) {
                 let scale = state.dpi as f32 / 96.0;
                 let x = signed_low_word(lparam.0) as f32 / scale;
                 let y = signed_high_word(lparam.0) as f32 / scale;
-                if let Some(action) = state.renderer.hit_test(x, y) {
+                if state.editor_drag.is_some() {
+                    update_editor_drag(state, x);
+                    state.editor_drag = None;
+                    let _ = unsafe { ReleaseCapture() };
+                    redraw(window);
+                } else if let Some(action) = state.renderer.hit_test(x, y) {
                     handle_action(window, state, action);
                 }
             }
@@ -330,7 +393,10 @@ unsafe extern "system" fn window_proc(
         WM_KEYDOWN => {
             if wparam.0 == 0x20 {
                 if let Some(state) = state_mut(window)
-                    && state.model.page == crate::model::Page::Player
+                    && matches!(
+                        state.model.page,
+                        crate::model::Page::Player | crate::model::Page::Editor
+                    )
                     && let Some(player) = &state.player
                     && let Err(error) = player.toggle()
                 {
@@ -362,11 +428,18 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == PLAYER_TIMER => {
-            if let Some(state) = state_mut(window)
-                && state.model.page == crate::model::Page::Player
-            {
-                sync_player_state(state);
-                redraw(window);
+            if let Some(state) = state_mut(window) {
+                let trim_changed = poll_trim_updates(state);
+                if trim_changed
+                    || matches!(
+                        state.model.page,
+                        crate::model::Page::Player | crate::model::Page::Editor
+                    )
+                {
+                    sync_player_state(state);
+                    keep_editor_preview_inside_selection(state);
+                    redraw(window);
+                }
             }
             LRESULT(0)
         }
@@ -382,8 +455,13 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
     state.model.notice = None;
     match action {
         Action::Navigate(page) => {
-            if state.model.page == crate::model::Page::Player && page != crate::model::Page::Player
-            {
+            if matches!(
+                state.model.page,
+                crate::model::Page::Player | crate::model::Page::Editor
+            ) && !matches!(
+                page,
+                crate::model::Page::Player | crate::model::Page::Editor
+            ) {
                 stop_player(state);
             }
             state.model.navigate(page);
@@ -492,8 +570,123 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             }
             sync_player_state(state);
         }
+        Action::EditActiveClip => begin_editor(state),
+        Action::DragEditorStart | Action::DragEditorEnd => {}
+        Action::SaveCut => save_cut(state),
     }
     redraw(window);
+}
+
+fn begin_editor(state: &mut AppState) {
+    let Some(source) = state.model.active_clip().map(|clip| clip.path.clone()) else {
+        state.model.notice = Some("Clip is no longer available".into());
+        return;
+    };
+    if !state.model.edit_active_clip() {
+        return;
+    }
+    update_player_window(state);
+    let updates = state.trim_sender.clone();
+    let _ = std::thread::Builder::new()
+        .name("wreath-editor-timing".into())
+        .spawn(move || {
+            use wreath_core::trim::TrimBackend;
+
+            let result = wreath_windows::trim::MediaFoundationTrimmer::new()
+                .and_then(|backend| backend.timing(&source))
+                .map_err(|error| error.to_string());
+            let _ = updates.send(TrimUpdate::Timing { source, result });
+        });
+}
+
+fn save_cut(state: &mut AppState) {
+    if state.model.editor_working || state.model.editor_timing.is_none() {
+        return;
+    }
+    let Some(source) = state.model.active_clip().map(|clip| clip.path.clone()) else {
+        state.model.notice = Some("Clip is no longer available".into());
+        return;
+    };
+    let request = wreath_core::trim::TrimRequest {
+        source: source.clone(),
+        start: state.model.editor_start,
+        end: state.model.editor_end,
+        mode: wreath_core::trim::TrimMode::Auto,
+        output: wreath_core::trim::TrimOutput::NewClip(None),
+    };
+    let thumbnails = state.model.paths.thumbnail_dir.clone();
+    let updates = state.trim_sender.clone();
+    state.model.editor_working = true;
+    state.model.notice = Some("Cutting on a background worker…".into());
+    let _ = std::thread::Builder::new()
+        .name("wreath-editor-cut".into())
+        .spawn(move || {
+            let result = wreath_windows::trim::MediaFoundationTrimmer::new()
+                .and_then(|backend| wreath_core::trim::trim(&backend, &request, &thumbnails))
+                .map_err(|error| error.to_string());
+            let _ = updates.send(TrimUpdate::Finished { source, result });
+        });
+}
+
+fn poll_trim_updates(state: &mut AppState) -> bool {
+    let mut changed = false;
+    while let Ok(update) = state.trim_updates.try_recv() {
+        let active = state.model.editor_source.clone();
+        match update {
+            TrimUpdate::Timing { source, result } if active.as_ref() == Some(&source) => {
+                changed = true;
+                match result {
+                    Ok(timing) if !timing.duration.is_zero() => {
+                        state.model.apply_editor_timing(timing);
+                        state.model.notice = None;
+                    }
+                    Ok(_) => {
+                        state.model.editor_loading = false;
+                        state.model.notice = Some("This clip has no readable duration".into());
+                    }
+                    Err(error) => {
+                        state.model.editor_loading = false;
+                        state.model.notice = Some(format!("Cannot open editor: {error}"));
+                    }
+                }
+            }
+            TrimUpdate::Finished { source, result } if active.as_ref() == Some(&source) => {
+                changed = true;
+                state.model.editor_working = false;
+                match result {
+                    Ok(report) => {
+                        let result = state.model.refresh();
+                        if result.is_ok() && state.model.page == crate::model::Page::Editor {
+                            state.model.active_clip = state
+                                .model
+                                .clips
+                                .iter()
+                                .position(|clip| clip.path == source);
+                        }
+                        if result.is_ok() {
+                            state.renderer.retry_unavailable_thumbnails();
+                        }
+                        let name = report.path.file_name().map_or_else(
+                            || report.path.display().to_string(),
+                            |name| name.to_string_lossy().into_owned(),
+                        );
+                        let message = format!(
+                            "{} · {name}",
+                            if report.reencoded {
+                                "Re-encoded for an exact start"
+                            } else {
+                                "Losslessly cut"
+                            }
+                        );
+                        set_result(&mut state.model, result, &message);
+                    }
+                    Err(error) => state.model.notice = Some(format!("Cannot cut clip: {error}")),
+                }
+            }
+            _ => {}
+        }
+    }
+    changed
 }
 
 fn capture_hotkey(model: &mut UiModel, virtual_key: u32) -> bool {
@@ -603,6 +796,7 @@ fn show_clip_menu(window: HWND, model: &UiModel) {
         return;
     };
     append_menu_item(menu, COMMAND_CLIP_RENAME, "Rename");
+    append_menu_item(menu, COMMAND_CLIP_EDIT, "Edit clip");
     append_menu_item(menu, COMMAND_CLIP_MOVE_LIBRARY, "Move to Library");
     for (index, collection) in model.collections.iter().take(64).enumerate() {
         append_menu_item(
@@ -637,6 +831,14 @@ fn handle_clip_command(window: HWND, state: &mut AppState, command: usize) {
     };
     if command == COMMAND_CLIP_DELETE {
         state.model.pending_delete = Some(DeleteTarget::Clip(index));
+        state.context_clip = None;
+        redraw(window);
+        return;
+    }
+    if command == COMMAND_CLIP_EDIT {
+        state.model.open_clip(index);
+        open_current_clip(state);
+        begin_editor(state);
         state.context_clip = None;
         redraw(window);
         return;
@@ -712,22 +914,74 @@ fn stop_player(state: &mut AppState) {
     sync_player_state(state);
 }
 
+fn update_editor_drag(state: &mut AppState, x: f32) {
+    let Some(handle) = state.editor_drag else {
+        return;
+    };
+    let scale = state.dpi as f32 / 96.0;
+    let width = ((state.width as f32 / scale).round() as u32).max(1);
+    let height = ((state.height as f32 / scale).round() as u32).max(1);
+    let rail = editor_timeline_rail(width, height, state.model.player_aspect_ratio);
+    let thousandths = editor_timeline_fraction(rail, x);
+    match handle {
+        EditorDrag::Start => state.model.set_editor_start(thousandths),
+        EditorDrag::End => state.model.set_editor_end(thousandths),
+    }
+    if let Some(player) = &state.player
+        && let Some(timing) = &state.model.editor_timing
+    {
+        let fraction = state.model.editor_start.as_secs_f64()
+            / timing.duration.as_secs_f64().max(f64::EPSILON);
+        let _ = player.seek_fraction(fraction);
+        let _ = player.play();
+    }
+}
+
+fn keep_editor_preview_inside_selection(state: &mut AppState) {
+    if state.model.page != crate::model::Page::Editor || state.model.editor_timing.is_none() {
+        return;
+    }
+    let position = state.model.player_position_seconds;
+    let start = state.model.editor_start.as_secs_f64();
+    let end = state.model.editor_end.as_secs_f64();
+    if position + 0.02 < start || position >= end - 0.02 {
+        if let Some(player) = &state.player {
+            let duration = state.model.player_duration_seconds.max(f64::EPSILON);
+            let _ = player.seek_fraction(start / duration);
+            let _ = player.play();
+        }
+    }
+}
+
 fn update_player_window(state: &mut AppState) {
     let Some(window) = state.video_window else {
         return;
     };
-    if state.model.page != crate::model::Page::Player {
+    if !matches!(
+        state.model.page,
+        crate::model::Page::Player | crate::model::Page::Editor
+    ) {
         unsafe {
             let _ = ShowWindow(window, SW_HIDE);
         }
         return;
     }
     let scale = state.dpi as f32 / 96.0;
-    let bounds = player_bounds(
-        (state.width as f32 / scale).round() as u32,
-        (state.height as f32 / scale).round() as u32,
-        state.model.player_aspect_ratio,
-    );
+    let logical_width = (state.width as f32 / scale).round() as u32;
+    let logical_height = (state.height as f32 / scale).round() as u32;
+    let bounds = if state.model.page == crate::model::Page::Editor {
+        editor_player_bounds(
+            logical_width,
+            logical_height,
+            state.model.player_aspect_ratio,
+        )
+    } else {
+        player_bounds(
+            logical_width,
+            logical_height,
+            state.model.player_aspect_ratio,
+        )
+    };
     let _ = unsafe {
         SetWindowPos(
             window,

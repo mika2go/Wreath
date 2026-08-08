@@ -135,6 +135,19 @@ impl Player {
         .map_err(|error| error.to_string())
     }
 
+    pub fn play(&self) -> Result<(), String> {
+        if !self.loaded {
+            return Err(self
+                .load_error
+                .clone()
+                .unwrap_or_else(|| "No clip is loaded".into()));
+        }
+        if !self.ready {
+            return Ok(());
+        }
+        unsafe { self.media.Play() }.map_err(|error| error.to_string())
+    }
+
     pub fn stop(&self) -> Result<(), String> {
         if !self.loaded {
             return Ok(());

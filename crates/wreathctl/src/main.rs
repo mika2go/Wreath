@@ -31,6 +31,7 @@ use wreath_core::shortcuts::{self, ShortcutInstall};
 #[cfg(target_os = "linux")]
 use wreath_core::{config::Codec, config::Config, config::HotkeyConfig};
 
+mod cut;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -103,6 +104,9 @@ fn run() -> Result<(), String> {
     }
     if command == "config" {
         return configure(&arguments[1..]);
+    }
+    if command == "cut" {
+        return cut::run(&arguments[1..]);
     }
     if command == "doctor" {
         return doctor();
@@ -452,11 +456,13 @@ fn print_help() {
          save      save the replay buffer\n  pause     pause capture\n  resume    resume capture\n  \
          reload    reload local configuration\n  bind      register or explain the desktop hotkey\n  \
          sound     preview the clip confirmation sound\n  \
+         cut       cut a saved clip down to one span\n  \
          config    show or change local settings\n  doctor    verify the local runtime\n  \
          shutdown  stop the daemon\n\n\
          examples:\n  wreathctl config monitor DP-1\n  wreathctl config hotkey SUPER+SHIFT+R\n  \
          wreathctl config duration 30\n  wreathctl config fps 60\n  \
-         wreathctl config codec av1"
+         wreathctl config codec av1\n  \
+         wreathctl cut ~/Videos/Wreath/clip.mp4 8 20 --name \"Best bit\""
     );
 }
 

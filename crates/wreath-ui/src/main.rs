@@ -1,3 +1,4 @@
+mod editor;
 mod home;
 mod library;
 mod settings;
@@ -106,6 +107,7 @@ fn build_ui(application: &Application) {
     content.add_named(&clip_views.library, Some("library"));
     content.add_named(&clip_views.collections, Some("collections"));
     content.add_named(&clip_views.player, Some("player"));
+    content.add_named(&clip_views.editor, Some("editor"));
     content.add_named(&settings_page.page, Some("settings"));
 
     let home_stack = content.clone();
