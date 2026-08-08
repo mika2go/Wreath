@@ -6,7 +6,7 @@ on:
       version:
         description: Semantic version without the v prefix
         required: true
-        default: 0.2.22
+        default: 0.2.23
         type: string
 
 permissions:
@@ -68,4 +68,4 @@ jobs:
             --repo $env:GITHUB_REPOSITORY `
             --target $env:GITHUB_SHA `
             --title "Wreath $env:RELEASE_VERSION" `
-            --notes "Windows x64 NSIS release making the quality setting readable. The menu listed bare percentages, which say nothing about the one thing people want to know before changing the setting: what it costs. Each choice now carries the bitrate it aims for and the size a full replay reaches, computed for the selected monitor at the configured frame rate, codec and duration - a 1440p60 monitor with a 30 second buffer reads 75 percent as 27 Mbit/s and about 94 MB, and 50 percent as 21 Mbit/s and about 75 MB. The configured value is always offered even when it is not one of the presets. Nothing about capture, encoding or the saved file changes. Native Windows tests, clippy, release builds, application launch/resize, running-upgrade, NSIS install, and process-cleanup uninstall gates pass; the full AMD/Intel/NVIDIA Medal performance matrix is still pending."
+            --notes "Windows x64 NSIS maintenance release. Native Windows tests, clippy, release builds, application launch/resize, running-upgrade, NSIS install, and process-cleanup uninstall gates pass."\n
