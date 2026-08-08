@@ -34,7 +34,9 @@ current Windows refresh rate up to 60, which is the ceiling: hardware encoders
 could not sustain more at the resolutions people record at, so the higher
 choices only produced dropped frames and doubled the clip size. Configurations
 written by older builds are brought down to 60 rather than rejected. Quality
-includes 100 percent, and changing the
+choices carry the bitrate they aim for and the size a full replay reaches on
+the selected monitor, so the cost of a setting is visible before it is picked
+rather than hidden behind a percentage. Changing the
 global shortcut completes as soon as the new modifier-plus-key combination is
 pressed. The Windows default is `Ctrl+Alt+R`; installations that still use the
 old OS-reserved `Win+Shift+R` default are migrated automatically. Capture

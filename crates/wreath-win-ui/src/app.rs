@@ -856,16 +856,16 @@ fn choose_codec(window: HWND, model: &mut UiModel) {
 }
 
 fn choose_quality(window: HWND, model: &mut UiModel) {
-    let values = [50, 65, 75, 85, 95, 100];
-    let labels = values
+    let options = model.quality_options();
+    let labels = options
         .iter()
-        .map(|quality| format!("{quality}%"))
+        .map(|(_, label)| label.clone())
         .collect::<Vec<_>>();
-    let current = values
+    let current = options
         .iter()
-        .position(|value| *value == model.config.capture.quality);
+        .position(|(value, _)| *value == model.config.capture.quality);
     if let Some(index) = show_choice_menu(window, &labels, current) {
-        model.config.capture.quality = values[index];
+        model.config.capture.quality = options[index].0;
     }
 }
 
@@ -1002,6 +1002,8 @@ fn load_displays(model: &mut UiModel) -> Result<(), String> {
                 ),
                 name: display.name,
                 refresh_rate: display.refresh_rate,
+                width: display.width,
+                height: display.height,
             }
         })
         .collect();

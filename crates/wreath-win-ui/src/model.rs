@@ -69,6 +69,8 @@ pub struct DisplayOption {
     pub name: String,
     pub label: String,
     pub refresh_rate: f64,
+    pub width: u32,
+    pub height: u32,
 }
 
 pub struct UiModel {
@@ -197,6 +199,51 @@ impl UiModel {
             .or_else(|| self.displays.first())
     }
 
+    /// Quality choices labelled with what they actually cost.
+    ///
+    /// The menu used to list bare percentages, which say nothing about the
+    /// thing people care about — how large the clip ends up. Each choice now
+    /// carries the bitrate it aims for and the size a full replay reaches on
+    /// the selected monitor, at the configured frame rate, codec and duration.
+    pub fn quality_options(&self) -> Vec<(u8, String)> {
+        let (width, height) = self
+            .selected_display()
+            .map_or((1920, 1080), |display| (display.width, display.height));
+        let monitor = wreath_core::display::Monitor {
+            id: 0,
+            name: String::new(),
+            description: String::new(),
+            make: String::new(),
+            model: String::new(),
+            serial: String::new(),
+            width,
+            height,
+            refresh_rate: f64::from(self.config.capture.frames_per_second),
+            focused: true,
+            disabled: false,
+        };
+        let seconds = self.config.capture.duration_seconds;
+        let mut values = vec![50, 65, 75, 85, 95, 100];
+        values.push(self.config.capture.quality.min(100));
+        values.sort_unstable();
+        values.dedup();
+        values
+            .into_iter()
+            .map(|quality| {
+                let mut spec = wreath_core::replay::ReplaySpec::from_config(&self.config, &monitor);
+                spec.quality = quality;
+                let megabits = spec.target_bitrate_kbps().saturating_add(500) / 1_000;
+                let megabytes = spec.estimated_buffer_megabytes();
+                (
+                    quality,
+                    format!(
+                        "{quality}% · {megabits} Mbit/s · about {megabytes} MB per {seconds} s"
+                    ),
+                )
+            })
+            .collect()
+    }
+
     pub fn frame_rate_options(&self) -> Vec<u16> {
         let native_rate = self
             .selected_display()
@@ -293,6 +340,8 @@ mod tests {
             name: "DISPLAY1".into(),
             label: "DISPLAY1 · 2560×1440 · 144 Hz".into(),
             refresh_rate: 144.0,
+            width: 2560,
+            height: 1440,
         });
         model.config.capture.monitor = Some("DISPLAY1".into());
         model.config.capture.frames_per_second = 50;
@@ -302,6 +351,40 @@ mod tests {
         assert_eq!(model.frame_rate_options(), vec![30, 48, 50, 60]);
     }
 
+    /// A bare percentage says nothing about what a setting costs, which is the
+    /// one thing people want to know before changing it.
+    #[test]
+    fn quality_choices_carry_their_bitrate_and_clip_size() {
+        let mut model = model();
+        model.displays.push(DisplayOption {
+            name: "DISPLAY1".into(),
+            label: "DISPLAY1 · 2560×1440 · 60 Hz".into(),
+            refresh_rate: 60.0,
+            width: 2560,
+            height: 1440,
+        });
+        model.config.capture.monitor = Some("DISPLAY1".into());
+        model.config.capture.frames_per_second = 60;
+        model.config.capture.duration_seconds = 30;
+        model.config.capture.quality = 75;
+
+        let options = model.quality_options();
+        let (value, label) = options
+            .iter()
+            .find(|(value, _)| *value == 75)
+            .expect("the configured quality is always offered");
+
+        assert_eq!(*value, 75);
+        assert_eq!(label, "75% · 27 Mbit/s · about 94 MB per 30 s");
+
+        // A lower setting has to read as visibly cheaper.
+        let cheaper = options
+            .iter()
+            .find(|(value, _)| *value == 50)
+            .expect("50 is offered");
+        assert_eq!(cheaper.1, "50% · 21 Mbit/s · about 75 MB per 30 s");
+    }
+
     #[test]
     fn a_slower_monitor_still_caps_the_frame_rate_choices() {
         let mut model = model();
@@ -309,6 +392,8 @@ mod tests {
             name: "DISPLAY1".into(),
             label: "DISPLAY1 · 1920×1080 · 30 Hz".into(),
             refresh_rate: 30.0,
+            width: 1920,
+            height: 1080,
         });
         model.config.capture.monitor = Some("DISPLAY1".into());
         model.config.capture.frames_per_second = 30;
