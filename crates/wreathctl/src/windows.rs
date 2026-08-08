@@ -149,6 +149,7 @@ fn apply_setting(config: &mut Config, setting: &str, value: &str) -> Result<(), 
             config.audio.microphone_device = Some(microphone.id.clone());
         }
         "desktop-audio" => config.audio.desktop = parse_switch(value, setting)?,
+        "desktop-gain" => config.audio.desktop_gain_percent = parse_number(value, setting)?,
         "microphone-gain" => config.audio.microphone_gain_percent = parse_number(value, setting)?,
         "hotkey" => {
             let hotkey = HotkeyConfig::parse(value).map_err(|error| error.to_string())?;
@@ -172,7 +173,7 @@ fn apply_setting(config: &mut Config, setting: &str, value: &str) -> Result<(), 
         "output" => config.storage.directory = value.into(),
         _ => {
             return Err(format!(
-                "unknown setting `{setting}`; use monitor, microphone, desktop-audio, microphone-gain, hotkey, duration, fps, quality, codec, cursor, or output"
+                "unknown setting `{setting}`; use monitor, microphone, desktop-audio, desktop-gain, microphone-gain, hotkey, duration, fps, quality, codec, cursor, or output"
             ));
         }
     }

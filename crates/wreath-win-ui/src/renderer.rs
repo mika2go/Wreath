@@ -38,7 +38,6 @@ const SURFACE_HOVER: u32 = 0x202024;
 const PRIMARY: u32 = 0xf4f5f9;
 const SECONDARY: u32 = 0x777e8e;
 const SUCCESS: u32 = 0x76d9a3;
-const WIDE_SIDEBAR_BREAKPOINT: f32 = 1080.0;
 
 #[derive(Debug, Clone, Copy)]
 enum Glyph {
@@ -47,6 +46,8 @@ enum Glyph {
     Library,
     Collections,
     Settings,
+    PanelExpand,
+    PanelCollapse,
     ChevronDown,
     Close,
 }
@@ -81,9 +82,14 @@ impl LogicalRect {
     }
 }
 
-pub fn player_bounds(width: u32, height: u32, aspect_ratio: f32) -> LogicalRect {
+pub fn player_bounds(
+    width: u32,
+    height: u32,
+    aspect_ratio: f32,
+    sidebar_expanded: bool,
+) -> LogicalRect {
     let width = width as f32;
-    let rail = sidebar_width(width);
+    let rail = sidebar_width(width, sidebar_expanded);
     let padding = if width < 820.0 {
         16.0
     } else if width < 980.0 {
@@ -102,9 +108,14 @@ pub fn player_bounds(width: u32, height: u32, aspect_ratio: f32) -> LogicalRect 
     )
 }
 
-pub fn editor_player_bounds(width: u32, height: u32, aspect_ratio: f32) -> LogicalRect {
+pub fn editor_player_bounds(
+    width: u32,
+    height: u32,
+    aspect_ratio: f32,
+    sidebar_expanded: bool,
+) -> LogicalRect {
     let width = width as f32;
-    let rail = sidebar_width(width);
+    let rail = sidebar_width(width, sidebar_expanded);
     let padding = if width < 980.0 { 24.0 } else { 32.0 };
     fit_aspect(
         rect(
@@ -117,12 +128,17 @@ pub fn editor_player_bounds(width: u32, height: u32, aspect_ratio: f32) -> Logic
     )
 }
 
-pub fn editor_timeline_rail(width: u32, height: u32, aspect_ratio: f32) -> LogicalRect {
+pub fn editor_timeline_rail(
+    width: u32,
+    height: u32,
+    aspect_ratio: f32,
+    sidebar_expanded: bool,
+) -> LogicalRect {
     let width_f = width as f32;
     let padding = if width_f < 980.0 { 24.0 } else { 32.0 };
-    let left = sidebar_width(width_f) + padding;
+    let left = sidebar_width(width_f, sidebar_expanded) + padding;
     let right = width_f - padding;
-    let stage = editor_player_bounds(width, height, aspect_ratio);
+    let stage = editor_player_bounds(width, height, aspect_ratio, sidebar_expanded);
     let timeline_top = (stage.bottom + 18.0).min(height as f32 - 220.0);
     rect(
         left + 20.0,
@@ -290,7 +306,7 @@ impl Renderer {
             self.render_delete_modal(model, width as f32, height as f32)?;
         }
         if let Some(notice) = &model.notice {
-            let rail = sidebar_width(width as f32);
+            let rail = sidebar_width(width as f32, model.sidebar_expanded);
             let notice_area = rect(
                 rail + 18.0,
                 height as f32 - 62.0,
@@ -310,12 +326,21 @@ impl Renderer {
                 PRIMARY,
             )?;
             let close = rect(
-                notice_area.right - 42.0,
-                notice_area.top + 5.0,
-                notice_area.right - 5.0,
-                notice_area.bottom - 5.0,
+                notice_area.right - 34.0,
+                notice_area.top + 6.0,
+                notice_area.right - 6.0,
+                notice_area.bottom - 6.0,
             );
-            self.glyph(Glyph::Close, close, SECONDARY)?;
+            self.glyph(
+                Glyph::Close,
+                rect(
+                    close.left + 6.0,
+                    close.top + 6.0,
+                    close.right - 6.0,
+                    close.bottom - 6.0,
+                ),
+                SECONDARY,
+            )?;
             self.hits.push(HitRegion {
                 rect: close,
                 action: Action::DismissNotice,
@@ -350,8 +375,8 @@ impl Renderer {
     }
 
     fn render_shell(&mut self, model: &UiModel, width: f32, height: f32) -> Result<(), String> {
-        let wide_sidebar = width >= WIDE_SIDEBAR_BREAKPOINT;
-        let rail = sidebar_width(width);
+        let wide_sidebar = model.sidebar_expanded && width >= 900.0;
+        let rail = sidebar_width(width, model.sidebar_expanded);
         self.fill(
             LogicalRect {
                 left: 0.0,
@@ -418,6 +443,45 @@ impl Renderer {
                 action: Action::Navigate(*page),
             });
         }
+
+        let toggle = rect(14.0, height - 54.0, rail - 14.0, height - 18.0);
+        self.fill(toggle, SURFACE_HOVER, 9.0)?;
+        let icon_left = if wide_sidebar {
+            toggle.right - 32.0
+        } else {
+            toggle.left + 10.0
+        };
+        self.glyph(
+            if wide_sidebar {
+                Glyph::PanelCollapse
+            } else {
+                Glyph::PanelExpand
+            },
+            rect(
+                icon_left,
+                toggle.top + 8.0,
+                icon_left + 20.0,
+                toggle.bottom - 8.0,
+            ),
+            SECONDARY,
+        )?;
+        if wide_sidebar {
+            self.text(
+                "Collapse sidebar",
+                rect(
+                    toggle.left + 12.0,
+                    toggle.top,
+                    toggle.right - 40.0,
+                    toggle.bottom,
+                ),
+                &self.small.clone(),
+                SECONDARY,
+            )?;
+        }
+        self.hits.push(HitRegion {
+            rect: toggle,
+            action: Action::ToggleSidebar,
+        });
 
         let padding = if width < 980.0 { 24.0 } else { 32.0 };
         let left = rail + padding;
@@ -774,9 +838,19 @@ impl Renderer {
                     "Add an input device to each replay.",
                     left,
                     right,
-                    284.0,
+                    372.0,
                     Action::ToggleMicrophone,
                     SettingControl::Toggle,
+                )?;
+                self.setting_row(
+                    "Desktop level",
+                    &format!("{}%", model.config.audio.desktop_gain_percent),
+                    "Changes only the recorded system sound, not Windows volume.",
+                    left,
+                    right,
+                    284.0,
+                    Action::ChooseDesktopGain,
+                    SettingControl::Dropdown,
                 )?;
                 self.setting_row(
                     "Input device",
@@ -784,17 +858,17 @@ impl Renderer {
                     "Choose an active Windows input endpoint.",
                     left,
                     right,
-                    372.0,
+                    460.0,
                     Action::ChooseMicrophone,
                     SettingControl::Dropdown,
                 )?;
                 self.setting_row(
-                    "Recording level",
+                    "Microphone level",
                     &format!("{}%", model.config.audio.microphone_gain_percent),
                     "Clean input level without digital noise boost.",
                     left,
                     right,
-                    460.0,
+                    548.0,
                     Action::ChooseMicrophoneGain,
                     SettingControl::Dropdown,
                 )?;
@@ -941,15 +1015,31 @@ impl Renderer {
             0.0
         };
         if progress > 0.0 {
+            let playhead = rail.left + (rail.right - rail.left) * progress;
             self.fill(
-                rect(
-                    rail.left,
-                    rail.top,
-                    rail.left + (rail.right - rail.left) * progress,
-                    rail.bottom,
-                ),
+                rect(rail.left, rail.top, playhead, rail.bottom),
                 SUCCESS,
                 3.0,
+            )?;
+            self.fill(
+                rect(
+                    playhead - 4.0,
+                    rail.top - 4.0,
+                    playhead + 4.0,
+                    rail.bottom + 4.0,
+                ),
+                SURFACE_HOVER,
+                4.0,
+            )?;
+            self.fill(
+                rect(
+                    playhead - 1.5,
+                    rail.top - 5.0,
+                    playhead + 1.5,
+                    rail.bottom + 5.0,
+                ),
+                PRIMARY,
+                1.5,
             )?;
         }
         for percent in 0..100_u8 {
@@ -1131,6 +1221,21 @@ impl Renderer {
             self.fill(rect(start_x, rail.top, end_x, rail.bottom), SUCCESS, 0.0)?;
             let start_handle = rect(start_x - 6.0, top - 6.0, start_x + 6.0, top + 30.0);
             let end_handle = rect(end_x - 6.0, top - 6.0, end_x + 6.0, top + 30.0);
+            let playhead_fraction =
+                (model.player_position_seconds / duration).clamp(0.0, 1.0) as f32;
+            let playhead_x = rail.left + (rail.right - rail.left) * playhead_fraction;
+            if playhead_x >= start_x && playhead_x <= end_x {
+                self.fill(
+                    rect(playhead_x - 4.0, top - 2.0, playhead_x + 4.0, top + 26.0),
+                    SURFACE_HOVER,
+                    4.0,
+                )?;
+                self.fill(
+                    rect(playhead_x - 1.5, top - 4.0, playhead_x + 1.5, top + 28.0),
+                    PRIMARY,
+                    1.5,
+                )?;
+            }
             self.fill(start_handle, PRIMARY, 4.0)?;
             self.fill(end_handle, PRIMARY, 4.0)?;
             self.hits.push(HitRegion {
@@ -1599,8 +1704,18 @@ impl Renderer {
                 line(12.0, 16.0, 19.0, 9.0);
             }
             Glyph::Close => {
-                line(7.0, 7.0, 17.0, 17.0);
-                line(17.0, 7.0, 7.0, 17.0);
+                line(8.5, 8.5, 15.5, 15.5);
+                line(15.5, 8.5, 8.5, 15.5);
+            }
+            Glyph::PanelExpand => {
+                line(4.0, 4.0, 4.0, 20.0);
+                line(8.0, 6.0, 18.0, 12.0);
+                line(18.0, 12.0, 8.0, 18.0);
+            }
+            Glyph::PanelCollapse => {
+                line(20.0, 4.0, 20.0, 20.0);
+                line(16.0, 6.0, 6.0, 12.0);
+                line(6.0, 12.0, 16.0, 18.0);
             }
         }
         Ok(())
@@ -1741,8 +1856,8 @@ fn rect(left: f32, top: f32, right: f32, bottom: f32) -> LogicalRect {
     }
 }
 
-fn sidebar_width(width: f32) -> f32 {
-    if width >= WIDE_SIDEBAR_BREAKPOINT {
+fn sidebar_width(width: f32, expanded: bool) -> f32 {
+    if expanded && width >= 900.0 {
         214.0
     } else {
         72.0

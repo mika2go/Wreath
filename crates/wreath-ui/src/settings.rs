@@ -485,9 +485,35 @@ pub fn build() -> SettingsView {
     let desktop_audio = CheckButton::with_label("Desktop audio");
     desktop_audio.set_active(config.audio.desktop);
     rows.push(attach_row(&audio_grid, 0, "System sound", &desktop_audio));
+    let desktop_gain = Scale::with_range(Orientation::Horizontal, 0.0, 200.0, 5.0);
+    desktop_gain.set_value(f64::from(config.audio.desktop_gain_percent));
+    desktop_gain.set_draw_value(false);
+    desktop_gain.set_hexpand(true);
+    desktop_gain.set_sensitive(config.audio.desktop);
+    desktop_gain.set_tooltip_text(Some(
+        "Only changes desktop loudness in Wreath recordings, never the system volume",
+    ));
+    let desktop_gain_value = Label::new(Some(&format!("{}%", config.audio.desktop_gain_percent)));
+    desktop_gain_value.add_css_class("gain-value");
+    desktop_gain_value.set_width_chars(4);
+    desktop_gain_value.set_xalign(1.0);
+    let desktop_gain_control = GtkBox::new(Orientation::Horizontal, 14);
+    desktop_gain_control.set_hexpand(true);
+    desktop_gain_control.append(&desktop_gain);
+    desktop_gain_control.append(&desktop_gain_value);
+    rows.push(attach_row(
+        &audio_grid,
+        1,
+        "Desktop level",
+        &desktop_gain_control,
+    ));
+    let displayed_desktop_gain = desktop_gain_value.clone();
+    desktop_gain.connect_value_changed(move |scale| {
+        displayed_desktop_gain.set_text(&format!("{:.0}%", scale.value()));
+    });
     let microphone = CheckButton::with_label("Include microphone");
     microphone.set_active(config.audio.microphone);
-    rows.push(attach_row(&audio_grid, 1, "Voice", &microphone));
+    rows.push(attach_row(&audio_grid, 2, "Voice", &microphone));
     let microphone_model = microphone_model(&microphones);
     let microphone_dropdown = DropDown::new(Some(microphone_model), None::<gtk::Expression>);
     microphone_dropdown.set_hexpand(true);
@@ -496,7 +522,7 @@ pub fn build() -> SettingsView {
     microphone_dropdown.set_tooltip_text(Some("PipeWire microphone used in new clips"));
     rows.push(attach_row(
         &audio_grid,
-        2,
+        3,
         "Input device",
         &microphone_dropdown,
     ));
@@ -519,8 +545,8 @@ pub fn build() -> SettingsView {
     microphone_gain_control.append(&microphone_gain_value);
     rows.push(attach_row(
         &audio_grid,
-        3,
-        "Recording level",
+        4,
+        "Microphone level",
         &microphone_gain_control,
     ));
     let displayed_gain = microphone_gain_value.clone();
@@ -533,6 +559,10 @@ pub fn build() -> SettingsView {
     microphone.connect_toggled(move |toggle| {
         microphone_toggle_dropdown.set_sensitive(toggle.is_active() && microphones_available);
         microphone_toggle_gain.set_sensitive(toggle.is_active());
+    });
+    let desktop_toggle_gain = desktop_gain.clone();
+    desktop_audio.connect_toggled(move |toggle| {
+        desktop_toggle_gain.set_sensitive(toggle.is_active());
     });
     audio_page.append(&audio_grid);
 
@@ -583,6 +613,7 @@ pub fn build() -> SettingsView {
             &quality,
             &hotkey,
             &desktop_audio,
+            &desktop_gain,
             &microphone,
             &microphones,
             &microphone_dropdown,
@@ -654,6 +685,7 @@ fn collect_and_save(
     quality: &Scale,
     hotkey: &HotkeyCapture,
     desktop_audio: &CheckButton,
+    desktop_gain: &Scale,
     microphone: &CheckButton,
     microphones: &[Microphone],
     microphone_dropdown: &DropDown,
@@ -681,6 +713,7 @@ fn collect_and_save(
     config.capture.quality = quality.value().round().clamp(0.0, 100.0) as u8;
     config.hotkey = hotkey.value()?;
     config.audio.desktop = desktop_audio.is_active();
+    config.audio.desktop_gain_percent = desktop_gain.value().round().clamp(0.0, 200.0) as u16;
     config.audio.microphone = microphone.is_active();
     let microphone_index = usize::try_from(microphone_dropdown.selected()).unwrap_or(usize::MAX);
     config.audio.microphone_device = microphones

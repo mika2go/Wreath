@@ -178,7 +178,9 @@ fn run_initialized() -> Result<(), String> {
             }
         }
         (*state).dpi = GetDpiForWindow(window).max(96);
-        let _ = SetTimer(Some(window), PLAYER_TIMER, 250, None);
+        // Keep the native playhead visually continuous without tying playback
+        // timing to paint events. Media Foundation remains the source of truth.
+        let _ = SetTimer(Some(window), PLAYER_TIMER, 33, None);
     }
     unsafe {
         let _ = ShowWindow(window, SW_RESTORE);
@@ -514,12 +516,17 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             state.model.active_collection = None;
         }
         Action::DismissNotice => state.model.notice = None,
+        Action::ToggleSidebar => {
+            state.model.sidebar_expanded = !state.model.sidebar_expanded;
+            update_player_window(state);
+        }
         Action::ToggleCursor => {
             state.model.config.capture.cursor = !state.model.config.capture.cursor
         }
         Action::ToggleDesktopAudio => {
             state.model.config.audio.desktop = !state.model.config.audio.desktop
         }
+        Action::ChooseDesktopGain => choose_desktop_gain(window, &mut state.model),
         Action::ToggleMicrophone => {
             state.model.config.audio.microphone = !state.model.config.audio.microphone
         }
@@ -921,7 +928,12 @@ fn update_editor_drag(state: &mut AppState, x: f32) {
     let scale = state.dpi as f32 / 96.0;
     let width = ((state.width as f32 / scale).round() as u32).max(1);
     let height = ((state.height as f32 / scale).round() as u32).max(1);
-    let rail = editor_timeline_rail(width, height, state.model.player_aspect_ratio);
+    let rail = editor_timeline_rail(
+        width,
+        height,
+        state.model.player_aspect_ratio,
+        state.model.sidebar_expanded,
+    );
     let thousandths = editor_timeline_fraction(rail, x);
     match handle {
         EditorDrag::Start => state.model.set_editor_start(thousandths),
@@ -961,6 +973,9 @@ fn update_player_window(state: &mut AppState) {
         state.model.page,
         crate::model::Page::Player | crate::model::Page::Editor
     ) {
+        if let Some(player) = &state.player {
+            let _ = player.stop();
+        }
         unsafe {
             let _ = ShowWindow(window, SW_HIDE);
         }
@@ -974,12 +989,14 @@ fn update_player_window(state: &mut AppState) {
             logical_width,
             logical_height,
             state.model.player_aspect_ratio,
+            state.model.sidebar_expanded,
         )
     } else {
         player_bounds(
             logical_width,
             logical_height,
             state.model.player_aspect_ratio,
+            state.model.sidebar_expanded,
         )
     };
     let _ = unsafe {
@@ -1185,6 +1202,20 @@ fn choose_microphone_gain(window: HWND, model: &mut UiModel) {
         .position(|value| *value == model.config.audio.microphone_gain_percent);
     if let Some(index) = show_choice_menu(window, &labels, current) {
         model.config.audio.microphone_gain_percent = values[index];
+    }
+}
+
+fn choose_desktop_gain(window: HWND, model: &mut UiModel) {
+    let values = [0, 25, 50, 75, 100, 125, 150, 175, 200];
+    let labels = values
+        .iter()
+        .map(|gain| format!("{gain}%"))
+        .collect::<Vec<_>>();
+    let current = values
+        .iter()
+        .position(|value| *value == model.config.audio.desktop_gain_percent);
+    if let Some(index) = show_choice_menu(window, &labels, current) {
+        model.config.audio.desktop_gain_percent = values[index];
     }
 }
 

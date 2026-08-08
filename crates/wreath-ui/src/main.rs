@@ -13,8 +13,8 @@ use gtk::gdk;
 use gtk::glib::{self, ControlFlow};
 use gtk::prelude::*;
 use gtk::{
-    Align, Application, ApplicationWindow, Box as GtkBox, Button, CssProvider, Image, Orientation,
-    Stack,
+    Align, Application, ApplicationWindow, Box as GtkBox, Button, CssProvider, EventControllerKey,
+    Image, Orientation, PropagationPhase, Stack,
 };
 
 const APP_ID: &str = "io.github.mika2go.Wreath";
@@ -109,6 +109,26 @@ fn build_ui(application: &Application) {
     content.add_named(&clip_views.player, Some("player"));
     content.add_named(&clip_views.editor, Some("editor"));
     content.add_named(&settings_page.page, Some("settings"));
+
+    let playback_keys = EventControllerKey::new();
+    playback_keys.set_propagation_phase(PropagationPhase::Capture);
+    let playback_stack = content.clone();
+    let playback_views = clip_views.clone();
+    playback_keys.connect_key_pressed(move |_, key, _, _| {
+        if key == gdk::Key::space
+            && playback_views.toggle_playback(
+                playback_stack
+                    .visible_child_name()
+                    .as_deref()
+                    .unwrap_or_default(),
+            )
+        {
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    window.add_controller(playback_keys);
 
     let home_stack = content.clone();
     let home_button = home_nav.clone();

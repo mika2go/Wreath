@@ -59,6 +59,7 @@ impl From<io::Error> for EngineError {
 fn recorder_arguments(
     spec: &ReplaySpec,
     portal_session_token_file: Option<&std::path::Path>,
+    desktop_source: Option<&str>,
 ) -> Vec<OsString> {
     let mut arguments = vec![
         "-w".into(),
@@ -96,8 +97,11 @@ fn recorder_arguments(
         .microphone_audio
         .then(|| spec.microphone_device.as_deref().unwrap_or("default_input"));
     let audio_source = match (spec.desktop_audio, microphone) {
-        (true, Some(microphone)) => Some(format!("default_output|{microphone}")),
-        (true, None) => Some("default_output".into()),
+        (true, Some(microphone)) => Some(format!(
+            "{}|{microphone}",
+            desktop_source.unwrap_or("default_output")
+        )),
+        (true, None) => Some(desktop_source.unwrap_or("default_output").into()),
         (false, Some(microphone)) => Some(microphone.into()),
         (false, None) => None,
     };
@@ -118,7 +122,8 @@ fn recorder_arguments(
 pub struct GpuScreenRecorder {
     child: Child,
     saved_paths: Receiver<PathBuf>,
-    microphone_gain_source: Option<MicrophoneGainSource>,
+    microphone_gain_source: Option<RecordingGainSource>,
+    desktop_gain_source: Option<RecordingGainSource>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -133,22 +138,22 @@ impl ReplayBackend for GpuScreenRecorderBackend {
     }
 }
 
-struct MicrophoneGainSource {
+struct RecordingGainSource {
     module_id: String,
     name: String,
 }
 
-impl MicrophoneGainSource {
-    fn create(master: &str, gain_percent: u16) -> Result<Self, EngineError> {
-        Self::unload_stale_sources();
-        let name = format!("wreath_recording_mic_{}", std::process::id());
+impl RecordingGainSource {
+    fn create(master: &str, gain_percent: u16, channel: &str) -> Result<Self, EngineError> {
+        let name = format!("wreath_recording_{channel}_{}", std::process::id());
+        let description = format!("WreathRecording{channel}");
         let output = Command::new("pactl")
             .args([
                 "load-module",
                 "module-remap-source",
                 &format!("master={master}"),
                 &format!("source_name={name}"),
-                "source_properties=device.description=WreathRecordingMicrophone",
+                &format!("source_properties=device.description={description}"),
                 "channels=2",
                 "channel_map=front-left,front-right",
                 "remix=yes",
@@ -158,7 +163,7 @@ impl MicrophoneGainSource {
             .output()?;
         if !output.status.success() {
             return Err(EngineError::Signal(format!(
-                "cannot create isolated microphone channel: {}",
+                "cannot create isolated {channel} channel: {}",
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
@@ -177,9 +182,9 @@ impl MicrophoneGainSource {
             .stderr(Stdio::null())
             .status()?;
         if !status.success() {
-            return Err(EngineError::Signal(
-                "cannot set isolated microphone recording level".into(),
-            ));
+            return Err(EngineError::Signal(format!(
+                "cannot set isolated {channel} recording level"
+            )));
         }
         Ok(source)
     }
@@ -204,7 +209,7 @@ impl MicrophoneGainSource {
     }
 }
 
-impl Drop for MicrophoneGainSource {
+impl Drop for RecordingGainSource {
     fn drop(&mut self) {
         let _ = Command::new("pactl")
             .args(["unload-module", self.module_id.as_str()])
@@ -224,10 +229,31 @@ fn stale_wreath_module_ids(output: &str) -> Vec<String> {
             let module_name = fields.next()?;
             let arguments = fields.next()?;
             (module_name == "module-remap-source"
-                && arguments.contains("source_name=wreath_recording_mic_"))
+                && arguments.contains("source_name=wreath_recording_"))
             .then(|| module_id.to_owned())
         })
         .collect()
+}
+
+fn default_desktop_monitor() -> Result<String, EngineError> {
+    let output = Command::new("pactl")
+        .args(["get-default-sink"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()?;
+    if !output.status.success() {
+        return Err(EngineError::Signal(format!(
+            "cannot resolve the default desktop output: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let sink = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if sink.is_empty() {
+        return Err(EngineError::Signal(
+            "default desktop output has no PulseAudio name".into(),
+        ));
+    }
+    Ok(format!("{sink}.monitor"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,14 +282,16 @@ impl GpuScreenRecorder {
         {
             fs::create_dir_all(parent)?;
         }
+        RecordingGainSource::unload_stale_sources();
         let microphone_gain_source = if spec.microphone_audio {
             let master = spec
                 .microphone_device
                 .as_deref()
                 .unwrap_or("@DEFAULT_SOURCE@");
-            Some(MicrophoneGainSource::create(
+            Some(RecordingGainSource::create(
                 master,
                 spec.microphone_gain_percent,
+                "Microphone",
             )?)
         } else {
             None
@@ -272,10 +300,22 @@ impl GpuScreenRecorder {
         if let Some(source) = &microphone_gain_source {
             recorder_spec.microphone_device = Some(source.name.clone());
         }
+        let desktop_gain_source = if spec.desktop_audio && spec.desktop_gain_percent != 100 {
+            Some(RecordingGainSource::create(
+                &default_desktop_monitor()?,
+                spec.desktop_gain_percent,
+                "Desktop",
+            )?)
+        } else {
+            None
+        };
         let mut child = Command::new(executable)
             .args(recorder_arguments(
                 &recorder_spec,
                 portal_session_token_file.as_deref(),
+                desktop_gain_source
+                    .as_ref()
+                    .map(|source| source.name.as_str()),
             ))
             .process_group(0)
             .stdin(Stdio::null())
@@ -301,6 +341,7 @@ impl GpuScreenRecorder {
             child,
             saved_paths,
             microphone_gain_source,
+            desktop_gain_source,
         })
     }
 
@@ -329,6 +370,7 @@ impl GpuScreenRecorder {
         if self.child.try_wait()?.is_some() {
             let _ = send_signal_to_group(self.process_id(), "KILL");
             self.microphone_gain_source.take();
+            self.desktop_gain_source.take();
             return Ok(());
         }
         let _ = send_signal_to_group(self.process_id(), "INT");
@@ -344,6 +386,7 @@ impl GpuScreenRecorder {
             thread::sleep(STOP_POLL_INTERVAL);
         }
         self.microphone_gain_source.take();
+        self.desktop_gain_source.take();
         Ok(())
     }
 }
@@ -461,6 +504,7 @@ mod tests {
             quality: 75,
             cursor: true,
             desktop_audio: true,
+            desktop_gain_percent: 100,
             microphone_audio: false,
             microphone_device: None,
             microphone_gain_percent: 100,
@@ -470,7 +514,7 @@ mod tests {
 
     #[test]
     fn command_uses_direct_monitor_and_replay_mode() {
-        let arguments = recorder_arguments(&spec(), None)
+        let arguments = recorder_arguments(&spec(), None, None)
             .into_iter()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
@@ -495,7 +539,7 @@ mod tests {
         let mut replay = spec();
         replay.microphone_audio = true;
         replay.microphone_device = Some("alsa_input.usb-shure".into());
-        let arguments = recorder_arguments(&replay, None)
+        let arguments = recorder_arguments(&replay, None, None)
             .into_iter()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
@@ -514,11 +558,24 @@ mod tests {
     }
 
     #[test]
+    fn command_uses_an_isolated_desktop_source_when_provided() {
+        let arguments = recorder_arguments(&spec(), None, Some("wreath_recording_Desktop_test"))
+            .into_iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| { pair == ["-a", "wreath_recording_Desktop_test"] })
+        );
+    }
+
+    #[test]
     fn portal_capture_restores_the_users_session_choice() {
         let mut replay = spec();
         replay.monitor = "portal".into();
         let token_file = PathBuf::from("/tmp/wreath-portal-token");
-        let arguments = recorder_arguments(&replay, Some(&token_file))
+        let arguments = recorder_arguments(&replay, Some(&token_file), None)
             .into_iter()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
@@ -551,13 +608,14 @@ mod tests {
     }
 
     #[test]
-    fn identifies_only_stale_wreath_microphone_modules() {
+    fn identifies_only_stale_wreath_recording_modules() {
         let modules = concat!(
             "10\tmodule-remap-source\tmaster=mic source_name=wreath_recording_mic_123 remix=yes\t\n",
+            "13\tmodule-remap-source\tmaster=desktop source_name=wreath_recording_Desktop_123 remix=yes\t\n",
             "11\tmodule-remap-source\tmaster=mic source_name=other_app\t\n",
             "12\tmodule-null-sink\tsink_name=wreath_recording_mic_456\t\n",
         );
-        assert_eq!(stale_wreath_module_ids(modules), ["10"]);
+        assert_eq!(stale_wreath_module_ids(modules), ["10", "13"]);
     }
 
     #[test]

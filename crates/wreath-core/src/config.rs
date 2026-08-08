@@ -54,6 +54,7 @@ pub struct HotkeyConfig {
 #[serde(default)]
 pub struct AudioConfig {
     pub desktop: bool,
+    pub desktop_gain_percent: u16,
     pub microphone: bool,
     pub microphone_device: Option<String>,
     pub microphone_gain_percent: u16,
@@ -198,6 +199,7 @@ impl Default for AudioConfig {
     fn default() -> Self {
         Self {
             desktop: true,
+            desktop_gain_percent: 100,
             microphone: false,
             microphone_device: None,
             microphone_gain_percent: 100,
@@ -279,6 +281,11 @@ impl Config {
                 "microphone recording level must be between 0 and 200 percent".into(),
             ));
         }
+        if self.audio.desktop_gain_percent > 200 {
+            return Err(ConfigError::Invalid(
+                "desktop recording level must be between 0 and 200 percent".into(),
+            ));
+        }
         self.hotkey.validate()?;
         if self.storage.max_megabytes < 128 {
             return Err(ConfigError::Invalid(
@@ -324,11 +331,24 @@ mod tests {
     }
 
     #[test]
+    fn invalid_desktop_recording_level_is_rejected() {
+        let mut config = Config::default();
+        config.audio.desktop_gain_percent = 201;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
     fn config_round_trips() {
         let config = Config::default();
         let encoded = toml::to_string(&config).unwrap();
         let decoded: Config = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded, config);
+    }
+
+    #[test]
+    fn older_audio_config_gets_a_unity_desktop_level() {
+        let config: Config = toml::from_str("[audio]\ndesktop = true\n").unwrap();
+        assert_eq!(config.audio.desktop_gain_percent, 100);
     }
 
     #[test]

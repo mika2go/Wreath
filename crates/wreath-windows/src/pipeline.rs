@@ -279,24 +279,27 @@ impl PipelineAudio {
         let mixer = auxiliary_microphone
             .as_ref()
             .map(|_| {
-                crate::audio_mixer::PcmMixer::new(
+                crate::audio_mixer::PcmMixer::new_with_gains(
                     output_sample_rate,
                     output_channels,
+                    config.desktop_gain_percent,
                     config.microphone_gain_percent,
                 )
             })
             .transpose()?;
         let encoder = crate::audio_encoder::AacEncoder::initialize(settings)?;
         wreath_core::diagnostic!(
-            "Wreath audio pipeline: master {} Hz/{} ch -> encoder {} Hz/{} ch at {} B/s, microphone mixer {}, gain {}%",
+            "Wreath audio pipeline: master {} Hz/{} ch -> encoder {} Hz/{} ch at {} B/s, microphone mixer {}, desktop gain {}%, microphone gain {}%",
             format.sample_rate,
             format.channels,
             output_sample_rate,
             output_channels,
             settings.bytes_per_second,
             if mixer.is_some() { "on" } else { "off" },
+            config.desktop_gain_percent,
             config.microphone_gain_percent
         );
+        let mixed = mixer.is_some();
         Ok(Some(Self {
             master,
             auxiliary_microphone,
@@ -305,9 +308,13 @@ impl PipelineAudio {
             output_sample_rate,
             output_channels,
             master_gain_percent: if config.desktop {
-                100
+                if mixed {
+                    100
+                } else {
+                    config.desktop_gain_percent
+                }
             } else {
-                config.microphone_gain_percent
+                config.microphone_gain_percent.min(100)
             },
             pending_master: std::collections::VecDeque::with_capacity(12),
             microphone_watermark: None,

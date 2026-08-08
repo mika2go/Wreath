@@ -43,6 +43,7 @@ pub struct EditorController {
     timeline: DrawingArea,
     start: Rc<Cell<f64>>,
     end: Rc<Cell<f64>>,
+    playhead: Rc<Cell<f64>>,
     selection: Label,
     feedback: Label,
     save: Button,
@@ -66,6 +67,7 @@ impl EditorController {
         self.save.set_label("Save new clip");
         self.start.set(0.0);
         self.end.set(0.0);
+        self.playhead.set(0.0);
         self.timeline.queue_draw();
         self.video.set_file(Some(&gio::File::for_path(&clip.path)));
         self.stack.set_visible_child_name("editor");
@@ -83,6 +85,29 @@ impl EditorController {
 
     pub fn set_on_complete(&self, callback: impl Fn() + 'static) {
         self.on_complete.replace(Some(Box::new(callback)));
+    }
+
+    pub fn stop(&self) {
+        if let Some(stream) = self.video.media_stream() {
+            stream.pause();
+        }
+        self.video.set_file(None::<&gio::File>);
+        self.source.replace(None);
+        self.timing.replace(None);
+        self.timeline.set_sensitive(false);
+        self.save.set_sensitive(false);
+    }
+
+    pub fn toggle_playback(&self) -> bool {
+        let Some(stream) = self.video.media_stream() else {
+            return false;
+        };
+        if stream.is_playing() {
+            stream.pause();
+        } else {
+            stream.play();
+        }
+        true
     }
 
     fn apply_timing(&self, timing: ClipTiming) {
@@ -146,6 +171,7 @@ impl EditorController {
     }
 
     fn restart_preview(&self) {
+        self.playhead.set(self.start.get());
         if let Some(stream) = self.video.media_stream() {
             stream.seek((self.start.get() * 1_000_000.0).round() as i64);
             stream.play();
@@ -157,6 +183,8 @@ impl EditorController {
             return;
         };
         let position = stream.timestamp() as f64 / 1_000_000.0;
+        self.playhead.set(position);
+        self.timeline.queue_draw();
         if position + 0.02 < self.start.get() || position >= self.end.get() - 0.02 {
             stream.seek((self.start.get() * 1_000_000.0).round() as i64);
             stream.play();
@@ -282,28 +310,33 @@ pub fn build(stack: &Stack) -> EditorView {
     let timeline = GtkBox::new(Orientation::Vertical, 9);
     timeline.add_css_class("editor-timeline");
     timeline.set_margin_top(16);
-    let timeline_header = GtkBox::new(Orientation::Horizontal, 10);
+    let timeline_header = GtkBox::new(Orientation::Vertical, 3);
     let timeline_title = Label::new(Some("KEEP THIS MOMENT"));
     timeline_title.add_css_class("editor-kicker");
     timeline_title.set_hexpand(true);
     timeline_title.set_halign(Align::Start);
     let selection = Label::new(Some("— selected"));
     selection.add_css_class("editor-selection");
+    selection.set_halign(Align::Start);
+    selection.set_wrap(true);
+    selection.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     timeline_header.append(&timeline_title);
     timeline_header.append(&selection);
     timeline.append(&timeline_header);
 
     let start = Rc::new(Cell::new(0.0));
     let end = Rc::new(Cell::new(0.0));
+    let playhead = Rc::new(Cell::new(0.0));
     let timing = Rc::new(RefCell::new(None::<ClipTiming>));
     let trim_bar = DrawingArea::new();
     trim_bar.add_css_class("editor-trim-bar");
-    trim_bar.set_content_height(54);
+    trim_bar.set_content_height(64);
     trim_bar.set_hexpand(true);
     trim_bar.set_sensitive(false);
     {
         let start = start.clone();
         let end = end.clone();
+        let playhead = playhead.clone();
         let timing = timing.clone();
         trim_bar.set_draw_func(move |_area, context, width, height| {
             draw_trim_bar(
@@ -312,6 +345,7 @@ pub fn build(stack: &Stack) -> EditorView {
                 height,
                 start.get(),
                 end.get(),
+                playhead.get(),
                 timing.borrow().as_ref(),
             );
         });
@@ -341,6 +375,7 @@ pub fn build(stack: &Stack) -> EditorView {
         timeline: trim_bar,
         start,
         end,
+        playhead,
         selection,
         feedback,
         save,
@@ -353,7 +388,7 @@ pub fn build(stack: &Stack) -> EditorView {
     let back_stack = stack.clone();
     let back_editor = controller.clone();
     back.connect_clicked(move |_| {
-        back_editor.video.set_file(None::<&gio::File>);
+        back_editor.stop();
         back_stack.set_visible_child_name("library");
     });
 
@@ -404,7 +439,7 @@ pub fn build(stack: &Stack) -> EditorView {
     controller.save.connect_clicked(move |_| save_editor.save());
 
     let update_editor = controller.clone();
-    glib::timeout_add_local(Duration::from_millis(80), move || {
+    glib::timeout_add_local(Duration::from_millis(33), move || {
         while let Ok(update) = receiver.try_recv() {
             update_editor.handle_update(update);
         }
@@ -425,6 +460,7 @@ fn draw_trim_bar(
     height: i32,
     start: f64,
     end: f64,
+    playhead: f64,
     timing: Option<&ClipTiming>,
 ) {
     let left = 12.0;
@@ -449,6 +485,16 @@ fn draw_trim_bar(
         context.rectangle(x, center + 10.0, 1.0, 5.0);
     }
     let _ = context.fill();
+
+    if playhead >= start && playhead <= end {
+        let x = left + playhead / duration * rail_width;
+        context.set_source_rgba(0.125, 0.125, 0.141, 0.9);
+        context.rectangle(x - 4.0, center - 15.0, 8.0, 30.0);
+        let _ = context.fill();
+        context.set_source_rgb(0.957, 0.961, 0.976);
+        context.rectangle(x - 1.5, center - 17.0, 3.0, 34.0);
+        let _ = context.fill();
+    }
 
     context.set_source_rgb(0.957, 0.961, 0.976);
     for x in [start_x, end_x] {

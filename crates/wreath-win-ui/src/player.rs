@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
@@ -50,6 +51,7 @@ pub struct Player {
     loaded: bool,
     load_error: Option<String>,
     ready: bool,
+    should_play: Cell<bool>,
 }
 
 impl Player {
@@ -81,6 +83,7 @@ impl Player {
             loaded: false,
             load_error: None,
             ready: false,
+            should_play: Cell::new(false),
         })
     }
 
@@ -88,6 +91,7 @@ impl Player {
         self.ready = false;
         self.loaded = false;
         self.load_error = None;
+        self.should_play.set(true);
         let path = path
             .as_os_str()
             .encode_wide()
@@ -106,6 +110,7 @@ impl Player {
                 .map_err(|error| format!("Media Foundation cannot load the clip: {error}"))
         })();
         if let Err(error) = result {
+            self.should_play.set(false);
             self.load_error = Some(error.clone());
             return Err(error);
         }
@@ -127,8 +132,10 @@ impl Player {
             if self.media.GetState().map_err(|error| error.to_string())?
                 == MFP_MEDIAPLAYER_STATE_PLAYING
             {
+                self.should_play.set(false);
                 self.media.Pause()
             } else {
+                self.should_play.set(true);
                 self.media.Play()
             }
         }
@@ -143,15 +150,19 @@ impl Player {
                 .unwrap_or_else(|| "No clip is loaded".into()));
         }
         if !self.ready {
+            self.should_play.set(true);
             return Ok(());
         }
+        self.should_play.set(true);
         unsafe { self.media.Play() }.map_err(|error| error.to_string())
     }
 
     pub fn stop(&self) -> Result<(), String> {
         if !self.loaded {
+            self.should_play.set(false);
             return Ok(());
         }
+        self.should_play.set(false);
         unsafe { self.media.Stop() }.map_err(|error| error.to_string())
     }
 
@@ -165,9 +176,14 @@ impl Player {
         }
         if event_type == MFP_EVENT_TYPE_MEDIAITEM_SET.0 {
             self.ready = true;
-            unsafe { self.media.Play() }.map_err(|error| error.to_string())?;
+            if self.should_play.get() {
+                unsafe { self.media.Play() }.map_err(|error| error.to_string())?;
+            }
         } else if event_type == MFP_EVENT_TYPE_PLAYBACK_ENDED.0 {
-            self.seek_fraction(0.0)?;
+            if self.should_play.get() {
+                self.seek_fraction(0.0)?;
+                unsafe { self.media.Play() }.map_err(|error| error.to_string())?;
+            }
         }
         Ok(())
     }
@@ -236,6 +252,7 @@ impl Player {
     pub fn shutdown(&mut self) {
         self.ready = false;
         self.loaded = false;
+        self.should_play.set(false);
         let _ = unsafe { self.media.Shutdown() };
     }
 }

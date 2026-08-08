@@ -19,6 +19,7 @@ use crate::audio::{AudioError, Pcm16Chunk};
 pub struct PcmMixer {
     sample_rate: u32,
     channels: u16,
+    master_gain_percent: u16,
     gain_percent: u16,
     microphone_converter: Option<PcmStreamConverter>,
     auxiliary: VecDeque<i16>,
@@ -41,15 +42,25 @@ impl PcmMixer {
     const MAX_BRIDGE: Duration = Duration::from_millis(200);
 
     pub fn new(sample_rate: u32, channels: u16, gain_percent: u16) -> Result<Self, AudioError> {
+        Self::new_with_gains(sample_rate, channels, 100, gain_percent)
+    }
+
+    pub fn new_with_gains(
+        sample_rate: u32,
+        channels: u16,
+        master_gain_percent: u16,
+        gain_percent: u16,
+    ) -> Result<Self, AudioError> {
         if sample_rate == 0 || channels == 0 {
             return Err(AudioError("mixer format must not be empty".into()));
         }
-        if gain_percent > 200 {
-            return Err(AudioError("microphone gain exceeds 200 percent".into()));
+        if master_gain_percent > 200 || gain_percent > 200 {
+            return Err(AudioError("mixer gain exceeds 200 percent".into()));
         }
         Ok(Self {
             sample_rate,
             channels,
+            master_gain_percent,
             gain_percent,
             microphone_converter: None,
             auxiliary: VecDeque::new(),
@@ -124,8 +135,14 @@ impl PcmMixer {
         // not only from the frames a microphone packet happens to cover. The
         // old code scaled just the overlap, so the desktop level jumped by the
         // mix ratio at the edge of every microphone gap.
-        let denominator = 100_i64.saturating_add(i64::from(self.gain_percent));
-        scale_pcm16(&mut master, 100, denominator);
+        let denominator = i64::from(self.master_gain_percent)
+            .saturating_add(i64::from(self.gain_percent))
+            .max(1);
+        scale_pcm16(
+            &mut master,
+            i64::from(self.master_gain_percent),
+            denominator,
+        );
 
         let Some(front) = self.auxiliary_front_timestamp() else {
             return Ok(master);
@@ -806,12 +823,9 @@ pub fn apply_gain_pcm16(
 ) -> Result<(), AudioError> {
     validate_pcm16(chunk, channels)?;
     if gain_percent > 200 {
-        return Err(AudioError("microphone gain exceeds 200 percent".into()));
+        return Err(AudioError("audio gain exceeds 200 percent".into()));
     }
-    // Never amplify a microphone-only stream above its Windows capture level.
-    // Digital boost raises the endpoint noise floor and then clips voice peaks;
-    // values above 100 remain accepted for old configs but resolve to unity.
-    let effective_gain = i64::from(gain_percent.min(100));
+    let effective_gain = i64::from(gain_percent);
     for sample in chunk.data.chunks_exact_mut(2) {
         let value = i16::from_le_bytes([sample[0], sample[1]]);
         let adjusted = rounded_ratio(i64::from(value), effective_gain, 100);
@@ -1190,12 +1204,12 @@ mod tests {
     }
 
     #[test]
-    fn standalone_microphone_level_never_digitally_boosts_noise() {
+    fn standalone_stream_gain_can_attenuate_or_boost() {
         let mut audio = chunk(0, 1, &[20_000, -20_000]);
         apply_gain_pcm16(&mut audio, 1, 200).unwrap();
-        assert_eq!(samples(&audio), [20_000, -20_000]);
+        assert_eq!(samples(&audio), [32_767, -32_768]);
         apply_gain_pcm16(&mut audio, 1, 50).unwrap();
-        assert_eq!(samples(&audio), [10_000, -10_000]);
+        assert_eq!(samples(&audio), [16_384, -16_384]);
         assert!(apply_gain_pcm16(&mut audio, 1, 201).is_err());
     }
 }

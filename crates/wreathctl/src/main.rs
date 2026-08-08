@@ -354,6 +354,12 @@ fn configure(arguments: &[String]) -> Result<(), String> {
         "quality" => {
             config.capture.quality = parse_number(value, "quality")?;
         }
+        "desktop-gain" => {
+            config.audio.desktop_gain_percent = parse_number(value, "desktop-gain")?;
+        }
+        "microphone-gain" => {
+            config.audio.microphone_gain_percent = parse_number(value, "microphone-gain")?;
+        }
         "codec" => {
             config.capture.codec = match value.as_str() {
                 "auto" => Codec::Auto,
@@ -366,7 +372,7 @@ fn configure(arguments: &[String]) -> Result<(), String> {
         "output" => config.storage.directory = value.into(),
         _ => {
             return Err(format!(
-                "unknown setting `{setting}`; use monitor, hotkey, duration, fps, quality, codec, or output"
+                "unknown setting `{setting}`; use monitor, hotkey, duration, fps, quality, codec, desktop-gain, microphone-gain, or output"
             ));
         }
     }

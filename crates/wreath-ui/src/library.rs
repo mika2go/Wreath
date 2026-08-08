@@ -32,9 +32,19 @@ pub struct ClipViews {
     flow: FlowBox,
     collection_flow: FlowBox,
     empty_steps: GtkBox,
+    player_controller: Rc<PlayerState>,
+    editor_controller: Rc<crate::editor::EditorController>,
 }
 
 impl ClipViews {
+    pub fn toggle_playback(&self, page: &str) -> bool {
+        match page {
+            "player" => self.player_controller.toggle_playback(),
+            "editor" => self.editor_controller.toggle_playback(),
+            _ => false,
+        }
+    }
+
     pub fn set_layout(&self, compact: bool, columns: u32) {
         self.header.remove(&self.heading);
         self.header.remove(&self.search);
@@ -115,6 +125,28 @@ struct PlayerState {
     title: Label,
     meta: Label,
     current: RefCell<Option<Clip>>,
+}
+
+impl PlayerState {
+    fn stop(&self) {
+        if let Some(stream) = self.video.media_stream() {
+            stream.pause();
+        }
+        self.video.set_file(None::<&gio::File>);
+        self.current.replace(None);
+    }
+
+    fn toggle_playback(&self) -> bool {
+        let Some(stream) = self.video.media_stream() else {
+            return false;
+        };
+        if stream.is_playing() {
+            stream.pause();
+        } else {
+            stream.play();
+        }
+        true
+    }
 }
 
 pub fn build(stack: &Stack) -> ClipViews {
@@ -273,6 +305,18 @@ pub fn build(stack: &Stack) -> ClipViews {
         }
     });
 
+    let visibility_player = state.player.clone();
+    let visibility_editor = state.editor.clone();
+    stack.connect_visible_child_name_notify(move |stack| {
+        let page = stack.visible_child_name();
+        if page.as_deref() != Some("player") {
+            visibility_player.stop();
+        }
+        if page.as_deref() != Some("editor") {
+            visibility_editor.stop();
+        }
+    });
+
     let preview_state = state.clone();
     glib::timeout_add_local(Duration::from_millis(80), move || {
         while let Ok(update) = preview_receiver.try_recv() {
@@ -334,6 +378,8 @@ pub fn build(stack: &Stack) -> ClipViews {
         flow: state.flow.clone(),
         collection_flow,
         empty_steps,
+        player_controller: state.player.clone(),
+        editor_controller: state.editor.clone(),
     }
 }
 
@@ -1290,8 +1336,7 @@ fn build_player(
     let back_player = player.clone();
     let back_stack = stack.clone();
     back.connect_clicked(move |_| {
-        back_player.video.set_file(None::<&gio::File>);
-        back_player.current.replace(None);
+        back_player.stop();
         back_stack.set_visible_child_name("library");
     });
 
