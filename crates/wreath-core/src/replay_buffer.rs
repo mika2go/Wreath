@@ -90,8 +90,27 @@ impl EncodedReplayBuffer {
         self.payload_bytes
     }
 
+    /// Span of video the buffer holds, which is what decides how long a saved
+    /// clip is.
+    ///
+    /// This used to take the first and last packet in push order regardless of
+    /// track. Audio reaches the buffer well behind video - the AAC encoder
+    /// buffers, and desktop packets wait for the microphone to catch up - so
+    /// the last packet pushed is usually audio lagging the newest frame, and
+    /// the span came out short. Trimming then kept more than it should, the
+    /// byte budget became the binding constraint instead of the duration, and
+    /// clips ended up shorter than they were configured to be.
     pub fn duration(&self) -> Duration {
-        match (self.packets.front(), self.packets.back()) {
+        let first = self
+            .packets
+            .iter()
+            .find(|packet| packet.track == TrackKind::Video);
+        let last = self
+            .packets
+            .iter()
+            .rev()
+            .find(|packet| packet.track == TrackKind::Video);
+        match (first, last) {
             (Some(first), Some(last)) => last.end_timestamp().saturating_sub(first.timestamp),
             _ => Duration::ZERO,
         }
@@ -112,6 +131,9 @@ impl EncodedReplayBuffer {
         while self.payload_bytes > self.max_payload_bytes {
             trimmed = true;
             if !self.advance_to_next_keyframe() {
+                crate::diagnostic!(
+                    "Wreath replay buffer: no keyframe to trim to; dropping the whole buffer"
+                );
                 self.clear();
             }
         }
@@ -156,7 +178,11 @@ impl EncodedReplayBuffer {
             .skip(1)
             .find_map(|(index, packet)| packet.starts_decodable_video().then_some(index))?;
         let first = self.packets.get(next_keyframe)?;
-        let last = self.packets.back()?;
+        let last = self
+            .packets
+            .iter()
+            .rev()
+            .find(|packet| packet.track == TrackKind::Video)?;
         Some(last.end_timestamp().saturating_sub(first.timestamp))
     }
 
@@ -247,6 +273,22 @@ mod tests {
     /// A saved clip has to be at least as long as it was configured to be. The
     /// trimmer used to drop a whole group of pictures whenever the buffer sat
     /// over the target, which took a 30 second replay down to 24.
+    /// Audio reaches the buffer behind video, so the last packet pushed is
+    /// usually audio lagging the newest frame. Measuring the span across both
+    /// tracks made the buffer look shorter than it was, which under-trimmed it
+    /// and let the byte budget decide the clip length instead.
+    #[test]
+    fn the_span_follows_video_even_when_audio_lags_behind() {
+        let mut buffer = EncodedReplayBuffer::new(Duration::from_secs(30), 1_000_000).unwrap();
+
+        buffer.push(video(0, true, 10));
+        buffer.push(video(5, false, 10));
+        // Audio for the second frame only arrives now, three seconds late.
+        buffer.push(audio(2, 10));
+
+        assert_eq!(buffer.duration(), Duration::from_secs(6));
+    }
+
     #[test]
     fn duration_trimming_never_leaves_less_than_the_target() {
         let mut buffer = EncodedReplayBuffer::new(Duration::from_secs(3), 1_000).unwrap();

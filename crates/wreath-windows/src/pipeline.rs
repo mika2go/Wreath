@@ -43,6 +43,17 @@ impl Default for PipelineStatus {
     }
 }
 
+/// Memory the replay buffer may hold.
+///
+/// This is a safety cap, not the size the buffer aims for. Sized close to the
+/// nominal average it became the binding constraint instead of the duration:
+/// content denser than the estimate pushed the buffer over the cap, and
+/// trimming drops a whole group of pictures - which, because Windows Graphics
+/// Capture only delivers a frame when the picture changes, can be many seconds
+/// of wall clock. That is what cut a 30 second replay short. The cap now sits
+/// well above the estimate, so only the configured duration decides the length
+/// and memory is still bounded. The rejection threshold stays on the nominal
+/// estimate so headroom never makes a workable configuration unusable.
 pub fn replay_memory_budget(estimated_bytes: u64) -> Result<usize, crate::video::VideoError> {
     if estimated_bytes > MAX_REPLAY_MEMORY_BYTES {
         return Err(crate::video::VideoError::Initialization(format!(
@@ -51,7 +62,9 @@ pub fn replay_memory_budget(estimated_bytes: u64) -> Result<usize, crate::video:
             MAX_REPLAY_MEMORY_BYTES / 1_048_576
         )));
     }
-    usize::try_from(estimated_bytes.max(MIN_REPLAY_MEMORY_BYTES)).map_err(|_| {
+    let generous = estimated_bytes.saturating_mul(5) / 2;
+    let budget = generous.clamp(MIN_REPLAY_MEMORY_BYTES, MAX_REPLAY_MEMORY_BYTES);
+    usize::try_from(budget).map_err(|_| {
         crate::video::VideoError::Initialization(
             "configured replay memory does not fit this Windows process".into(),
         )
@@ -971,20 +984,14 @@ fn target_bitrate_kbps(config: &wreath_core::config::Config, width: u32, height:
     wreath_core::replay::ReplaySpec::from_config(config, &monitor).target_bitrate_kbps()
 }
 
-/// Memory the replay buffer may hold.
-///
-/// Sized at the nominal bitrate this was exactly the average the encoder aims
-/// at, so every keyframe and every busy scene pushed the buffer over its byte
-/// budget and the trimmer dropped whole groups of pictures - which shortened
-/// the saved clip below the duration the user configured. The budget carries
-/// half again as much so that only the duration decides how long a clip is.
+/// Bytes the configured replay is expected to encode to. Headroom is added by
+/// `replay_memory_budget`, so the rejection threshold stays on real need.
 #[cfg(any(target_os = "windows", test))]
 fn estimated_buffer_bytes(bitrate_kbps: u32, duration_seconds: u16) -> u64 {
-    let nominal = u64::from(bitrate_kbps)
+    u64::from(bitrate_kbps)
         .saturating_mul(1_000)
         .saturating_mul(u64::from(duration_seconds))
-        / 8;
-    nominal.saturating_add(nominal / 2)
+        / 8
 }
 
 #[cfg(test)]
@@ -1020,13 +1027,16 @@ mod tests {
         assert!(bytes < 100 * 1_048_576);
     }
 
-    /// The byte budget has to leave room above the nominal average, or the
-    /// trimmer shortens clips below their configured duration.
+    /// The byte budget has to sit well above the nominal average, or it becomes
+    /// the binding constraint and shortens clips below their duration.
     #[test]
-    fn the_buffer_budget_leaves_room_above_the_nominal_average() {
-        let nominal = u64::from(20_000_u32) * 1_000 * 30 / 8;
+    fn the_memory_budget_leaves_room_above_the_nominal_average() {
+        let nominal = estimated_buffer_bytes(20_000, 30);
 
-        assert!(estimated_buffer_bytes(20_000, 30) > nominal);
+        let budget = replay_memory_budget(nominal).unwrap() as u64;
+
+        assert!(budget > nominal.saturating_add(nominal / 2));
+        assert!(budget <= MAX_REPLAY_MEMORY_BYTES);
     }
 
     #[test]
