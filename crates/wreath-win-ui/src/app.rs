@@ -15,9 +15,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, S
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreatePopupMenu,
     CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, FindWindowW, GWLP_USERDATA,
-    GetClientRect, GetCursorPos, GetMessageW, GetWindowLongPtrW, HMENU, IDC_ARROW, KillTimer,
-    LoadCursorW, MF_CHECKED, MF_SEPARATOR, MF_STRING, MINMAXINFO, MSG, PostQuitMessage,
-    RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
+    GetClientRect, GetCursorPos, GetMessageW, GetWindowLongPtrW, HMENU, IDC_ARROW, LoadCursorW,
+    MF_CHECKED, MF_SEPARATOR, MF_STRING, MINMAXINFO, MSG, PostQuitMessage, RegisterClassW,
+    SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
     SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TPM_RETURNCMD,
     TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_CHAR, WM_COMMAND,
     WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
@@ -28,7 +28,7 @@ use windows::core::{PCWSTR, w};
 use wreath_core::config::Codec;
 use wreath_core::ipc::{Request, Response};
 
-use crate::model::{Action, DeleteTarget, DisplayOption, UiModel};
+use crate::model::{Action, DeleteTarget, DisplayOption, PromptKind, UiModel};
 use crate::player::{PLAYER_EVENT, Player};
 use crate::renderer::{
     Renderer, editor_player_bounds, editor_timeline_fraction, editor_timeline_rail, player_bounds,
@@ -380,8 +380,25 @@ unsafe extern "system" fn window_proc(
         }
         WM_CHAR => {
             if let Some(state) = state_mut(window) {
-                handle_character(state, wparam.0 as u32);
-                redraw(window);
+                if state.model.prompt.is_some() {
+                    match wparam.0 as u32 {
+                        13 => handle_action(window, state, Action::ConfirmPrompt),
+                        27 => handle_action(window, state, Action::CancelPrompt),
+                        8 => {
+                            state.model.prompt_backspace();
+                            redraw(window);
+                        }
+                        character => {
+                            if let Some(character) = char::from_u32(character) {
+                                state.model.prompt_push(character);
+                            }
+                            redraw(window);
+                        }
+                    }
+                } else {
+                    handle_character(state, wparam.0 as u32);
+                    redraw(window);
+                }
             }
             LRESULT(0)
         }
@@ -401,6 +418,7 @@ unsafe extern "system" fn window_proc(
         WM_KEYDOWN => {
             if wparam.0 == 0x20 {
                 if let Some(state) = state_mut(window)
+                    && state.model.prompt.is_none()
                     && matches!(
                         state.model.page,
                         crate::model::Page::Player | crate::model::Page::Editor
@@ -417,6 +435,7 @@ unsafe extern "system" fn window_proc(
                     state.model.hotkey_capture = false;
                     state.model.notice = None;
                     state.model.pending_delete = None;
+                    state.model.prompt = None;
                 }
                 redraw(window);
             }
@@ -557,7 +576,9 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         Action::SaveSettings => {
             save_settings(&mut state.model, "Settings saved and capture reloaded")
         }
-        Action::CreateCollection => create_collection(window, &mut state.model),
+        Action::CreateCollection => state.model.begin_new_collection(),
+        Action::CancelPrompt => state.model.prompt = None,
+        Action::ConfirmPrompt => confirm_prompt(state),
         Action::DeleteActiveCollection => {
             if let Some(collection) = state.model.active_collection.clone() {
                 state.model.pending_delete = Some(DeleteTarget::Collection(collection));
@@ -600,7 +621,7 @@ fn begin_editor(state: &mut AppState) {
     }
     update_player_window(state);
     let updates = state.trim_sender.clone();
-    let _ = std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("wreath-editor-timing".into())
         .spawn(move || {
             use wreath_core::trim::TrimBackend;
@@ -610,6 +631,10 @@ fn begin_editor(state: &mut AppState) {
                 .map_err(|error| error.to_string());
             let _ = updates.send(TrimUpdate::Timing { source, result });
         });
+    if spawned.is_err() {
+        state.model.editor_loading = false;
+        state.model.notice = Some("Cannot start the editor worker".into());
+    }
 }
 
 fn save_cut(state: &mut AppState) {
@@ -631,7 +656,7 @@ fn save_cut(state: &mut AppState) {
     let updates = state.trim_sender.clone();
     state.model.editor_working = true;
     state.model.notice = Some("Cutting on a background worker…".into());
-    let _ = std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("wreath-editor-cut".into())
         .spawn(move || {
             let result = wreath_windows::trim::MediaFoundationTrimmer::new()
@@ -639,6 +664,10 @@ fn save_cut(state: &mut AppState) {
                 .map_err(|error| error.to_string());
             let _ = updates.send(TrimUpdate::Finished { source, result });
         });
+    if spawned.is_err() {
+        state.model.editor_working = false;
+        state.model.notice = Some("Cannot start the cutting worker".into());
+    }
 }
 
 fn poll_trim_updates(state: &mut AppState) -> bool {
@@ -749,38 +778,43 @@ fn key_pressed(virtual_key: i32) -> bool {
     (unsafe { GetKeyState(virtual_key) }) < 0
 }
 
-fn prompt_text(
-    window: HWND,
-    title: &str,
-    label: &str,
-    initial: &str,
-    confirm: &str,
-) -> Result<Option<String>, String> {
-    let _ = unsafe { KillTimer(Some(window), PLAYER_TIMER) };
-    let result = crate::input_dialog::prompt(window, title, label, initial, confirm);
-    let _ = unsafe { SetTimer(Some(window), PLAYER_TIMER, 33, None) };
-    result
-}
-
-fn create_collection(window: HWND, model: &mut UiModel) {
-    let name = match prompt_text(window, "New collection", "Collection name", "", "Create") {
-        Ok(Some(name)) => name,
-        Ok(None) => return,
-        Err(error) => {
-            model.notice = Some(error);
-            return;
-        }
+fn confirm_prompt(state: &mut AppState) {
+    let Some(prompt) = state.model.prompt.take() else {
+        return;
     };
-    match wreath_core::clips::create_collection(&model.config.storage.directory, &name) {
-        Ok(path) => {
-            if let Err(error) = model.refresh() {
-                model.notice = Some(error);
-            } else {
-                model.active_collection = Some(path);
-                model.notice = Some("Collection created".into());
+    let name = prompt.value.trim().to_owned();
+    let outcome = match prompt.kind {
+        PromptKind::NewCollection => {
+            let directory = state.model.config.storage.directory.clone();
+            match wreath_core::clips::create_collection(&directory, &name) {
+                Ok(path) => {
+                    state.model.active_collection = Some(path);
+                    Ok("Collection created")
+                }
+                Err(error) => Err(format!("Cannot create collection: {error}")),
             }
         }
-        Err(error) => model.notice = Some(format!("Cannot create collection: {error}")),
+        PromptKind::RenameClip(index) => {
+            let Some(clip) = state.model.clips.get(index).cloned() else {
+                state.model.notice = Some("Clip is no longer available".into());
+                return;
+            };
+            let thumbnails = state.model.paths.thumbnail_dir.clone();
+            match wreath_core::clips::rename(&clip, &name, &thumbnails) {
+                Ok(_) => Ok("Clip renamed"),
+                Err(error) => Err(format!("Cannot rename clip: {error}")),
+            }
+        }
+    };
+    match outcome {
+        Ok(message) => {
+            let refreshed = state.model.refresh();
+            if refreshed.is_ok() {
+                state.renderer.retry_unavailable_thumbnails();
+            }
+            set_result(&mut state.model, refreshed, message);
+        }
+        Err(error) => state.model.notice = Some(error),
     }
 }
 
@@ -869,20 +903,13 @@ fn handle_clip_command(window: HWND, state: &mut AppState, command: usize) {
         redraw(window);
         return;
     }
+    if command == COMMAND_CLIP_RENAME {
+        state.model.begin_rename(index);
+        state.context_clip = None;
+        redraw(window);
+        return;
+    }
     let result = match command {
-        COMMAND_CLIP_RENAME => {
-            let name = match prompt_text(window, "Rename clip", "Clip name", &clip.title, "Rename")
-            {
-                Ok(Some(name)) => name,
-                Ok(None) => return,
-                Err(error) => {
-                    state.model.notice = Some(error);
-                    return;
-                }
-            };
-            wreath_core::clips::rename(&clip, &name, &state.model.paths.thumbnail_dir)
-                .map(|_| "Clip renamed")
-        }
         COMMAND_CLIP_MOVE_LIBRARY => wreath_core::clips::move_to_library(
             &clip,
             &state.model.config.storage.directory,

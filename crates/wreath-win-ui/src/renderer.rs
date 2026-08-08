@@ -305,6 +305,9 @@ impl Renderer {
         if model.pending_delete.is_some() {
             self.render_delete_modal(model, width as f32, height as f32)?;
         }
+        if model.prompt.is_some() {
+            self.render_prompt_modal(model, width as f32, height as f32)?;
+        }
         if let Some(notice) = &model.notice {
             let rail = sidebar_width(width as f32, model.sidebar_expanded);
             let notice_area = rect(
@@ -1454,6 +1457,88 @@ impl Renderer {
             confirmation,
             CANVAS,
             Some(Action::ConfirmDelete),
+        )
+    }
+
+    fn render_prompt_modal(
+        &mut self,
+        model: &UiModel,
+        width: f32,
+        height: f32,
+    ) -> Result<(), String> {
+        let Some(prompt) = &model.prompt else {
+            return Ok(());
+        };
+        let overlay = rect(0.0, 0.0, width, height);
+        self.fill_alpha(overlay, CANVAS, 0.82, 0.0)?;
+        self.hits.push(HitRegion {
+            rect: overlay,
+            action: Action::CancelPrompt,
+        });
+        let modal_width = 460.0_f32.min(width - 40.0);
+        let modal_height = 232.0;
+        let left = (width - modal_width) / 2.0;
+        let top = (height - modal_height) / 2.0;
+        let modal = rect(left, top, left + modal_width, top + modal_height);
+        self.fill(modal, SURFACE, 14.0)?;
+        self.hits.push(HitRegion {
+            rect: modal,
+            action: Action::DismissNotice,
+        });
+        self.text(
+            prompt.title(),
+            rect(left + 28.0, top + 24.0, modal.right - 28.0, top + 58.0),
+            &self.section.clone(),
+            PRIMARY,
+        )?;
+        self.text(
+            prompt.label(),
+            rect(left + 28.0, top + 64.0, modal.right - 28.0, top + 84.0),
+            &self.small.clone(),
+            SECONDARY,
+        )?;
+        let field = rect(left + 28.0, top + 90.0, modal.right - 28.0, top + 134.0);
+        self.fill(field, STAGE, 10.0)?;
+        self.text(
+            &format!("{}|", prompt.value),
+            rect(
+                field.left + 14.0,
+                field.top + 11.0,
+                field.right - 14.0,
+                field.bottom - 9.0,
+            ),
+            &self.body.clone(),
+            PRIMARY,
+        )?;
+        self.text(
+            "Enter confirms · Esc cancels",
+            rect(left + 28.0, top + 142.0, modal.right - 28.0, top + 162.0),
+            &self.small.clone(),
+            SECONDARY,
+        )?;
+        self.pill(
+            rect(
+                modal.right - 292.0,
+                modal.bottom - 62.0,
+                modal.right - 178.0,
+                modal.bottom - 22.0,
+            ),
+            SURFACE_HOVER,
+            "Cancel",
+            PRIMARY,
+            Some(Action::CancelPrompt),
+        )?;
+        self.pill(
+            rect(
+                modal.right - 170.0,
+                modal.bottom - 62.0,
+                modal.right - 22.0,
+                modal.bottom - 22.0,
+            ),
+            PRIMARY,
+            prompt.confirm(),
+            CANVAS,
+            Some(Action::ConfirmPrompt),
         )
     }
 

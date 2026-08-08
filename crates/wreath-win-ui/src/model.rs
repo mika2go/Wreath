@@ -28,6 +28,8 @@ pub enum SettingsSection {
 pub enum Action {
     Navigate(Page),
     SettingsSection(SettingsSection),
+    CancelPrompt,
+    ConfirmPrompt,
     OpenClip(usize),
     Back,
     Refresh,
@@ -72,6 +74,41 @@ pub enum DeleteTarget {
     Collection(PathBuf),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptKind {
+    RenameClip(usize),
+    NewCollection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prompt {
+    pub kind: PromptKind,
+    pub value: String,
+}
+
+impl Prompt {
+    pub fn title(&self) -> &'static str {
+        match self.kind {
+            PromptKind::RenameClip(_) => "Rename clip",
+            PromptKind::NewCollection => "New collection",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self.kind {
+            PromptKind::RenameClip(_) => "Clip name",
+            PromptKind::NewCollection => "Collection name",
+        }
+    }
+
+    pub fn confirm(&self) -> &'static str {
+        match self.kind {
+            PromptKind::RenameClip(_) => "Rename",
+            PromptKind::NewCollection => "Create",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DisplayOption {
     pub name: String,
@@ -103,6 +140,7 @@ pub struct UiModel {
     pub player_duration_seconds: f64,
     pub player_aspect_ratio: f32,
     pub pending_delete: Option<DeleteTarget>,
+    pub prompt: Option<Prompt>,
     pub sidebar_expanded: bool,
     pub editor_timing: Option<wreath_core::trim::ClipTiming>,
     pub editor_source: Option<PathBuf>,
@@ -138,6 +176,7 @@ impl UiModel {
             player_duration_seconds: 0.0,
             player_aspect_ratio: 16.0 / 9.0,
             pending_delete: None,
+            prompt: None,
             sidebar_expanded: true,
             editor_timing: None,
             editor_source: None,
@@ -177,6 +216,39 @@ impl UiModel {
             self.previous_page = self.page;
             self.active_clip = Some(index);
             self.page = Page::Player;
+        }
+    }
+
+    pub fn begin_rename(&mut self, index: usize) -> bool {
+        let Some(clip) = self.clips.get(index) else {
+            return false;
+        };
+        self.prompt = Some(Prompt {
+            kind: PromptKind::RenameClip(index),
+            value: clip.title.clone(),
+        });
+        true
+    }
+
+    pub fn begin_new_collection(&mut self) {
+        self.prompt = Some(Prompt {
+            kind: PromptKind::NewCollection,
+            value: String::new(),
+        });
+    }
+
+    pub fn prompt_push(&mut self, character: char) {
+        if let Some(prompt) = &mut self.prompt
+            && !character.is_control()
+            && prompt.value.chars().count() < 80
+        {
+            prompt.value.push(character);
+        }
+    }
+
+    pub fn prompt_backspace(&mut self) {
+        if let Some(prompt) = &mut self.prompt {
+            prompt.value.pop();
         }
     }
 
@@ -392,6 +464,7 @@ mod tests {
             player_duration_seconds: 0.0,
             player_aspect_ratio: 16.0 / 9.0,
             pending_delete: None,
+            prompt: None,
             sidebar_expanded: true,
             editor_timing: None,
             editor_source: None,
