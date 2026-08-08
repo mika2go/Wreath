@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
@@ -14,9 +15,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, S
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreatePopupMenu,
     CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, FindWindowW, GWLP_USERDATA,
-    GetClientRect, GetCursorPos, GetMessageW, GetWindowLongPtrW, HMENU, IDC_ARROW, LoadCursorW,
-    MF_CHECKED, MF_SEPARATOR, MF_STRING, MINMAXINFO, MSG, PostQuitMessage, RegisterClassW,
-    SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
+    GetClientRect, GetCursorPos, GetMessageW, GetWindowLongPtrW, HMENU, IDC_ARROW, KillTimer,
+    LoadCursorW, MF_CHECKED, MF_SEPARATOR, MF_STRING, MINMAXINFO, MSG, PostQuitMessage,
+    RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
     SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TPM_RETURNCMD,
     TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_CHAR, WM_COMMAND,
     WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
@@ -40,6 +41,9 @@ const COMMAND_CLIP_MOVE_LIBRARY: usize = 502;
 const COMMAND_CLIP_EDIT: usize = 503;
 const COMMAND_CLIP_MOVE_COLLECTION_BASE: usize = 600;
 const PLAYER_TIMER: usize = 2;
+const PREVIEW_SEEK_INTERVAL: Duration = Duration::from_millis(120);
+const PREVIEW_SEEK_SETTLE: Duration = Duration::from_millis(400);
+const PREVIEW_SLACK_SECONDS: f64 = 0.05;
 
 struct AppState {
     model: UiModel,
@@ -53,6 +57,7 @@ struct AppState {
     trim_updates: mpsc::Receiver<TrimUpdate>,
     trim_sender: mpsc::Sender<TrimUpdate>,
     editor_drag: Option<EditorDrag>,
+    preview_seek: Option<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -126,6 +131,7 @@ fn run_initialized() -> Result<(), String> {
         trim_updates,
         trim_sender,
         editor_drag: None,
+        preview_seek: None,
     });
     let state = Box::into_raw(state);
     let window = unsafe {
@@ -321,7 +327,7 @@ unsafe extern "system" fn window_proc(
                 };
                 if state.editor_drag.is_some() {
                     unsafe { SetCapture(window) };
-                    update_editor_drag(state, x);
+                    update_editor_drag(state, x, true);
                     redraw(window);
                 }
             }
@@ -333,7 +339,7 @@ unsafe extern "system" fn window_proc(
             {
                 let scale = state.dpi as f32 / 96.0;
                 let x = signed_low_word(lparam.0) as f32 / scale;
-                update_editor_drag(state, x);
+                update_editor_drag(state, x, false);
                 redraw(window);
             }
             LRESULT(0)
@@ -344,7 +350,7 @@ unsafe extern "system" fn window_proc(
                 let x = signed_low_word(lparam.0) as f32 / scale;
                 let y = signed_high_word(lparam.0) as f32 / scale;
                 if state.editor_drag.is_some() {
-                    update_editor_drag(state, x);
+                    update_editor_drag(state, x, true);
                     state.editor_drag = None;
                     let _ = unsafe { ReleaseCapture() };
                     redraw(window);
@@ -743,8 +749,21 @@ fn key_pressed(virtual_key: i32) -> bool {
     (unsafe { GetKeyState(virtual_key) }) < 0
 }
 
+fn prompt_text(
+    window: HWND,
+    title: &str,
+    label: &str,
+    initial: &str,
+    confirm: &str,
+) -> Result<Option<String>, String> {
+    let _ = unsafe { KillTimer(Some(window), PLAYER_TIMER) };
+    let result = crate::input_dialog::prompt(window, title, label, initial, confirm);
+    let _ = unsafe { SetTimer(Some(window), PLAYER_TIMER, 33, None) };
+    result
+}
+
 fn create_collection(window: HWND, model: &mut UiModel) {
-    let name = match crate::input_dialog::prompt(window, "New collection", "Collection name", "") {
+    let name = match prompt_text(window, "New collection", "Collection name", "", "Create") {
         Ok(Some(name)) => name,
         Ok(None) => return,
         Err(error) => {
@@ -852,12 +871,8 @@ fn handle_clip_command(window: HWND, state: &mut AppState, command: usize) {
     }
     let result = match command {
         COMMAND_CLIP_RENAME => {
-            let name = match crate::input_dialog::prompt(
-                window,
-                "Rename clip",
-                "Clip name",
-                &clip.title,
-            ) {
+            let name = match prompt_text(window, "Rename clip", "Clip name", &clip.title, "Rename")
+            {
                 Ok(Some(name)) => name,
                 Ok(None) => return,
                 Err(error) => {
@@ -921,7 +936,7 @@ fn stop_player(state: &mut AppState) {
     sync_player_state(state);
 }
 
-fn update_editor_drag(state: &mut AppState, x: f32) {
+fn update_editor_drag(state: &mut AppState, x: f32, settle: bool) {
     let Some(handle) = state.editor_drag else {
         return;
     };
@@ -939,29 +954,60 @@ fn update_editor_drag(state: &mut AppState, x: f32) {
         EditorDrag::Start => state.model.set_editor_start(thousandths),
         EditorDrag::End => state.model.set_editor_end(thousandths),
     }
-    if let Some(player) = &state.player
-        && let Some(timing) = &state.model.editor_timing
-    {
-        let fraction = state.model.editor_start.as_secs_f64()
-            / timing.duration.as_secs_f64().max(f64::EPSILON);
-        let _ = player.seek_fraction(fraction);
-        let _ = player.play();
+    let position = match handle {
+        EditorDrag::Start => state.model.editor_start,
+        EditorDrag::End => state.model.editor_end,
+    };
+    seek_editor_preview(state, position, settle);
+}
+
+fn seek_editor_preview(state: &mut AppState, position: Duration, settle: bool) {
+    if !state.model.player_ready {
+        return;
     }
+    if !settle
+        && state
+            .preview_seek
+            .is_some_and(|issued| issued.elapsed() < PREVIEW_SEEK_INTERVAL)
+    {
+        return;
+    }
+    let duration = state.model.player_duration_seconds;
+    if duration <= f64::EPSILON {
+        return;
+    }
+    let Some(player) = &state.player else {
+        return;
+    };
+    let _ = player.seek_fraction(position.as_secs_f64() / duration);
+    state.preview_seek = Some(Instant::now());
 }
 
 fn keep_editor_preview_inside_selection(state: &mut AppState) {
-    if state.model.page != crate::model::Page::Editor || state.model.editor_timing.is_none() {
+    if state.model.page != crate::model::Page::Editor
+        || state.model.editor_timing.is_none()
+        || state.editor_drag.is_some()
+        || !state.model.player_ready
+    {
         return;
     }
     let position = state.model.player_position_seconds;
     let start = state.model.editor_start.as_secs_f64();
     let end = state.model.editor_end.as_secs_f64();
-    if position + 0.02 < start || position >= end - 0.02 {
-        if let Some(player) = &state.player {
-            let duration = state.model.player_duration_seconds.max(f64::EPSILON);
-            let _ = player.seek_fraction(start / duration);
-            let _ = player.play();
-        }
+    if position + PREVIEW_SLACK_SECONDS >= start && position < end {
+        state.preview_seek = None;
+        return;
+    }
+    if state
+        .preview_seek
+        .is_some_and(|issued| issued.elapsed() < PREVIEW_SEEK_SETTLE)
+    {
+        return;
+    }
+    let resume = state.model.player_playing;
+    seek_editor_preview(state, state.model.editor_start, true);
+    if resume && let Some(player) = &state.player {
+        let _ = player.play();
     }
 }
 
