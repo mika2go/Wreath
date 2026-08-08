@@ -179,11 +179,9 @@ impl Player {
             if self.should_play.get() {
                 unsafe { self.media.Play() }.map_err(|error| error.to_string())?;
             }
-        } else if event_type == MFP_EVENT_TYPE_PLAYBACK_ENDED.0 {
-            if self.should_play.get() {
-                self.seek_fraction(0.0)?;
-                unsafe { self.media.Play() }.map_err(|error| error.to_string())?;
-            }
+        } else if event_type == MFP_EVENT_TYPE_PLAYBACK_ENDED.0 && self.should_play.get() {
+            self.seek_fraction(0.0)?;
+            unsafe { self.media.Play() }.map_err(|error| error.to_string())?;
         }
         Ok(())
     }
