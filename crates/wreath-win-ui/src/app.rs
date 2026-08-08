@@ -414,10 +414,7 @@ unsafe extern "system" fn window_proc(
         }
         WM_KEYDOWN if state_mut(window).is_some_and(|state| state.model.prompt.is_some()) => {
             let extend = key_pressed(0x10);
-            let handled = match wparam.0 as u32 {
-                0x25 | 0x27 | 0x24 | 0x23 | 0x2e => true,
-                _ => false,
-            };
+            let handled = matches!(wparam.0 as u32, 0x25 | 0x27 | 0x24 | 0x23 | 0x2e);
             if handled
                 && let Some(state) = state_mut(window)
                 && let Some(prompt) = &mut state.model.prompt
