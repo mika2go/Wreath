@@ -303,13 +303,19 @@ unsafe extern "system" fn window_proc(
                 state.width = client.right.max(0) as u32;
                 state.height = client.bottom.max(0) as u32;
                 let scale = state.dpi as f32 / 96.0;
-                if let Err(error) = state.renderer.paint(
+                let painted = state.renderer.paint(
                     window,
                     &state.model,
                     ((state.width as f32 / scale).round() as u32).max(1),
                     ((state.height as f32 / scale).round() as u32).max(1),
-                ) {
+                );
+                if let Err(error) = painted
+                    && state.renderer.is_failing()
+                {
                     state.model.notice = Some(format!("Rendering failed: {error}"));
+                }
+                if state.renderer.wants_recovery_repaint() {
+                    redraw(window);
                 }
             }
             let _ = unsafe { EndPaint(window, &paint) };
@@ -955,11 +961,10 @@ fn open_current_clip(state: &mut AppState) {
 }
 
 fn stop_player(state: &mut AppState) {
-    if let Some(player) = &state.player
-        && let Err(error) = player.stop()
-    {
-        state.model.notice = Some(format!("Cannot stop clip playback: {error}"));
+    if let Some(player) = &mut state.player {
+        player.close();
     }
+    state.preview_seek = None;
     sync_player_state(state);
 }
 
@@ -1046,8 +1051,8 @@ fn update_player_window(state: &mut AppState) {
         state.model.page,
         crate::model::Page::Player | crate::model::Page::Editor
     ) {
-        if let Some(player) = &state.player {
-            let _ = player.stop();
+        if let Some(player) = &mut state.player {
+            player.close();
         }
         unsafe {
             let _ = ShowWindow(window, SW_HIDE);

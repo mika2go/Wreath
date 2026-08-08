@@ -166,6 +166,18 @@ impl Player {
         unsafe { self.media.Stop() }.map_err(|error| error.to_string())
     }
 
+    pub fn close(&mut self) {
+        self.should_play.set(false);
+        if !self.loaded {
+            return;
+        }
+        let _ = unsafe { self.media.Stop() };
+        let _ = unsafe { self.media.ClearMediaItem() };
+        self.loaded = false;
+        self.ready = false;
+        self.load_error = None;
+    }
+
     pub fn handle_event(&mut self, event_type: i32, result: i32) -> Result<(), String> {
         if result < 0 {
             self.ready = false;

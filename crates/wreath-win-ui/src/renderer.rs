@@ -191,6 +191,7 @@ pub struct Renderer {
     /// Least recently drawn first, so the cache can be bounded.
     thumbnail_order: VecDeque<PathBuf>,
     unavailable_thumbnails: HashSet<PathBuf>,
+    consecutive_failures: u32,
 }
 
 impl Renderer {
@@ -232,6 +233,7 @@ impl Renderer {
             thumbnails: HashMap::new(),
             thumbnail_order: VecDeque::new(),
             unavailable_thumbnails: HashSet::new(),
+            consecutive_failures: 0,
         })
     }
 
@@ -301,6 +303,33 @@ impl Renderer {
             target.BeginDraw();
             target.Clear(Some(&color(CANVAS)));
         }
+        let drawn = self.render_frame(model, width, height);
+        let ended = unsafe { target.EndDraw(None, None) }.map_err(|error| error.to_string());
+        let outcome = drawn.and(ended);
+        if outcome.is_err() {
+            self.discard_target();
+            self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        } else {
+            self.consecutive_failures = 0;
+        }
+        outcome
+    }
+
+    pub fn wants_recovery_repaint(&self) -> bool {
+        self.consecutive_failures == 1
+    }
+
+    pub fn is_failing(&self) -> bool {
+        self.consecutive_failures > 1
+    }
+
+    fn discard_target(&mut self) {
+        self.target = None;
+        self.release_cached_images();
+        self.unavailable_thumbnails.clear();
+    }
+
+    fn render_frame(&mut self, model: &UiModel, width: u32, height: u32) -> Result<(), String> {
         self.render_shell(model, width as f32, height as f32)?;
         if model.pending_delete.is_some() {
             self.render_delete_modal(model, width as f32, height as f32)?;
@@ -349,12 +378,7 @@ impl Renderer {
                 action: Action::DismissNotice,
             });
         }
-        unsafe { target.EndDraw(None, None) }.map_err(|error| {
-            self.target = None;
-            self.thumbnails.clear();
-            self.thumbnail_order.clear();
-            error.to_string()
-        })
+        Ok(())
     }
 
     fn ensure_target(&mut self, window: HWND, width: u32, height: u32) -> Result<(), String> {
