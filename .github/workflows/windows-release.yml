@@ -68,4 +68,4 @@ jobs:
             --repo $env:GITHUB_REPOSITORY `
             --target $env:GITHUB_SHA `
             --title "Wreath $env:RELEASE_VERSION" `
-            --notes "Windows x64 NSIS maintenance release. Native Windows tests, clippy, release builds, application launch/resize, running-upgrade, NSIS install, and process-cleanup uninstall gates pass."\n
+            --notes "Windows x64 NSIS maintenance release. Native Windows tests, clippy, release builds, application launch/resize, running-upgrade, NSIS install, and process-cleanup uninstall gates pass."
