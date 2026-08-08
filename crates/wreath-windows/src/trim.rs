@@ -76,11 +76,25 @@ struct Runtime {
 }
 
 #[cfg(target_os = "windows")]
+static MEDIA_FOUNDATION: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "windows")]
+fn start_media_foundation() -> Result<(), TrimError> {
+    MEDIA_FOUNDATION
+        .get_or_init(|| {
+            use windows::Win32::Media::MediaFoundation::{MF_VERSION, MFSTARTUP_FULL, MFStartup};
+
+            unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) }.map_err(|error| error.to_string())
+        })
+        .clone()
+        .map_err(TrimError::Backend)
+}
+
+#[cfg(target_os = "windows")]
 impl Runtime {
     fn start() -> Result<Self, TrimError> {
         use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
-        use windows::Win32::Media::MediaFoundation::{MF_VERSION, MFSTARTUP_FULL, MFStartup};
-        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 
         let result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         if result.is_err() && result != RPC_E_CHANGED_MODE {
@@ -89,7 +103,12 @@ impl Runtime {
             )));
         }
         let owns_com = result.is_ok();
-        unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) }.map_err(backend_error)?;
+        if let Err(error) = start_media_foundation() {
+            if owns_com {
+                unsafe { CoUninitialize() };
+            }
+            return Err(error);
+        }
         Ok(Self { owns_com })
     }
 }
@@ -97,7 +116,6 @@ impl Runtime {
 #[cfg(target_os = "windows")]
 impl Drop for Runtime {
     fn drop(&mut self) {
-        let _ = unsafe { windows::Win32::Media::MediaFoundation::MFShutdown() };
         if self.owns_com {
             unsafe { windows::Win32::System::Com::CoUninitialize() };
         }
