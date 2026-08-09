@@ -124,7 +124,7 @@ Section "Uninstall"
   Delete "$INSTDIR\wreath-tray.exe"
   Delete "$INSTDIR\wreathd.exe"
   Delete "$INSTDIR\wreathctl.exe"
-  Sleep 1000
+  Sleep 5000
   Delete /REBOOTOK "$INSTDIR\wreath-win-ui.exe"
   Delete /REBOOTOK "$INSTDIR\wreath-tray.exe"
   Delete /REBOOTOK "$INSTDIR\wreathd.exe"
