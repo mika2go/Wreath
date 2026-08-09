@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -43,6 +44,11 @@ pub enum Action {
     EditClip(usize),
     RenameClip(usize),
     MoveClipToCollection { clip: usize, collection: usize },
+    ToggleSelectionMode,
+    ToggleClipSelection(usize),
+    SelectAllVisibleClips,
+    ToggleCollectionPicker,
+    MoveSelectedToCollection(usize),
     DeleteClip(usize),
     DismissNotice,
     ToggleSidebar,
@@ -413,6 +419,10 @@ pub struct UiModel {
     pub context_menu: Option<ClipContextMenu>,
     pub active_collection: Option<PathBuf>,
     pub active_clip: Option<usize>,
+    pub selection_mode: bool,
+    pub selected_clips: HashSet<PathBuf>,
+    pub collection_picker_open: bool,
+    pub clip_drag_preview: Option<ClipDragPreview>,
     pub notice: Option<String>,
     pub autostart_enabled: bool,
     pub hotkey_capture: bool,
@@ -440,6 +450,15 @@ pub struct UiModel {
     pub editor_working: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipDragPreview {
+    pub clip: usize,
+    pub count: usize,
+    pub x: f32,
+    pub y: f32,
+    pub target_collection: Option<usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClipContextMenu {
     pub clip: usize,
@@ -465,6 +484,10 @@ impl UiModel {
             context_menu: None,
             active_collection: None,
             active_clip: None,
+            selection_mode: false,
+            selected_clips: HashSet::new(),
+            collection_picker_open: false,
+            clip_drag_preview: None,
             notice: None,
             autostart_enabled: false,
             hotkey_capture: false,
@@ -505,6 +528,8 @@ impl UiModel {
         {
             self.active_collection = None;
         }
+        self.selected_clips
+            .retain(|path| self.clips.iter().any(|clip| &clip.path == path));
         Ok(())
     }
 
@@ -515,10 +540,64 @@ impl UiModel {
         self.hotkey_capture = false;
         self.hotkey_modifiers.clear();
         self.hotkey_error = None;
+        self.clear_clip_selection();
         if !matches!(page, Page::Player | Page::Editor) {
             self.active_clip = None;
         }
         self.page = page;
+    }
+
+    pub fn clear_clip_selection(&mut self) {
+        self.selection_mode = false;
+        self.selected_clips.clear();
+        self.collection_picker_open = false;
+        self.clip_drag_preview = None;
+    }
+
+    pub fn toggle_selection_mode(&mut self) {
+        if self.selection_mode {
+            self.clear_clip_selection();
+        } else {
+            self.selection_mode = true;
+            self.collection_picker_open = false;
+        }
+    }
+
+    pub fn toggle_clip_selection(&mut self, index: usize) -> bool {
+        let Some(path) = self.clips.get(index).map(|clip| clip.path.clone()) else {
+            return false;
+        };
+        self.selection_mode = true;
+        if !self.selected_clips.remove(&path) {
+            self.selected_clips.insert(path);
+        }
+        if self.selected_clips.is_empty() {
+            self.collection_picker_open = false;
+        }
+        true
+    }
+
+    pub fn select_all_visible_clips(&mut self) {
+        self.selection_mode = true;
+        for index in self.visible_clip_indices(usize::MAX) {
+            if let Some(clip) = self.clips.get(index) {
+                self.selected_clips.insert(clip.path.clone());
+            }
+        }
+    }
+
+    pub fn clip_is_selected(&self, index: usize) -> bool {
+        self.clips
+            .get(index)
+            .is_some_and(|clip| self.selected_clips.contains(&clip.path))
+    }
+
+    pub fn selected_clip_indices(&self) -> Vec<usize> {
+        self.clips
+            .iter()
+            .enumerate()
+            .filter_map(|(index, clip)| self.selected_clips.contains(&clip.path).then_some(index))
+            .collect()
     }
 
     pub fn open_clip(&mut self, index: usize) {
@@ -802,6 +881,10 @@ mod tests {
             context_menu: None,
             active_collection: None,
             active_clip: None,
+            selection_mode: false,
+            selected_clips: HashSet::new(),
+            collection_picker_open: false,
+            clip_drag_preview: None,
             notice: None,
             autostart_enabled: false,
             hotkey_capture: false,
@@ -837,6 +920,31 @@ mod tests {
         assert_eq!(model.visible_clip_indices(200), vec![0]);
         model.search.clear();
         assert_eq!(model.visible_clip_indices(1), vec![0]);
+    }
+
+    #[test]
+    fn clip_selection_tracks_paths_and_can_be_cancelled_as_one_mode() {
+        let mut model = model();
+        model.toggle_selection_mode();
+        assert!(model.selection_mode);
+        assert!(model.toggle_clip_selection(1));
+        assert!(model.clip_is_selected(1));
+        assert_eq!(model.selected_clip_indices(), vec![1]);
+
+        model.toggle_selection_mode();
+        assert!(!model.selection_mode);
+        assert!(model.selected_clips.is_empty());
+        assert!(!model.collection_picker_open);
+    }
+
+    #[test]
+    fn select_all_uses_the_current_visible_filter() {
+        let mut model = model();
+        model.search.value = "ranked".into();
+        model.select_all_visible_clips();
+
+        assert!(model.selection_mode);
+        assert_eq!(model.selected_clip_indices(), vec![0]);
     }
 
     #[test]

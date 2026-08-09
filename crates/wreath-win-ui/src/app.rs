@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, GlobalFree, HANDLE, HGLOBAL, HWND, LPARAM,
-    LRESULT, RECT, WPARAM,
+    LRESULT, POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, EndPaint, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO,
@@ -26,31 +26,33 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
-    DispatchMessageW, FindWindowW, GWL_STYLE, GWLP_USERDATA, GetClientRect, GetMessageW,
-    GetWindowLongPtrW, GetWindowPlacement, IDC_ARROW, LoadCursorW, MINMAXINFO, MSG,
-    PostQuitMessage, RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow,
-    SetTimer, SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow, TranslateMessage,
-    WINDOW_EX_STYLE, WINDOWPLACEMENT, WM_CHAR, WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO,
-    WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE,
-    WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_CHILD,
-    WS_DISABLED, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
+    DispatchMessageW, FindWindowW, GWL_STYLE, GWLP_USERDATA, GetClientRect, GetCursorPos,
+    GetMessageW, GetParent, GetWindowLongPtrW, GetWindowPlacement, HWND_TOP, IDC_ARROW,
+    LoadCursorW, MINMAXINFO, MSG, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED, SW_HIDE,
+    SW_RESTORE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow,
+    TranslateMessage, WINDOW_EX_STYLE, WINDOWPLACEMENT, WM_CHAR, WM_DESTROY, WM_DPICHANGED,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_TIMER, WNDCLASSW, WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::config::Codec;
 use wreath_core::ipc::{Request, Response};
 
 use crate::model::{
-    Action, ClipContextMenu, DeleteTarget, DisplayOption, NoticeExpiry, PromptKind, SettingsMenu,
-    SettingsMenuItem, SettingsMenuKind, TextInput, UiModel,
+    Action, ClipContextMenu, ClipDragPreview, DeleteTarget, DisplayOption, NoticeExpiry,
+    PromptKind, SettingsMenu, SettingsMenuItem, SettingsMenuKind, TextInput, UiModel,
 };
 use crate::player::{PLAYER_EVENT, Player};
 use crate::renderer::{
-    Renderer, editor_player_bounds, editor_timeline_fraction, editor_timeline_rail, player_bounds,
-    player_timeline_rail, player_volume_rail,
+    Renderer, editor_player_bounds, editor_timeline_fraction, editor_timeline_rail,
+    fullscreen_timeline_rail, fullscreen_volume_rail, player_bounds, player_timeline_rail,
+    player_volume_rail,
 };
 
 const WINDOW_CLASS: windows::core::PCWSTR = w!("WreathApplicationWindow");
+const FULLSCREEN_CONTROLS_CLASS: windows::core::PCWSTR = w!("WreathFullscreenControls");
 const CF_UNICODETEXT_FORMAT: u32 = 13;
 const PLAYER_TIMER: usize = 2;
 const WM_MOUSELEAVE_MESSAGE: u32 = 0x02a3;
@@ -59,32 +61,48 @@ const PREVIEW_SEEK_INTERVAL: Duration = Duration::from_millis(33);
 const PREVIEW_SEEK_SETTLE: Duration = Duration::from_millis(160);
 const PREVIEW_SLACK_SECONDS: f64 = 0.05;
 const NOTICE_LIFETIME: Duration = Duration::from_secs(3);
+const FULLSCREEN_CONTROLS_LIFETIME: Duration = Duration::from_millis(2_200);
+const FULLSCREEN_CONTROLS_HEIGHT: f32 = 80.0;
 
 struct AppState {
     model: UiModel,
     renderer: Renderer,
+    fullscreen_renderer: Renderer,
     width: u32,
     height: u32,
     dpi: u32,
     player: Option<Player>,
     video_window: Option<HWND>,
+    fullscreen_overlay: Option<HWND>,
     text_drag: Option<TextDrag>,
     trim_updates: mpsc::Receiver<TrimUpdate>,
     trim_sender: mpsc::Sender<TrimUpdate>,
     hotkey_updates: mpsc::Receiver<HotkeyUpdate>,
     hotkey_sender: mpsc::Sender<HotkeyUpdate>,
     editor_drag: Option<EditorDrag>,
+    clip_drag: Option<ClipDrag>,
     slider_drag: Option<SliderDrag>,
     player_seek: Option<Instant>,
     preview_seek: Option<Instant>,
     mouse_tracking: bool,
+    overlay_mouse_tracking: bool,
     fullscreen: Option<FullscreenState>,
+    fullscreen_controls_until: Option<Instant>,
+    fullscreen_controls_visible: bool,
+    fullscreen_cursor_position: Option<(i32, i32)>,
     notice_expiry: NoticeExpiry,
 }
 
 struct FullscreenState {
     style: isize,
     placement: WINDOWPLACEMENT,
+}
+
+struct ClipDrag {
+    clip: usize,
+    start_x: f32,
+    start_y: f32,
+    active: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -98,6 +116,8 @@ enum SliderDrag {
     PlayerSeek,
     PlayerVolume,
     EditorPlayhead,
+    FullscreenSeek,
+    FullscreenVolume,
 }
 
 #[derive(Clone, Copy)]
@@ -165,6 +185,17 @@ fn run_initialized() -> Result<(), String> {
         let _ = unsafe { CloseHandle(single_instance) };
         return Err(std::io::Error::last_os_error().to_string());
     }
+    let fullscreen_controls_class = WNDCLASSW {
+        lpfnWndProc: Some(fullscreen_controls_proc),
+        lpszClassName: FULLSCREEN_CONTROLS_CLASS,
+        style: CS_HREDRAW | CS_VREDRAW,
+        hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default(),
+        ..Default::default()
+    };
+    if unsafe { RegisterClassW(&fullscreen_controls_class) } == 0 {
+        let _ = unsafe { CloseHandle(single_instance) };
+        return Err(std::io::Error::last_os_error().to_string());
+    }
 
     let mut model = UiModel::load()?;
     model.autostart_enabled = crate::autostart::is_enabled();
@@ -175,22 +206,29 @@ fn run_initialized() -> Result<(), String> {
     let state = Box::new(AppState {
         model,
         renderer: Renderer::new()?,
+        fullscreen_renderer: Renderer::new()?,
         width: 1440,
         height: 900,
         dpi: 96,
         player: None,
         video_window: None,
+        fullscreen_overlay: None,
         text_drag: None,
         trim_updates,
         trim_sender,
         hotkey_updates,
         hotkey_sender,
         editor_drag: None,
+        clip_drag: None,
         slider_drag: None,
         player_seek: None,
         preview_seek: None,
         mouse_tracking: false,
+        overlay_mouse_tracking: false,
         fullscreen: None,
+        fullscreen_controls_until: None,
+        fullscreen_controls_visible: false,
+        fullscreen_cursor_position: None,
         notice_expiry: NoticeExpiry::default(),
     });
     let state = Box::into_raw(state);
@@ -235,8 +273,26 @@ fn run_initialized() -> Result<(), String> {
         )
     }
     .map_err(|error| error.to_string())?;
+    let fullscreen_overlay = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            FULLSCREEN_CONTROLS_CLASS,
+            w!(""),
+            WS_CHILD,
+            0,
+            0,
+            0,
+            0,
+            Some(window),
+            None,
+            None,
+            Some(state.cast()),
+        )
+    }
+    .map_err(|error| error.to_string())?;
     unsafe {
         (*state).video_window = Some(video_window);
+        (*state).fullscreen_overlay = Some(fullscreen_overlay);
         match Player::new(video_window, window) {
             Ok(player) => (*state).player = Some(player),
             Err(error) => {
@@ -388,6 +444,29 @@ unsafe extern "system" fn window_proc(
                 let x = signed_low_word(lparam.0) as f32 / scale;
                 let y = signed_high_word(lparam.0) as f32 / scale;
                 let hit = state.renderer.hit_test(x, y);
+                if state.model.collection_picker_open
+                    && !matches!(
+                        hit.as_ref(),
+                        Some(Action::MoveSelectedToCollection(_) | Action::ToggleCollectionPicker)
+                    )
+                {
+                    state.model.collection_picker_open = false;
+                }
+                state.clip_drag = if state.model.page == crate::model::Page::Collections {
+                    match hit.as_ref() {
+                        Some(Action::OpenClip(index) | Action::ToggleClipSelection(index)) => {
+                            Some(ClipDrag {
+                                clip: *index,
+                                start_x: x,
+                                start_y: y,
+                                active: false,
+                            })
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
                 state.editor_drag = match hit.as_ref() {
                     Some(Action::DragEditorStart) => Some(EditorDrag::Start),
                     Some(Action::DragEditorEnd) => Some(EditorDrag::End),
@@ -414,6 +493,7 @@ unsafe extern "system" fn window_proc(
                     _ => None,
                 };
                 if state.editor_drag.is_some()
+                    || state.clip_drag.is_some()
                     || state.slider_drag.is_some()
                     || state.text_drag.is_some()
                 {
@@ -431,6 +511,9 @@ unsafe extern "system" fn window_proc(
         }
         WM_MOUSEMOVE => {
             if let Some(state) = state_mut(window) {
+                if state.fullscreen.is_some() {
+                    reveal_fullscreen_controls(state);
+                }
                 let scale = state.dpi as f32 / 96.0;
                 let x = signed_low_word(lparam.0) as f32 / scale;
                 let y = signed_high_word(lparam.0) as f32 / scale;
@@ -459,6 +542,9 @@ unsafe extern "system" fn window_proc(
                 if state.editor_drag.is_some() {
                     update_editor_drag(state, x, false);
                 }
+                if state.clip_drag.is_some() {
+                    update_clip_drag(state, x, y);
+                }
                 if state.slider_drag.is_some() {
                     update_slider_drag(state, x, y, false);
                 }
@@ -468,6 +554,7 @@ unsafe extern "system" fn window_proc(
                 if menu_highlight_changed
                     || hover_changed
                     || state.editor_drag.is_some()
+                    || state.clip_drag.is_some()
                     || state.slider_drag.is_some()
                     || state.text_drag.is_some()
                 {
@@ -490,7 +577,11 @@ unsafe extern "system" fn window_proc(
                 let scale = state.dpi as f32 / 96.0;
                 let x = signed_low_word(lparam.0) as f32 / scale;
                 let y = signed_high_word(lparam.0) as f32 / scale;
-                if state.editor_drag.is_some() {
+                if state.clip_drag.is_some() {
+                    finish_clip_drag(window, state, x, y);
+                    let _ = unsafe { ReleaseCapture() };
+                    redraw(window);
+                } else if state.editor_drag.is_some() {
                     update_editor_drag(state, x, true);
                     state.editor_drag = None;
                     let _ = unsafe { ReleaseCapture() };
@@ -669,6 +760,16 @@ unsafe extern "system" fn window_proc(
                         redraw(window);
                         return LRESULT(0);
                     }
+                    if state.model.collection_picker_open {
+                        state.model.collection_picker_open = false;
+                        redraw(window);
+                        return LRESULT(0);
+                    }
+                    if state.model.selection_mode {
+                        state.model.clear_clip_selection();
+                        redraw(window);
+                        return LRESULT(0);
+                    }
                     state.model.search_focused = false;
                     state.model.hotkey_capture = false;
                     state.model.notice = None;
@@ -698,6 +799,9 @@ unsafe extern "system" fn window_proc(
                 let hotkey_changed = poll_hotkey_updates(state);
                 let notice_changed = expire_notice(state);
                 let motion_changed = state.renderer.advance_motion();
+                let fullscreen_motion_changed = state.fullscreen_renderer.advance_motion();
+                track_fullscreen_cursor(state);
+                let fullscreen_visibility_changed = update_fullscreen_controls_visibility(state);
                 if trim_changed
                     || hotkey_changed
                     || notice_changed
@@ -711,11 +815,145 @@ unsafe extern "system" fn window_proc(
                     keep_editor_preview_inside_selection(state);
                     redraw(window);
                 }
+                if state.fullscreen_controls_visible
+                    && (fullscreen_motion_changed
+                        || fullscreen_visibility_changed
+                        || state.model.page == crate::model::Page::Player)
+                {
+                    redraw_fullscreen_overlay(state);
+                }
             }
             LRESULT(0)
         }
         WM_DESTROY => {
             unsafe { PostQuitMessage(0) };
+            LRESULT(0)
+        }
+        _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
+    }
+}
+
+unsafe extern "system" fn fullscreen_controls_proc(
+    window: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if message == WM_NCCREATE {
+        let create = lparam.0 as *const CREATESTRUCTW;
+        if create.is_null() {
+            return LRESULT(0);
+        }
+        unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, (*create).lpCreateParams as isize) };
+        return LRESULT(1);
+    }
+    match message {
+        WM_SIZE => {
+            if let Some(state) = state_mut(window) {
+                state
+                    .fullscreen_renderer
+                    .resize(low_word(lparam.0) as u32, high_word(lparam.0) as u32);
+            }
+            LRESULT(0)
+        }
+        WM_PAINT => {
+            let mut paint = PAINTSTRUCT::default();
+            unsafe { BeginPaint(window, &mut paint) };
+            if let Some(state) = state_mut(window) {
+                let mut client = RECT::default();
+                let _ = unsafe { GetClientRect(window, &mut client) };
+                let scale = state.dpi as f32 / 96.0;
+                let width = ((client.right.max(0) as f32 / scale).round() as u32).max(1);
+                let height = ((client.bottom.max(0) as f32 / scale).round() as u32).max(1);
+                let _ = state.fullscreen_renderer.paint_fullscreen_controls(
+                    window,
+                    &state.model,
+                    width,
+                    height,
+                );
+            }
+            let _ = unsafe { EndPaint(window, &paint) };
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE => {
+            if let Some(state) = state_mut(window) {
+                reveal_fullscreen_controls(state);
+                if !state.overlay_mouse_tracking {
+                    let mut tracking = TRACKMOUSEEVENT {
+                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: window,
+                        ..Default::default()
+                    };
+                    if unsafe { TrackMouseEvent(&mut tracking) }.is_ok() {
+                        state.overlay_mouse_tracking = true;
+                    }
+                }
+                let scale = state.dpi as f32 / 96.0;
+                let x = signed_low_word(lparam.0) as f32 / scale;
+                let y = signed_high_word(lparam.0) as f32 / scale;
+                let hover_changed = state.fullscreen_renderer.update_hover(x, y);
+                if matches!(
+                    state.slider_drag,
+                    Some(SliderDrag::FullscreenSeek | SliderDrag::FullscreenVolume)
+                ) {
+                    update_fullscreen_slider_drag(state, x, y, false);
+                }
+                if hover_changed || state.slider_drag.is_some() {
+                    redraw(window);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE_MESSAGE => {
+            if let Some(state) = state_mut(window) {
+                state.overlay_mouse_tracking = false;
+                state.fullscreen_controls_until =
+                    Some(Instant::now() + FULLSCREEN_CONTROLS_LIFETIME);
+                if state.fullscreen_renderer.clear_hover() {
+                    redraw(window);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_LBUTTONDOWN => {
+            if let Some(state) = state_mut(window) {
+                let scale = state.dpi as f32 / 96.0;
+                let x = signed_low_word(lparam.0) as f32 / scale;
+                let y = signed_high_word(lparam.0) as f32 / scale;
+                state.slider_drag = match state.fullscreen_renderer.hit_test(x, y) {
+                    Some(Action::DragPlayerSeek) => Some(SliderDrag::FullscreenSeek),
+                    Some(Action::DragPlayerVolume) => Some(SliderDrag::FullscreenVolume),
+                    _ => None,
+                };
+                if state.slider_drag.is_some() {
+                    unsafe { SetCapture(window) };
+                    update_fullscreen_slider_drag(state, x, y, true);
+                    redraw(window);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_LBUTTONUP => {
+            if let Some(state) = state_mut(window) {
+                let scale = state.dpi as f32 / 96.0;
+                let x = signed_low_word(lparam.0) as f32 / scale;
+                let y = signed_high_word(lparam.0) as f32 / scale;
+                if matches!(
+                    state.slider_drag,
+                    Some(SliderDrag::FullscreenSeek | SliderDrag::FullscreenVolume)
+                ) {
+                    update_fullscreen_slider_drag(state, x, y, true);
+                    state.slider_drag = None;
+                    let _ = unsafe { ReleaseCapture() };
+                    redraw(window);
+                } else if let Some(action) = state.fullscreen_renderer.hit_test(x, y)
+                    && let Ok(parent) = unsafe { GetParent(window) }
+                {
+                    handle_action(parent, state, action);
+                    redraw(window);
+                }
+            }
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
@@ -775,29 +1013,30 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         }
         Action::MoveClipToCollection { clip, collection } => {
             state.model.context_menu = None;
-            let result = state
-                .model
-                .clips
-                .get(clip)
-                .cloned()
-                .zip(state.model.collections.get(collection).cloned())
-                .ok_or_else(|| "Clip or collection is no longer available".to_owned())
-                .and_then(|(clip, collection)| {
-                    wreath_core::clips::move_to_collection(
-                        &clip,
-                        &state.model.config.storage.directory,
-                        &collection.path,
-                        &state.model.paths.thumbnail_dir,
-                    )
-                    .map_err(|error| error.to_string())
-                });
-            match result {
-                Ok(_) => {
-                    let refresh = state.model.refresh();
-                    set_result(&mut state.model, refresh, "Clip moved");
-                }
-                Err(error) => state.model.notice = Some(error),
+            if let Some(path) = state.model.clips.get(clip).map(|clip| clip.path.clone()) {
+                move_clip_paths_to_collection(state, &[path], collection);
+            } else {
+                state.model.notice = Some("Clip is no longer available".into());
             }
+        }
+        Action::ToggleSelectionMode => state.model.toggle_selection_mode(),
+        Action::ToggleClipSelection(index) => {
+            state.model.toggle_clip_selection(index);
+        }
+        Action::SelectAllVisibleClips => state.model.select_all_visible_clips(),
+        Action::ToggleCollectionPicker => {
+            if !state.model.selected_clips.is_empty() && !state.model.collections.is_empty() {
+                state.model.collection_picker_open = !state.model.collection_picker_open;
+            }
+        }
+        Action::MoveSelectedToCollection(collection) => {
+            let paths = state
+                .model
+                .selected_clips
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            move_clip_paths_to_collection(state, &paths, collection);
         }
         Action::DismissContextMenu => state.model.context_menu = None,
         Action::Back => {
@@ -910,6 +1149,8 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             state.model.active_collection = index
                 .and_then(|index| state.model.collections.get(index))
                 .map(|collection| collection.path.clone());
+            state.model.selected_clips.clear();
+            state.model.collection_picker_open = false;
         }
         Action::PreviousClip => switch_clip(state, -1),
         Action::NextClip => switch_clip(state, 1),
@@ -1425,6 +1666,151 @@ fn update_editor_drag(state: &mut AppState, x: f32, settle: bool) {
     seek_editor_preview(state, position, settle);
 }
 
+fn update_clip_drag(state: &mut AppState, x: f32, y: f32) {
+    let Some(drag) = &mut state.clip_drag else {
+        return;
+    };
+    if !drag.active {
+        let delta_x = x - drag.start_x;
+        let delta_y = y - drag.start_y;
+        if delta_x.mul_add(delta_x, delta_y * delta_y) < 36.0 {
+            return;
+        }
+        drag.active = true;
+    }
+    let clip = drag.clip;
+    let count = state
+        .model
+        .clips
+        .get(clip)
+        .filter(|clip| state.model.selected_clips.contains(&clip.path))
+        .map_or(1, |_| state.model.selected_clips.len().max(1));
+    let target_collection = match state.renderer.hit_test(x, y) {
+        Some(Action::SelectCollection(Some(index))) => Some(index),
+        _ => None,
+    };
+    state.model.clip_drag_preview = Some(ClipDragPreview {
+        clip,
+        count,
+        x,
+        y,
+        target_collection,
+    });
+}
+
+fn finish_clip_drag(window: HWND, state: &mut AppState, x: f32, y: f32) {
+    let Some(drag) = state.clip_drag.take() else {
+        return;
+    };
+    let target_collection = state
+        .model
+        .clip_drag_preview
+        .as_ref()
+        .and_then(|preview| preview.target_collection);
+    state.model.clip_drag_preview = None;
+    if drag.active {
+        if let Some(collection) = target_collection {
+            let paths = dragged_clip_paths(&state.model, drag.clip);
+            move_clip_paths_to_collection(state, &paths, collection);
+        }
+        return;
+    }
+
+    let clicked_same_clip = matches!(
+        state.renderer.hit_test(x, y),
+        Some(Action::OpenClip(index) | Action::ToggleClipSelection(index)) if index == drag.clip
+    );
+    if !clicked_same_clip {
+        return;
+    }
+    if state.model.selection_mode {
+        state.model.toggle_clip_selection(drag.clip);
+    } else {
+        handle_action(window, state, Action::OpenClip(drag.clip));
+    }
+}
+
+fn dragged_clip_paths(model: &UiModel, dragged: usize) -> Vec<PathBuf> {
+    let Some(clip) = model.clips.get(dragged) else {
+        return Vec::new();
+    };
+    if !model.selected_clips.contains(&clip.path) {
+        return vec![clip.path.clone()];
+    }
+    model
+        .clips
+        .iter()
+        .filter(|clip| model.selected_clips.contains(&clip.path))
+        .map(|clip| clip.path.clone())
+        .collect()
+}
+
+fn move_clip_paths_to_collection(state: &mut AppState, paths: &[PathBuf], collection: usize) {
+    let Some(collection) = state.model.collections.get(collection).cloned() else {
+        state.model.notice = Some("Collection is no longer available".into());
+        return;
+    };
+    let clips = paths
+        .iter()
+        .filter_map(|path| {
+            state
+                .model
+                .clips
+                .iter()
+                .find(|clip| &clip.path == path)
+                .cloned()
+        })
+        .filter(|clip| clip.path.parent() != Some(collection.path.as_path()))
+        .collect::<Vec<_>>();
+    if clips.is_empty() {
+        state.model.notice = Some("The selected clips are already in this collection".into());
+        return;
+    }
+    if let Some(existing) = clips.iter().find_map(|clip| {
+        let destination = collection.path.join(clip.path.file_name()?);
+        destination.exists().then_some(destination)
+    }) {
+        state.model.notice = Some(format!(
+            "Cannot move clips: {} already exists in {}",
+            existing.file_name().map_or_else(
+                || "a clip".into(),
+                |name| name.to_string_lossy().into_owned()
+            ),
+            collection.name
+        ));
+        return;
+    }
+
+    let mut moved = 0usize;
+    let mut failure = None;
+    for clip in clips {
+        match wreath_core::clips::move_to_collection(
+            &clip,
+            &state.model.config.storage.directory,
+            &collection.path,
+            &state.model.paths.thumbnail_dir,
+        ) {
+            Ok(_) => moved += 1,
+            Err(error) => {
+                failure = Some(error.to_string());
+                break;
+            }
+        }
+    }
+    let refresh = state.model.refresh();
+    state.renderer.retry_unavailable_thumbnails();
+    state.model.clear_clip_selection();
+    state.model.notice = match (refresh, failure) {
+        (Err(error), _) => Some(error),
+        (Ok(()), Some(error)) => Some(format!("Moved {moved} clips; stopped: {error}")),
+        (Ok(()), None) => Some(if moved == 1 {
+            format!("Clip moved to {}", collection.name)
+        } else {
+            format!("{moved} clips moved to {}", collection.name)
+        }),
+    };
+}
+
 fn update_slider_drag(state: &mut AppState, x: f32, y: f32, settle: bool) {
     let Some(drag) = state.slider_drag else {
         return;
@@ -1477,7 +1863,40 @@ fn update_slider_drag(state: &mut AppState, x: f32, y: f32, settle: bool) {
                 .min(state.model.editor_end);
             seek_editor_preview(state, position, settle);
         }
+        SliderDrag::FullscreenSeek | SliderDrag::FullscreenVolume => {}
     }
+}
+
+fn update_fullscreen_slider_drag(state: &mut AppState, x: f32, y: f32, settle: bool) {
+    let scale = state.dpi as f32 / 96.0;
+    let width = ((state.width as f32 / scale).round() as u32).max(1);
+    let height = FULLSCREEN_CONTROLS_HEIGHT.round() as u32;
+    match state.slider_drag {
+        Some(SliderDrag::FullscreenSeek) => {
+            let rail = fullscreen_timeline_rail(width, height);
+            let fraction = ((x - rail.left) / (rail.right - rail.left).max(1.0)).clamp(0.0, 1.0);
+            let fraction = f64::from(fraction);
+            state.model.player_position_seconds = state.model.player_duration_seconds * fraction;
+            let should_seek = settle
+                || state
+                    .player_seek
+                    .is_none_or(|issued| issued.elapsed() >= PLAYER_SEEK_INTERVAL);
+            if should_seek {
+                if let Some(player) = &state.player {
+                    let _ = player.seek_fraction(fraction);
+                }
+                state.player_seek = Some(Instant::now());
+            }
+        }
+        Some(SliderDrag::FullscreenVolume) => {
+            let rail = fullscreen_volume_rail(width, height);
+            let fraction = ((x - rail.left) / (rail.right - rail.left).max(1.0)).clamp(0.0, 1.0);
+            let _ = y;
+            set_player_volume(state, (fraction * 100.0).round() as u8);
+        }
+        _ => {}
+    }
+    reveal_fullscreen_controls(state);
 }
 
 fn update_text_drag(state: &mut AppState, x: f32, y: f32) {
@@ -1606,6 +2025,90 @@ fn update_player_window(state: &mut AppState) {
     if let Some(player) = &state.player {
         player.update_video();
     }
+    if state.fullscreen.is_some() {
+        position_fullscreen_overlay(state);
+    }
+}
+
+fn position_fullscreen_overlay(state: &mut AppState) {
+    let Some(overlay) = state.fullscreen_overlay else {
+        return;
+    };
+    let scale = state.dpi as f32 / 96.0;
+    let height = (FULLSCREEN_CONTROLS_HEIGHT * scale).round().max(1.0) as i32;
+    let _ = unsafe {
+        SetWindowPos(
+            overlay,
+            Some(HWND_TOP),
+            0,
+            state.height as i32 - height,
+            state.width as i32,
+            height,
+            SWP_NOACTIVATE,
+        )
+    };
+}
+
+fn reveal_fullscreen_controls(state: &mut AppState) {
+    if state.fullscreen.is_none() {
+        return;
+    }
+    state.fullscreen_controls_until = Some(Instant::now() + FULLSCREEN_CONTROLS_LIFETIME);
+    if !state.fullscreen_controls_visible {
+        state.fullscreen_controls_visible = true;
+        position_fullscreen_overlay(state);
+        if let Some(overlay) = state.fullscreen_overlay {
+            unsafe {
+                let _ = ShowWindow(overlay, SW_SHOW);
+            }
+        }
+    }
+    redraw_fullscreen_overlay(state);
+}
+
+fn track_fullscreen_cursor(state: &mut AppState) {
+    if state.fullscreen.is_none() {
+        state.fullscreen_cursor_position = None;
+        return;
+    }
+    let mut cursor = POINT::default();
+    if unsafe { GetCursorPos(&mut cursor) }.is_err() {
+        return;
+    }
+    let current = (cursor.x, cursor.y);
+    if state.fullscreen_cursor_position != Some(current) {
+        state.fullscreen_cursor_position = Some(current);
+        reveal_fullscreen_controls(state);
+    }
+}
+
+fn update_fullscreen_controls_visibility(state: &mut AppState) -> bool {
+    let dragging = matches!(
+        state.slider_drag,
+        Some(SliderDrag::FullscreenSeek | SliderDrag::FullscreenVolume)
+    );
+    let should_show = state.fullscreen.is_some()
+        && (state.overlay_mouse_tracking
+            || dragging
+            || state
+                .fullscreen_controls_until
+                .is_some_and(|deadline| Instant::now() < deadline));
+    if should_show == state.fullscreen_controls_visible {
+        return false;
+    }
+    state.fullscreen_controls_visible = should_show;
+    if let Some(overlay) = state.fullscreen_overlay {
+        unsafe {
+            let _ = ShowWindow(overlay, if should_show { SW_SHOW } else { SW_HIDE });
+        }
+    }
+    true
+}
+
+fn redraw_fullscreen_overlay(state: &AppState) {
+    if let Some(overlay) = state.fullscreen_overlay {
+        redraw(overlay);
+    }
 }
 
 fn toggle_player_fullscreen(window: HWND, state: &mut AppState) {
@@ -1650,12 +2153,22 @@ fn toggle_player_fullscreen(window: HWND, state: &mut AppState) {
         );
     }
     update_player_window(state);
+    reveal_fullscreen_controls(state);
 }
 
 fn exit_player_fullscreen(window: HWND, state: &mut AppState) {
     let Some(fullscreen) = state.fullscreen.take() else {
         return;
     };
+    state.fullscreen_controls_until = None;
+    state.fullscreen_controls_visible = false;
+    state.overlay_mouse_tracking = false;
+    state.fullscreen_cursor_position = None;
+    if let Some(overlay) = state.fullscreen_overlay {
+        unsafe {
+            let _ = ShowWindow(overlay, SW_HIDE);
+        }
+    }
     unsafe {
         SetWindowLongPtrW(window, GWL_STYLE, fullscreen.style);
         let _ = SetWindowPlacement(window, &fullscreen.placement);
@@ -1688,7 +2201,7 @@ fn sync_player_state(state: &mut AppState) {
     let dragging_playhead = state.editor_drag.is_some()
         || matches!(
             state.slider_drag,
-            Some(SliderDrag::PlayerSeek | SliderDrag::EditorPlayhead)
+            Some(SliderDrag::PlayerSeek | SliderDrag::EditorPlayhead | SliderDrag::FullscreenSeek)
         );
     if !dragging_playhead {
         state.model.player_position_seconds = snapshot.position_seconds;

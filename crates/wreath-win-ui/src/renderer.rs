@@ -242,6 +242,23 @@ pub fn player_volume_rail(
     )
 }
 
+pub fn fullscreen_timeline_rail(width: u32, height: u32) -> LogicalRect {
+    let width = width as f32;
+    let height = height as f32;
+    rect(
+        24.0,
+        10.0,
+        (width - 24.0).max(25.0),
+        (height - 64.0).max(14.0),
+    )
+}
+
+pub fn fullscreen_volume_rail(width: u32, height: u32) -> LogicalRect {
+    let width = width as f32;
+    let height = height as f32;
+    rect(116.0, height - 34.0, width.min(246.0), height - 28.0)
+}
+
 fn fit_aspect(area: LogicalRect, aspect_ratio: f32) -> LogicalRect {
     let aspect_ratio = if aspect_ratio.is_finite() && aspect_ratio > 0.1 {
         aspect_ratio
@@ -547,6 +564,32 @@ impl Renderer {
         outcome
     }
 
+    pub fn paint_fullscreen_controls(
+        &mut self,
+        window: HWND,
+        model: &UiModel,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        self.ensure_target(window, width, height)?;
+        self.hits.clear();
+        let target = self.target.as_ref().expect("render target exists").clone();
+        unsafe {
+            target.BeginDraw();
+            target.Clear(Some(&color(CANVAS)));
+        }
+        let drawn = self.render_fullscreen_controls(model, width, height);
+        let ended = unsafe { target.EndDraw(None, None) }.map_err(|error| error.to_string());
+        let outcome = drawn.and(ended);
+        if outcome.is_err() {
+            self.discard_target();
+            self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        } else {
+            self.consecutive_failures = 0;
+        }
+        outcome
+    }
+
     pub fn wants_recovery_repaint(&self) -> bool {
         self.consecutive_failures == 1
     }
@@ -650,7 +693,139 @@ impl Renderer {
                 action: Action::DismissNotice,
             });
         }
+        if let Some(drag) = &model.clip_drag_preview {
+            let label = if drag.count == 1 {
+                "Move 1 clip".to_owned()
+            } else {
+                format!("Move {} clips", drag.count)
+            };
+            let chip_width = 138.0;
+            let chip_height = 36.0;
+            let left = (drag.x + 14.0).clamp(12.0, width as f32 - chip_width - 12.0);
+            let top = (drag.y + 14.0).clamp(12.0, height as f32 - chip_height - 12.0);
+            let chip = rect(left, top, left + chip_width, top + chip_height);
+            self.fill(chip, SURFACE_RAISED, 8.0)?;
+            self.stroke(chip, ACCENT, 8.0, 1.0)?;
+            self.text(&label, chip, &self.body_center.clone(), PRIMARY)?;
+        }
         Ok(())
+    }
+
+    fn render_fullscreen_controls(
+        &mut self,
+        model: &UiModel,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let width = width as f32;
+        let height = height as f32;
+        let timeline = fullscreen_timeline_rail(width as u32, height as u32);
+        self.fill(timeline, SURFACE_HOVER, 2.0)?;
+        let progress = if model.player_duration_seconds > 0.0 {
+            (model.player_position_seconds / model.player_duration_seconds).clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        };
+        let playhead = timeline.left + (timeline.right - timeline.left) * progress;
+        if progress > 0.0 {
+            self.fill(
+                rect(timeline.left, timeline.top, playhead, timeline.bottom),
+                ACCENT,
+                2.0,
+            )?;
+        }
+        let timeline_y = (timeline.top + timeline.bottom) / 2.0;
+        self.fill(
+            rect(
+                playhead - 5.0,
+                timeline_y - 5.0,
+                playhead + 5.0,
+                timeline_y + 5.0,
+            ),
+            PRIMARY,
+            5.0,
+        )?;
+        self.hits.push(HitRegion {
+            rect: rect(timeline.left, 0.0, timeline.right, 28.0),
+            action: Action::DragPlayerSeek,
+        });
+
+        let row_top = height - 56.0;
+        let row_bottom = height - 8.0;
+        self.floating_icon(
+            rect(18.0, row_top, 58.0, row_bottom),
+            if model.player_playing { "Ⅱ" } else { "▶" },
+            PRIMARY,
+            Some(Action::PlayPause),
+            FloatingIconSize::Media,
+        )?;
+        self.floating_icon(
+            rect(66.0, row_top, 106.0, row_bottom),
+            if model.player_volume_percent == 0 {
+                "🔇"
+            } else {
+                "🔊"
+            },
+            PRIMARY,
+            Some(Action::ToggleMute),
+            FloatingIconSize::Media,
+        )?;
+
+        let volume = fullscreen_volume_rail(width as u32, height as u32);
+        self.fill(volume, SURFACE_HOVER, 3.0)?;
+        let volume_fraction = f32::from(model.player_volume_percent) / 100.0;
+        let volume_x = volume.left + (volume.right - volume.left) * volume_fraction;
+        if volume_fraction > 0.0 {
+            self.fill(
+                rect(volume.left, volume.top, volume_x, volume.bottom),
+                ACCENT,
+                3.0,
+            )?;
+        }
+        let volume_y = (volume.top + volume.bottom) / 2.0;
+        self.fill(
+            rect(
+                volume_x - 5.0,
+                volume_y - 5.0,
+                volume_x + 5.0,
+                volume_y + 5.0,
+            ),
+            PRIMARY,
+            5.0,
+        )?;
+        self.hits.push(HitRegion {
+            rect: rect(volume.left - 6.0, row_top, volume.right + 6.0, row_bottom),
+            action: Action::DragPlayerVolume,
+        });
+
+        self.text(
+            &format!(
+                "{} / {}",
+                format_player_time(model.player_position_seconds),
+                format_player_time(model.player_duration_seconds)
+            ),
+            rect(
+                volume.right + 20.0,
+                row_top,
+                volume.right + 150.0,
+                row_bottom,
+            ),
+            &self.small.clone(),
+            SECONDARY,
+        )?;
+        self.text(
+            "Exit fullscreen",
+            rect(width - 178.0, row_top, width - 54.0, row_bottom),
+            &self.small.clone(),
+            SECONDARY,
+        )?;
+        self.floating_icon(
+            rect(width - 54.0, row_top, width - 14.0, row_bottom),
+            "⛶",
+            PRIMARY,
+            Some(Action::ToggleFullscreen),
+            FloatingIconSize::Fullscreen,
+        )
     }
 
     fn ensure_target(&mut self, window: HWND, width: u32, height: u32) -> Result<(), String> {
@@ -1061,13 +1236,7 @@ impl Renderer {
         height: f32,
     ) -> Result<(), String> {
         self.page_heading("Library", "Local replays", left, right)?;
-        self.pill(
-            rect(right - 112.0, 141.0, right, 181.0),
-            SURFACE,
-            "Refresh",
-            PRIMARY,
-            Some(Action::Refresh),
-        )?;
+        self.selection_toolbar(model, right, true)?;
         self.text(
             &format!(
                 "{} clips  •  {}",
@@ -1090,9 +1259,16 @@ impl Renderer {
                 right,
                 286.0,
             )?;
+            if model.collection_picker_open {
+                self.render_collection_picker(model, right, 190.0)?;
+            }
             return Ok(());
         }
-        self.clip_grid(model, &indices, left, right, 240.0, height - 24.0)
+        self.clip_grid(model, &indices, left, right, 240.0, height - 24.0)?;
+        if model.collection_picker_open {
+            self.render_collection_picker(model, right, 190.0)?;
+        }
+        Ok(())
     }
 
     fn render_collections(
@@ -1108,6 +1284,7 @@ impl Renderer {
             left,
             right,
         )?;
+        self.selection_toolbar(model, right, false)?;
         let sidebar_width = ((right - left) * 0.24).clamp(170.0, 240.0);
         self.pill(
             rect(left, 205.0, left + sidebar_width, 249.0),
@@ -1131,6 +1308,7 @@ impl Renderer {
             model.active_collection.is_none(),
             rect(left, 310.0, left + sidebar_width, 354.0),
             None,
+            false,
         )?;
         for (index, collection) in model.collections.iter().take(8).enumerate() {
             let top = 360.0 + index as f32 * 48.0;
@@ -1140,6 +1318,10 @@ impl Renderer {
                 model.active_collection.as_ref() == Some(&collection.path),
                 rect(left, top, left + sidebar_width, top + 40.0),
                 Some(index),
+                model
+                    .clip_drag_preview
+                    .as_ref()
+                    .is_some_and(|drag| drag.target_collection == Some(index)),
             )?;
         }
         let content_left = left + sidebar_width + 26.0;
@@ -1159,6 +1341,9 @@ impl Renderer {
             self.empty_state("This collection is empty", content_left, right, 340.0)?;
         } else {
             self.clip_grid(model, &indices, content_left, right, 258.0, height - 24.0)?;
+        }
+        if model.collection_picker_open {
+            self.render_collection_picker(model, right, 190.0)?;
         }
         Ok(())
     }
@@ -1927,10 +2112,21 @@ impl Renderer {
             }
             let x = left + column as f32 * (card_width + gap);
             let card = rect(x, y, x + card_width, y + card_height);
-            let action = Action::OpenClip(*index);
+            let action = if model.selection_mode {
+                Action::ToggleClipSelection(*index)
+            } else {
+                Action::OpenClip(*index)
+            };
+            let selected = model.clip_is_selected(*index);
+            let dragged = model
+                .clip_drag_preview
+                .as_ref()
+                .is_some_and(|drag| drag.clip == *index || selected);
             self.fill(
                 card,
-                if self.is_hovered(&action) {
+                if selected {
+                    mix(SURFACE, ACCENT, 0.10)
+                } else if self.is_hovered(&action) {
                     mix(SURFACE, ACCENT, self.hover_progress * 0.065)
                 } else {
                     SURFACE
@@ -1939,13 +2135,17 @@ impl Renderer {
             )?;
             self.stroke(
                 card,
-                if self.is_hovered(&action) {
+                if dragged {
+                    READY
+                } else if selected {
+                    ACCENT
+                } else if self.is_hovered(&action) {
                     mix(BORDER, ACCENT, self.hover_progress * 0.55)
                 } else {
                     BORDER
                 },
                 10.0,
-                1.0,
+                if selected || dragged { 2.0 } else { 1.0 },
             )?;
             let preview = rect(
                 x + 6.0,
@@ -1967,6 +2167,19 @@ impl Renderer {
                     &self.section.clone(),
                     SECONDARY,
                 )?;
+            }
+            if model.selection_mode {
+                let check = rect(
+                    preview.right - 32.0,
+                    preview.top + 8.0,
+                    preview.right - 8.0,
+                    preview.top + 32.0,
+                );
+                self.fill(check, if selected { ACCENT } else { SURFACE_RAISED }, 12.0)?;
+                self.stroke(check, if selected { ACCENT } else { BORDER }, 12.0, 1.0)?;
+                if selected {
+                    self.text("✓", check, &self.body_center.clone(), CANVAS)?;
+                }
             }
             self.text(
                 &clip.title,
@@ -2006,19 +2219,33 @@ impl Renderer {
         active: bool,
         area: LogicalRect,
         index: Option<usize>,
+        drop_target: bool,
     ) -> Result<(), String> {
         let action = Action::SelectCollection(index);
-        if active || self.is_hovered(&action) {
+        if active || drop_target || self.is_hovered(&action) {
             self.fill(
                 area,
-                if active {
+                if drop_target {
+                    mix(SURFACE, READY, 0.18)
+                } else if active {
                     ACCENT_MUTED
                 } else {
                     mix(SURFACE, ACCENT, self.hover_progress * 0.10)
                 },
                 9.0,
             )?;
-            self.stroke(area, if active { ACCENT } else { BORDER }, 9.0, 1.0)?;
+            self.stroke(
+                area,
+                if drop_target {
+                    READY
+                } else if active {
+                    ACCENT
+                } else {
+                    BORDER
+                },
+                9.0,
+                if drop_target { 2.0 } else { 1.0 },
+            )?;
         }
         self.text(
             name,
@@ -2033,6 +2260,119 @@ impl Renderer {
             SECONDARY,
         )?;
         self.hits.push(HitRegion { rect: area, action });
+        Ok(())
+    }
+
+    fn selection_toolbar(
+        &mut self,
+        model: &UiModel,
+        right: f32,
+        include_refresh: bool,
+    ) -> Result<(), String> {
+        let top = 141.0;
+        let bottom = 181.0;
+        if !model.selection_mode {
+            if include_refresh {
+                self.pill(
+                    rect(right - 112.0, top, right, bottom),
+                    SURFACE,
+                    "Refresh",
+                    PRIMARY,
+                    Some(Action::Refresh),
+                )?;
+            }
+            let button_right = if include_refresh {
+                right - 122.0
+            } else {
+                right
+            };
+            return self.pill(
+                rect(button_right - 124.0, top, button_right, bottom),
+                SURFACE,
+                "Select clips",
+                PRIMARY,
+                Some(Action::ToggleSelectionMode),
+            );
+        }
+
+        let selected = model.selected_clips.len();
+        self.pill(
+            rect(right - 390.0, top, right - 274.0, bottom),
+            SURFACE,
+            "Cancel",
+            SECONDARY,
+            Some(Action::ToggleSelectionMode),
+        )?;
+        self.pill(
+            rect(right - 264.0, top, right - 138.0, bottom),
+            SURFACE,
+            "Select all",
+            PRIMARY,
+            Some(Action::SelectAllVisibleClips),
+        )?;
+        self.pill(
+            rect(right - 128.0, top, right, bottom),
+            if selected > 0 { ACCENT } else { SURFACE },
+            &format!("Move ({selected})"),
+            if selected > 0 { CANVAS } else { SECONDARY },
+            (selected > 0 && !model.collections.is_empty())
+                .then_some(Action::ToggleCollectionPicker),
+        )
+    }
+
+    fn render_collection_picker(
+        &mut self,
+        model: &UiModel,
+        right: f32,
+        top: f32,
+    ) -> Result<(), String> {
+        let visible = model.collections.len().min(8);
+        let width = 248.0;
+        let row_height = 40.0;
+        let area = rect(
+            right - width,
+            top,
+            right,
+            top + 48.0 + visible as f32 * row_height + 10.0,
+        );
+        self.fill(area, SURFACE_RAISED, 10.0)?;
+        self.stroke(area, BORDER, 10.0, 1.0)?;
+        self.text(
+            "Move selected clips to",
+            rect(
+                area.left + 14.0,
+                area.top + 4.0,
+                area.right - 14.0,
+                area.top + 44.0,
+            ),
+            &self.small.clone(),
+            SECONDARY,
+        )?;
+        for (index, collection) in model.collections.iter().take(visible).enumerate() {
+            let action = Action::MoveSelectedToCollection(index);
+            let row = rect(
+                area.left + 8.0,
+                area.top + 44.0 + index as f32 * row_height,
+                area.right - 8.0,
+                area.top + 44.0 + (index + 1) as f32 * row_height,
+            );
+            if self.is_hovered(&action) {
+                self.fill(row, mix(SURFACE, ACCENT, self.hover_progress * 0.12), 7.0)?;
+            }
+            self.text(
+                &collection.name,
+                rect(row.left + 10.0, row.top, row.right - 42.0, row.bottom),
+                &self.body.clone(),
+                PRIMARY,
+            )?;
+            self.text(
+                &collection.clip_count.to_string(),
+                rect(row.right - 32.0, row.top, row.right - 8.0, row.bottom),
+                &self.small.clone(),
+                SECONDARY,
+            )?;
+            self.hits.push(HitRegion { rect: row, action });
+        }
         Ok(())
     }
 
