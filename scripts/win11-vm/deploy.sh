@@ -11,7 +11,14 @@ fi
 
 REQUEST="$(python - <<'PY'
 import json
-command = "$d=(Get-Volume -FileSystemLabel 'WREATH_TEST').DriveLetter; & ($d + ':\\Install-Wreath.ps1') -UpdateOnly"
+command = (
+    "$d=(Get-Volume -FileSystemLabel 'WREATH_TEST').DriveLetter;"
+    "$args='-NoProfile -ExecutionPolicy Bypass -File \"' + $d + ':\\Install-Wreath.ps1\" -UpdateOnly';"
+    "$action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $args -WorkingDirectory ($d + ':\\');"
+    "$principal=New-ScheduledTaskPrincipal -UserId ($env:COMPUTERNAME + '\\Wreath') -LogonType Interactive -RunLevel Highest;"
+    "Register-ScheduledTask -TaskName 'Wreath Linux Update' -Action $action -Principal $principal -Force | Out-Null;"
+    "Start-ScheduledTask -TaskName 'Wreath Linux Update'"
+)
 print(json.dumps({
     "execute": "guest-exec",
     "arguments": {
@@ -26,8 +33,7 @@ PY
 RESULT="$(box_virsh qemu-agent-command "$DOMAIN_NAME" "$REQUEST" 2>/dev/null || true)"
 PID="$(python -c 'import json,sys; print(json.load(sys.stdin).get("return", {}).get("pid", ""))' <<<"$RESULT" 2>/dev/null || true)"
 if [[ -n "$PID" ]]; then
-    printf 'Wreath update started in Windows through the guest agent (PID %s).\n' "$PID"
+    printf 'Wreath update handed to the logged-in Windows user (guest-agent PID %s).\n' "$PID"
 else
     printf 'Payload attached. Guest agent is not ready; use "Wreath aus Linux aktualisieren" on the Windows desktop.\n'
 fi
-

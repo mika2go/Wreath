@@ -13,7 +13,10 @@ WINDOWS_ISO="$ISO_DIR/Win11_Enterprise_Eval_25H2_de-de_x64.iso"
 WINDOWS_ISO_URL="https://aka.ms/Win11E-ISO-25H2-de-de"
 WINDOWS_ISO_SHA256="056b8920fe23ba8ace54895df76f0926d7a71eeb8fdaa8f94ff8290cb18a540b"
 WINDOWS_ISO_SIZE="7150813184"
-WINDOWS_EFI_IMAGE="$STATE_DIR/windows-efi.img"
+WINDOWS_BOOT_ISO="$ISO_DIR/Win11_Enterprise_Eval_25H2_de-de_x64-wreath-autoboot.iso"
+WINDOWS_EFI_PROMPT_SECTOR="555"
+WINDOWS_EFI_NOPROMPT_SECTOR="3471921"
+WINDOWS_EFI_SHA256="bc1df11a9148b4e3b60b32095ca3dc5d400ca0d16e2b43d3a8a0282a9e66c4d5"
 VIRTIO_TOOLS="$PAYLOAD_DIR/virtio-win-guest-tools.exe"
 VIRTIO_TOOLS_URL="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win-guest-tools.exe"
 VM_DISK="$IMAGE_DIR/wreath-win11.qcow2"
@@ -67,6 +70,64 @@ domain_exists() {
 
 domain_state() {
     box_virsh domstate "$DOMAIN_NAME" 2>/dev/null | tr -d '\r'
+}
+
+managed_save_exists() {
+    box_virsh dominfo "$DOMAIN_NAME" 2>/dev/null |
+        awk -F: '/^Managed save:/ { gsub(/[[:space:]]/, "", $2); print $2 }' |
+        grep -qx yes
+}
+
+vm_disk_allocated_bytes() {
+    local blocks
+    blocks="$(stat -c %b "$VM_DISK" 2>/dev/null || printf 0)"
+    printf '%s\n' "$((blocks * 512))"
+}
+
+vm_disk_is_blank() {
+    [[ ! -f "$VM_DISK" ]] || (( $(vm_disk_allocated_bytes) < 4194304 ))
+}
+
+vm_block_write_bytes() {
+    box_virsh domblkstat "$DOMAIN_NAME" sda 2>/dev/null |
+        awk '$2 == "wr_bytes" { print $3; found=1 } END { if (!found) print 0 }'
+}
+
+start_windows_installer() {
+    local initial_writes current_writes attempt
+
+    if managed_save_exists; then
+        printf 'Discarding the stale pre-installation VM save state.\n'
+        box_virsh managedsave-remove "$DOMAIN_NAME"
+    fi
+
+    box_virsh start "$DOMAIN_NAME"
+    initial_writes="$(vm_block_write_bytes)"
+    printf 'Waiting for Windows Setup to take over the virtual disk'
+
+    for attempt in $(seq 1 75); do
+        sleep 2
+        [[ "$(domain_state)" == "running" ]] || {
+            printf '\nThe VM stopped before Windows Setup started.\n' >&2
+            return 1
+        }
+
+        current_writes="$(vm_block_write_bytes)"
+        if (( current_writes > initial_writes + 8388608 )) ||
+            (( $(vm_disk_allocated_bytes) >= 16777216 )); then
+            printf ' ready.\n'
+            printf '%s\n' "$(date --iso-8601=seconds)" > "$STATE_DIR/install-started"
+            return 0
+        fi
+
+        if (( attempt % 5 == 0 )); then
+            printf '.'
+        fi
+    done
+
+    printf '\nWindows Setup did not write to the system disk within 150 seconds.\n' >&2
+    box_virsh screenshot "$DOMAIN_NAME" "$STATE_DIR/boot-failure.ppm" >/dev/null 2>&1 || true
+    return 1
 }
 
 ensure_windows_toolchain() {

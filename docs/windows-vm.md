@@ -12,6 +12,11 @@ the capture backend.
 
 The setup downloads and verifies Microsoft's German Windows 11 Enterprise 25H2
 evaluation ISO, creates a sparse 128 GB disk, and starts an unattended install.
+It creates a copy-on-write boot copy of the verified ISO and replaces only its
+prompting EFI image with Microsoft's no-prompt EFI image from that same ISO. It
+does not report success until Windows Setup is writing to the system disk. A
+stale pre-installation suspend state is discarded automatically when the disk
+is still empty.
 The VM uses 8 vCPUs and 12 GB RAM. It creates the local `Wreath` test account,
 logs in automatically, installs the QEMU/SPICE guest tools, copies sample clips,
 and opens the locally built Wreath application.

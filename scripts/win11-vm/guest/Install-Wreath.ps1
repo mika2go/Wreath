@@ -4,10 +4,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Target = Join-Path $env:LOCALAPPDATA "Wreath"
-$ClipTarget = Join-Path ([Environment]::GetFolderPath("MyVideos")) "Wreath"
 $Log = Join-Path $Target "vm-install.log"
 
-New-Item -ItemType Directory -Force -Path $Target, $ClipTarget | Out-Null
+New-Item -ItemType Directory -Force -Path $Target | Out-Null
 Start-Transcript -Path $Log -Append
 
 try {
@@ -20,6 +19,12 @@ try {
     }
 
     if (-not $UpdateOnly) {
+        $videoFolder = [Environment]::GetFolderPath("MyVideos")
+        if ([string]::IsNullOrWhiteSpace($videoFolder)) {
+            $videoFolder = Join-Path $env:USERPROFILE "Videos"
+        }
+        $ClipTarget = Join-Path $videoFolder "Wreath"
+        New-Item -ItemType Directory -Force -Path $ClipTarget | Out-Null
         Get-ChildItem (Join-Path $PSScriptRoot "Samples") -Filter "*.mp4" -ErrorAction SilentlyContinue |
             ForEach-Object { Copy-Item -Force $_.FullName $ClipTarget }
 
@@ -59,6 +64,7 @@ try {
     "ready $(Get-Date -Format o)" | Set-Content (Join-Path $Target "VM-READY.txt")
 
     if ($UpdateOnly) {
+        Start-Process (Join-Path $Target "wreath-tray.exe")
         Start-Process (Join-Path $Target "wreath-win-ui.exe")
     }
     else {

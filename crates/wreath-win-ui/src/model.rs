@@ -37,6 +37,13 @@ pub enum Action {
     OpenClipsFolder,
     Search,
     ClearSearch,
+    PlaceSearchCaret(usize),
+    PlacePromptCaret(usize),
+    DismissContextMenu,
+    EditClip(usize),
+    RenameClip(usize),
+    MoveClipToCollection { clip: usize, collection: usize },
+    DeleteClip(usize),
     DismissNotice,
     ToggleSidebar,
     ToggleCursor,
@@ -82,41 +89,22 @@ pub enum PromptKind {
 
 pub const PROMPT_MAX_CHARACTERS: usize = 80;
 
-/// The named quality steps, from the cheapest replay buffer to the largest.
-pub const QUALITY_PRESETS: [(u8, &str); 5] = [
-    (50, "Low"),
-    (65, "Medium"),
-    (75, "High"),
-    (85, "Ultra"),
-    (100, "Insane"),
-];
-
-/// How a quality value reads. A value set outside the application, through
-/// `wreathctl config quality`, keeps its percentage rather than borrowing a
-/// name it does not match.
-pub fn quality_label(quality: u8) -> String {
-    QUALITY_PRESETS
-        .iter()
-        .find(|(value, _)| *value == quality)
-        .map_or_else(|| format!("{quality}%"), |(_, name)| (*name).to_owned())
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Prompt {
-    pub kind: PromptKind,
+pub struct TextInput {
     pub value: String,
     pub caret: usize,
     pub anchor: usize,
+    max_characters: usize,
 }
 
-impl Prompt {
-    pub fn new(kind: PromptKind, value: String) -> Self {
+impl TextInput {
+    pub fn new(value: String, max_characters: usize) -> Self {
         let caret = value.chars().count();
         Self {
-            kind,
             value,
             caret,
-            anchor: 0,
+            anchor: caret,
+            max_characters,
         }
     }
 
@@ -130,6 +118,11 @@ impl Prompt {
 
     pub fn has_selection(&self) -> bool {
         self.anchor != self.caret
+    }
+
+    pub fn selected_text(&self) -> String {
+        let (start, end) = self.selection();
+        self.value.chars().skip(start).take(end - start).collect()
     }
 
     fn byte_index(&self, character: usize) -> usize {
@@ -153,16 +146,28 @@ impl Prompt {
     }
 
     pub fn insert(&mut self, character: char) {
-        if character.is_control() {
-            return;
-        }
+        let mut buffer = [0_u8; 4];
+        self.insert_text(character.encode_utf8(&mut buffer));
+    }
+
+    pub fn insert_text(&mut self, text: &str) {
         self.delete_selection();
-        if self.characters() >= PROMPT_MAX_CHARACTERS {
+        let available = self.max_characters.saturating_sub(self.characters());
+        if available == 0 {
             return;
         }
+        let clean = text
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(available)
+            .collect::<String>();
+        if clean.is_empty() {
+            return;
+        }
+        let inserted = clean.chars().count();
         let at = self.byte_index(self.caret);
-        self.value.insert(at, character);
-        self.caret += 1;
+        self.value.insert_str(at, &clean);
+        self.caret += inserted;
         self.anchor = self.caret;
     }
 
@@ -225,6 +230,46 @@ impl Prompt {
         self.move_caret(self.characters(), extend);
     }
 
+    pub fn clear(&mut self) {
+        self.value.clear();
+        self.caret = 0;
+        self.anchor = 0;
+    }
+}
+
+/// The named quality steps, from the cheapest replay buffer to the largest.
+pub const QUALITY_PRESETS: [(u8, &str); 5] = [
+    (50, "Low"),
+    (65, "Medium"),
+    (75, "High"),
+    (85, "Ultra"),
+    (100, "Insane"),
+];
+
+/// How a quality value reads. A value set outside the application, through
+/// `wreathctl config quality`, keeps its percentage rather than borrowing a
+/// name it does not match.
+pub fn quality_label(quality: u8) -> String {
+    QUALITY_PRESETS
+        .iter()
+        .find(|(value, _)| *value == quality)
+        .map_or_else(|| format!("{quality}%"), |(_, name)| (*name).to_owned())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prompt {
+    pub kind: PromptKind,
+    pub input: TextInput,
+}
+
+impl Prompt {
+    pub fn new(kind: PromptKind, value: String) -> Self {
+        Self {
+            kind,
+            input: TextInput::new(value, PROMPT_MAX_CHARACTERS),
+        }
+    }
+
     pub fn title(&self) -> &'static str {
         match self.kind {
             PromptKind::RenameClip(_) => "Rename clip",
@@ -264,8 +309,9 @@ pub struct UiModel {
     pub page: Page,
     pub previous_page: Page,
     pub settings_section: SettingsSection,
-    pub query: String,
+    pub search: TextInput,
     pub search_focused: bool,
+    pub context_menu: Option<ClipContextMenu>,
     pub active_collection: Option<PathBuf>,
     pub active_clip: Option<usize>,
     pub notice: Option<String>,
@@ -288,6 +334,13 @@ pub struct UiModel {
     pub editor_working: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClipContextMenu {
+    pub clip: usize,
+    pub x: f32,
+    pub y: f32,
+}
+
 impl UiModel {
     pub fn load() -> Result<Self, String> {
         let paths = AppPaths::discover();
@@ -300,8 +353,9 @@ impl UiModel {
             page: Page::Home,
             previous_page: Page::Library,
             settings_section: SettingsSection::Display,
-            query: String::new(),
+            search: TextInput::new(String::new(), PROMPT_MAX_CHARACTERS),
             search_focused: false,
+            context_menu: None,
             active_collection: None,
             active_clip: None,
             notice: None,
@@ -342,6 +396,7 @@ impl UiModel {
 
     pub fn navigate(&mut self, page: Page) {
         self.search_focused = false;
+        self.context_menu = None;
         self.hotkey_capture = false;
         if !matches!(page, Page::Player | Page::Editor) {
             self.active_clip = None;
@@ -362,7 +417,7 @@ impl UiModel {
             return false;
         };
         let mut prompt = Prompt::new(PromptKind::RenameClip(index), clip.title.clone());
-        prompt.select_all();
+        prompt.input.select_all();
         self.prompt = Some(prompt);
         true
     }
@@ -424,7 +479,7 @@ impl UiModel {
     }
 
     pub fn visible_clip_indices(&self, limit: usize) -> Vec<usize> {
-        let query = self.query.trim().to_ascii_lowercase();
+        let query = self.search.value.trim().to_ascii_lowercase();
         self.clips
             .iter()
             .enumerate()
@@ -572,8 +627,9 @@ mod tests {
             page: Page::Library,
             previous_page: Page::Home,
             settings_section: SettingsSection::Display,
-            query: String::new(),
+            search: TextInput::new(String::new(), PROMPT_MAX_CHARACTERS),
             search_focused: false,
+            context_menu: None,
             active_collection: None,
             active_clip: None,
             notice: None,
@@ -600,9 +656,9 @@ mod tests {
     #[test]
     fn search_is_case_insensitive_and_bounded() {
         let mut model = model();
-        model.query = "RANKED".into();
+        model.search.value = "RANKED".into();
         assert_eq!(model.visible_clip_indices(200), vec![0]);
-        model.query.clear();
+        model.search.clear();
         assert_eq!(model.visible_clip_indices(1), vec![0]);
     }
 
@@ -706,8 +762,8 @@ mod tests {
         assert_eq!(model.frame_rate_options(), vec![30]);
     }
 
-    fn prompt(value: &str) -> Prompt {
-        Prompt::new(PromptKind::NewCollection, value.to_owned())
+    fn prompt(value: &str) -> TextInput {
+        TextInput::new(value.to_owned(), PROMPT_MAX_CHARACTERS)
     }
 
     #[test]
@@ -840,8 +896,20 @@ mod tests {
         assert_eq!(prompt.value, "b");
     }
 
-    fn prompt_at(value: &str, caret: usize) -> Prompt {
-        let mut prompt = Prompt::new(PromptKind::NewCollection, value.to_owned());
+    #[test]
+    fn pasted_text_replaces_the_selection_and_drops_control_characters() {
+        let mut input = prompt("old value");
+        input.select_all();
+
+        input.insert_text("new\r\nvalue");
+
+        assert_eq!(input.value, "newvalue");
+        assert_eq!(input.caret, 8);
+        assert!(!input.has_selection());
+    }
+
+    fn prompt_at(value: &str, caret: usize) -> TextInput {
+        let mut prompt = TextInput::new(value.to_owned(), PROMPT_MAX_CHARACTERS);
         prompt.move_caret(caret, false);
         prompt
     }

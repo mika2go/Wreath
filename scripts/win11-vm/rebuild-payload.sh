@@ -37,7 +37,6 @@ STAGE="$(mktemp -d "$STATE_DIR/payload.XXXXXX")"
 trap 'rm -rf -- "$STAGE"' EXIT
 install -m 0644 "$SCRIPT_DIR/guest/Autounattend.xml" "$STAGE/Autounattend.xml"
 install -m 0644 "$SCRIPT_DIR/guest/Install-Wreath.ps1" "$STAGE/Install-Wreath.ps1"
-install -m 0644 "$SCRIPT_DIR/guest/startup.nsh" "$STAGE/startup.nsh"
 install -m 0644 "$VIRTIO_TOOLS" "$STAGE/virtio-win-guest-tools.exe"
 cp -a "$SAMPLES" "$STAGE/Samples"
 
@@ -55,7 +54,13 @@ done
 } > "$STAGE/BUILD-INFO.txt"
 
 CURRENT=""
-[[ -f "$STATE_DIR/current-payload" ]] && CURRENT="$(<"$STATE_DIR/current-payload")"
+if domain_exists; then
+    CURRENT="$(box_virsh domblklist "$DOMAIN_NAME" --details 2>/dev/null |
+        awk '$2 == "cdrom" && $3 == "sdc" { print $4; exit }')"
+fi
+if [[ -z "$CURRENT" && -f "$STATE_DIR/current-payload" ]]; then
+    CURRENT="$(<"$STATE_DIR/current-payload")"
+fi
 if [[ "$CURRENT" == "$PAYLOAD_DIR/wreath-test-a.iso" ]]; then
     NEXT="$PAYLOAD_DIR/wreath-test-b.iso"
 else

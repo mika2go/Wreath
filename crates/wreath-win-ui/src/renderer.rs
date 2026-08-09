@@ -32,21 +32,34 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{PCWSTR, w};
 use windows_numerics::Vector2;
 
-use crate::model::{Action, DeleteTarget, Page, SettingsSection, UiModel, quality_label};
+use crate::model::{
+    Action, DeleteTarget, Page, SettingsSection, TextInput, UiModel, quality_label,
+};
 
-// Figma Make source: a near-black local workspace with white hierarchy and one
-// deliberate Windows-blue accent. Keeping these tokens centralized prevents
-// the six native pages from drifting into subtly different dark themes.
-const CANVAS: u32 = 0x090a0c;
-const STAGE: u32 = 0x0b0d0f;
-const SURFACE: u32 = 0x0d0f10;
-const SURFACE_HOVER: u32 = 0x181b20;
-const BORDER: u32 = 0x292c31;
-const PRIMARY: u32 = 0xf5f7fa;
-const SECONDARY: u32 = 0x8b9097;
-const SUCCESS: u32 = 0x3b82f6;
-const SELECTION: u32 = 0x174487;
-const DANGER: u32 = 0xe46f73;
+// Wreath is a capture instrument, not an RGB dashboard. Cold graphite keeps
+// video and thumbnails neutral; slate identifies controls, while green is
+// reserved for the single semantic promise that the replay buffer is ready.
+const CANVAS: u32 = 0x111419;
+const STAGE: u32 = 0x0d0f13;
+const SURFACE: u32 = 0x181c22;
+const SURFACE_RAISED: u32 = 0x1d2229;
+const SURFACE_HOVER: u32 = 0x222831;
+const BORDER: u32 = 0x303844;
+const PRIMARY: u32 = 0xe8ebef;
+const SECONDARY: u32 = 0x9aa3ad;
+const ACCENT: u32 = 0x5f8297;
+const ACCENT_HOVER: u32 = 0x7195aa;
+const ACCENT_MUTED: u32 = 0x243844;
+const READY: u32 = 0x78a28a;
+const SELECTION: u32 = 0x304a5a;
+const DANGER: u32 = 0xc77b82;
+const SETTINGS_ROW_TOP: f32 = 270.0;
+const SETTINGS_ROW_HEIGHT: f32 = 76.0;
+const SETTINGS_ROW_GAP: f32 = 12.0;
+
+fn settings_row_top(index: usize) -> f32 {
+    SETTINGS_ROW_TOP + index as f32 * (SETTINGS_ROW_HEIGHT + SETTINGS_ROW_GAP)
+}
 
 #[derive(Debug, Clone, Copy)]
 enum Glyph {
@@ -64,6 +77,12 @@ enum SettingControl {
     Button,
     Dropdown,
     Toggle,
+}
+
+#[derive(Clone, Copy)]
+enum TextInputTarget {
+    Search,
+    Prompt,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -233,12 +252,48 @@ impl Renderer {
         let write_factory =
             unsafe { DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED) }
                 .map_err(|error| error.to_string())?;
-        let title = text_format(&write_factory, w!("Arial"), 40.0, true, false)?;
-        let heading = text_format(&write_factory, w!("Arial"), 28.0, true, false)?;
-        let section = text_format(&write_factory, w!("Arial"), 18.0, true, false)?;
-        let body = text_format(&write_factory, w!("Segoe UI Variable"), 13.0, false, false)?;
-        let small = text_format(&write_factory, w!("Consolas"), 10.0, false, false)?;
-        let body_center = text_format(&write_factory, w!("Segoe UI Variable"), 13.0, false, true)?;
+        let title = text_format(
+            &write_factory,
+            w!("Segoe UI Variable Display"),
+            36.0,
+            true,
+            false,
+        )?;
+        let heading = text_format(
+            &write_factory,
+            w!("Segoe UI Variable Display"),
+            25.0,
+            true,
+            false,
+        )?;
+        let section = text_format(
+            &write_factory,
+            w!("Segoe UI Variable Display"),
+            18.0,
+            true,
+            false,
+        )?;
+        let body = text_format(
+            &write_factory,
+            w!("Segoe UI Variable Text"),
+            13.0,
+            false,
+            false,
+        )?;
+        let small = text_format(
+            &write_factory,
+            w!("Segoe UI Variable Text"),
+            10.5,
+            true,
+            false,
+        )?;
+        let body_center = text_format(
+            &write_factory,
+            w!("Segoe UI Variable Text"),
+            13.0,
+            false,
+            true,
+        )?;
         let wic_factory =
             unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
                 .map_err(|error| error.to_string())?;
@@ -418,6 +473,9 @@ impl Renderer {
 
     fn render_frame(&mut self, model: &UiModel, width: u32, height: u32) -> Result<(), String> {
         self.render_shell(model, width as f32, height as f32)?;
+        if model.context_menu.is_some() {
+            self.render_context_menu(model, width as f32, height as f32)?;
+        }
         if model.pending_delete.is_some() {
             self.render_delete_modal(model, width as f32, height as f32)?;
         }
@@ -508,10 +566,10 @@ impl Renderer {
         )?;
 
         self.text(
-            "LOCAL REPLAY WORKSPACE",
+            "Local capture",
             rect(rail + 48.0, 20.0, rail + 290.0, 40.0),
             &self.small.clone(),
-            SUCCESS,
+            SECONDARY,
         )?;
         self.text(
             "WREATH",
@@ -524,30 +582,32 @@ impl Renderer {
         let search = rect(width - search_width - 36.0, 22.0, width - 36.0, 62.0);
         let search_action = Action::Search;
         let search_fill = if self.is_hovered(&search_action) {
-            mix(SURFACE, SUCCESS, self.hover_progress * 0.10)
+            mix(SURFACE, ACCENT, self.hover_progress * 0.10)
         } else {
             SURFACE
         };
         self.fill(search, search_fill, 10.0)?;
-        self.stroke(search, BORDER, 10.0, 1.0)?;
-        self.text(
-            if model.query.is_empty() {
-                "⌕  Search clips"
-            } else {
-                &model.query
-            },
+        self.stroke(
+            search,
+            if model.search_focused { ACCENT } else { BORDER },
+            10.0,
+            1.0,
+        )?;
+        self.hits.push(HitRegion {
+            rect: search,
+            action: search_action,
+        });
+        self.render_text_input(
+            &model.search,
             rect(
                 search.left + 13.0,
                 search.top,
                 search.right - 42.0,
                 search.bottom,
             ),
-            &self.body.clone(),
-            if model.query.is_empty() {
-                SECONDARY
-            } else {
-                PRIMARY
-            },
+            "⌕  Search clips",
+            model.search_focused,
+            TextInputTarget::Search,
         )?;
         self.text(
             "Ctrl K",
@@ -560,10 +620,6 @@ impl Renderer {
             &self.small.clone(),
             SECONDARY,
         )?;
-        self.hits.push(HitRegion {
-            rect: search,
-            action: search_action,
-        });
 
         let nav = [
             (Page::Home, Glyph::Home, "Home"),
@@ -579,9 +635,9 @@ impl Renderer {
             let nav_area = rect((rail - 44.0) / 2.0, top, (rail + 44.0) / 2.0, top + 44.0);
             if active || self.is_hovered(&action) {
                 let fill = if active {
-                    SUCCESS
+                    ACCENT_MUTED
                 } else {
-                    mix(SURFACE_HOVER, SUCCESS, self.hover_progress * 0.15)
+                    mix(SURFACE_HOVER, ACCENT, self.hover_progress * 0.15)
                 };
                 self.fill(nav_area, fill, 12.0)?;
             }
@@ -616,9 +672,9 @@ impl Renderer {
         let settings_active = model.page == Page::Settings;
         if settings_active || self.is_hovered(&settings_action) {
             let fill = if settings_active {
-                SUCCESS
+                ACCENT_MUTED
             } else {
-                mix(SURFACE_HOVER, SUCCESS, self.hover_progress * 0.15)
+                mix(SURFACE_HOVER, ACCENT, self.hover_progress * 0.15)
             };
             self.fill(settings, fill, 12.0)?;
         }
@@ -669,260 +725,153 @@ impl Renderer {
         height: f32,
     ) -> Result<(), String> {
         self.text(
-            "CURRENT REPLAY",
+            "Replay buffer",
             rect(left, 116.0, right, 138.0),
             &self.small.clone(),
             SECONDARY,
         )?;
         self.text(
-            "CAPTURE THE",
-            rect(left, 143.0, left + 286.0, 198.0),
+            "Replay ready",
+            rect(left, 143.0, right, 198.0),
             &self.title.clone(),
             PRIMARY,
         )?;
+        let panel = rect(left, 216.0, right, (height - 66.0).clamp(560.0, 620.0));
+        self.fill(panel, SURFACE, 12.0)?;
+        self.stroke(panel, BORDER, 12.0, 1.0)?;
+
+        let pulse = rect(
+            panel.left + 34.0,
+            panel.top + 40.0,
+            panel.left + 44.0,
+            panel.top + 50.0,
+        );
+        self.fill(pulse, READY, 5.0)?;
         self.text(
-            "MOMENT.",
-            rect(left + 286.0, 143.0, left + 485.0, 198.0),
-            &self.title.clone(),
-            SUCCESS,
+            "CAPTURE READY",
+            rect(
+                panel.left + 58.0,
+                panel.top + 34.0,
+                panel.right - 34.0,
+                panel.top + 56.0,
+            ),
+            &self.small.clone(),
+            READY,
         )?;
         self.text(
             &format!(
-                "▱  {} local storage   •   {} clips saved",
-                format_bytes(model.total_size_bytes()),
-                model.clips.len()
+                "Your last {} seconds are ready.",
+                model.config.capture.duration_seconds
             ),
-            rect((right - 360.0).max(left + 510.0), 154.0, right, 190.0),
+            rect(
+                panel.left + 34.0,
+                panel.top + 60.0,
+                panel.right - 250.0,
+                panel.top + 104.0,
+            ),
+            &self.heading.clone(),
+            PRIMARY,
+        )?;
+        self.text(
+            "Save a replay without leaving what you are doing.",
+            rect(
+                panel.left + 34.0,
+                panel.top + 108.0,
+                panel.right - 250.0,
+                panel.top + 138.0,
+            ),
             &self.body.clone(),
             SECONDARY,
         )?;
-
-        let available = right - left;
-        let gap = 24.0;
-        let status_width = (available * 0.29).clamp(250.0, 330.0);
-        let preview_right = right - status_width - gap;
-        let work_top = 216.0;
-        let work_bottom = (height - 212.0).max(work_top + 270.0);
-        let workspace = rect(left, work_top, preview_right, work_bottom);
-        self.fill(workspace, SURFACE, 14.0)?;
-        self.stroke(workspace, BORDER, 14.0, 1.0)?;
-
-        let preview_bottom = (workspace.bottom - 116.0).max(workspace.top + 158.0);
-        let preview = rect(
-            workspace.left + 1.0,
-            workspace.top + 1.0,
-            workspace.right - 1.0,
-            preview_bottom,
-        );
-        self.fill(preview, STAGE, 13.0)?;
-        if let Some(clip) = model.clips.first() {
-            let _ = self.draw_thumbnail(&clip.path, preview)?;
-            self.fill_alpha(
-                rect(
-                    preview.left,
-                    preview.bottom - 82.0,
-                    preview.right,
-                    preview.bottom,
-                ),
-                CANVAS,
-                0.72,
-                0.0,
-            )?;
-            self.text(
-                &clip.title,
-                rect(
-                    preview.left + 22.0,
-                    preview.bottom - 58.0,
-                    preview.right - 90.0,
-                    preview.bottom - 18.0,
-                ),
-                &self.heading.clone(),
-                PRIMARY,
-            )?;
-            self.hits.push(HitRegion {
-                rect: preview,
-                action: Action::OpenClip(0),
-            });
-        } else {
-            self.text(
-                "REPLAY BUFFER IS STANDING BY",
-                rect(
-                    preview.left + 22.0,
-                    preview.top,
-                    preview.right - 22.0,
-                    preview.bottom,
-                ),
-                &self.section.clone(),
-                SECONDARY,
-            )?;
-        }
         self.pill(
             rect(
-                workspace.right - 158.0,
-                workspace.bottom - 76.0,
-                workspace.right - 20.0,
-                workspace.bottom - 28.0,
+                panel.right - 208.0,
+                panel.top + 54.0,
+                panel.right - 34.0,
+                panel.top + 106.0,
             ),
-            SUCCESS,
+            ACCENT,
             "Save replay",
-            PRIMARY,
+            CANVAS,
             Some(Action::SaveReplay),
         )?;
-        self.text(
-            "CLIP SELECTION",
-            rect(
-                workspace.left + 22.0,
-                preview_bottom + 18.0,
-                workspace.right - 180.0,
-                preview_bottom + 38.0,
-            ),
-            &self.small.clone(),
-            SECONDARY,
-        )?;
-        self.text(
-            &format!(
-                "Rolling {} second local buffer · ready to trim after saving",
-                model.config.capture.duration_seconds
-            ),
-            rect(
-                workspace.left + 22.0,
-                preview_bottom + 40.0,
-                workspace.right - 178.0,
-                workspace.bottom - 16.0,
-            ),
-            &self.body.clone(),
-            SECONDARY,
-        )?;
 
-        let status = rect(preview_right + gap, work_top, right, work_bottom);
-        self.fill(status, SURFACE, 14.0)?;
-        self.stroke(status, BORDER, 14.0, 1.0)?;
-        self.text(
-            "CAPTURE STATUS",
-            rect(
-                status.left + 22.0,
-                status.top + 22.0,
-                status.right - 22.0,
-                status.top + 42.0,
-            ),
-            &self.small.clone(),
-            SECONDARY,
-        )?;
-        self.text(
-            "REPLAY IS READY",
-            rect(
-                status.left + 22.0,
-                status.top + 48.0,
-                status.right - 18.0,
-                status.top + 84.0,
-            ),
-            &self.section.clone(),
-            PRIMARY,
-        )?;
-        let ready = rect(
-            status.left + 22.0,
-            status.top + 104.0,
-            status.right - 22.0,
-            status.top + 174.0,
-        );
-        self.fill(ready, 0x101d31, 12.0)?;
-        self.stroke(ready, 0x234a7d, 12.0, 1.0)?;
+        let divider_top = panel.top + 176.0;
         self.fill(
             rect(
-                ready.left + 14.0,
-                ready.top + 15.0,
-                ready.left + 50.0,
-                ready.top + 51.0,
+                panel.left + 34.0,
+                divider_top,
+                panel.right - 34.0,
+                divider_top + 1.0,
             ),
-            SUCCESS,
-            18.0,
+            BORDER,
+            0.0,
         )?;
-        self.text(
-            "Instant replay on",
-            rect(
-                ready.left + 62.0,
-                ready.top + 10.0,
-                ready.right - 12.0,
-                ready.top + 38.0,
-            ),
-            &self.body.clone(),
-            PRIMARY,
-        )?;
-        self.text(
-            &format!(
-                "Rolling {} second buffer",
-                model.config.capture.duration_seconds
-            ),
-            rect(
-                ready.left + 62.0,
-                ready.top + 34.0,
-                ready.right - 12.0,
-                ready.top + 62.0,
-            ),
-            &self.small.clone(),
-            SECONDARY,
-        )?;
-
-        let details_top = ready.bottom + 22.0;
-        let details = [
+        let display = model.selected_display().map_or_else(
+            || format!("{} fps", model.config.capture.frames_per_second),
+            |display| {
+                format!(
+                    "{}×{} · {} fps",
+                    display.width, display.height, model.config.capture.frames_per_second
+                )
+            },
+        );
+        let audio = if model.config.audio.desktop && model.config.audio.microphone {
+            "Game + microphone"
+        } else if model.config.audio.desktop {
+            "Game audio"
+        } else if model.config.audio.microphone {
+            "Microphone"
+        } else {
+            "Audio off"
+        };
+        let facts = [
+            ("Display", display),
+            ("Audio", audio.to_owned()),
             (
-                "FRAME RATE",
-                format!("{} fps", model.config.capture.frames_per_second),
-            ),
-            ("ENCODER", format!("{:?}", model.config.capture.codec)),
-            (
-                "AUDIO",
-                if model.config.audio.desktop && model.config.audio.microphone {
-                    "Game + Mic".into()
-                } else if model.config.audio.desktop {
-                    "Game".into()
-                } else if model.config.audio.microphone {
-                    "Mic".into()
-                } else {
-                    "Off".into()
-                },
+                "Library",
+                format!(
+                    "{} clips · {}",
+                    model.clips.len(),
+                    format_bytes(model.total_size_bytes())
+                ),
             ),
         ];
-        for (index, (label, value)) in details.iter().enumerate() {
-            let top = details_top + index as f32 * 38.0;
-            if top + 30.0 > status.bottom - 18.0 {
-                break;
+        let facts_top = divider_top + 30.0;
+        let fact_width = (panel.right - panel.left - 68.0) / facts.len() as f32;
+        for (index, (label, value)) in facts.iter().enumerate() {
+            let fact_left = panel.left + 34.0 + fact_width * index as f32;
+            if index > 0 {
+                self.fill(
+                    rect(fact_left, facts_top, fact_left + 1.0, facts_top + 58.0),
+                    BORDER,
+                    0.0,
+                )?;
             }
             self.text(
                 label,
-                rect(status.left + 22.0, top, status.left + 118.0, top + 28.0),
+                rect(
+                    fact_left + if index > 0 { 24.0 } else { 0.0 },
+                    facts_top,
+                    fact_left + fact_width - 18.0,
+                    facts_top + 20.0,
+                ),
                 &self.small.clone(),
                 SECONDARY,
             )?;
             self.text(
                 value,
-                rect(status.left + 118.0, top, status.right - 22.0, top + 28.0),
-                &self.small.clone(),
+                rect(
+                    fact_left + if index > 0 { 24.0 } else { 0.0 },
+                    facts_top + 24.0,
+                    fact_left + fact_width - 18.0,
+                    facts_top + 54.0,
+                ),
+                &self.body.clone(),
                 PRIMARY,
             )?;
         }
-
-        let recent_top = work_bottom + 42.0;
-        self.text(
-            "LATEST BUFFER",
-            rect(left, recent_top, right, recent_top + 18.0),
-            &self.small.clone(),
-            SECONDARY,
-        )?;
-        self.text(
-            "RECENT CAPTURES",
-            rect(left, recent_top + 18.0, right, recent_top + 50.0),
-            &self.section.clone(),
-            PRIMARY,
-        )?;
-        self.clip_grid(
-            model,
-            &model.visible_clip_indices(3),
-            left,
-            right,
-            recent_top + 58.0,
-            height - 22.0,
-        )
+        Ok(())
     }
 
     fn render_library(
@@ -935,25 +884,28 @@ impl Renderer {
         self.page_heading("Library", "Local replays", left, right)?;
         let search = rect(left, 205.0, (right - 150.0).max(left + 160.0), 249.0);
         self.fill(search, SURFACE, 10.0)?;
-        self.stroke(search, BORDER, 10.0, 1.0)?;
-        self.text(
-            if model.query.is_empty() {
-                "Search clips"
-            } else {
-                &model.query
-            },
-            rect(search.left + 14.0, 216.0, search.right - 12.0, 239.0),
-            &self.body.clone(),
-            if model.query.is_empty() {
-                SECONDARY
-            } else {
-                PRIMARY
-            },
+        self.stroke(
+            search,
+            if model.search_focused { ACCENT } else { BORDER },
+            10.0,
+            1.0,
         )?;
         self.hits.push(HitRegion {
             rect: search,
             action: Action::Search,
         });
+        self.render_text_input(
+            &model.search,
+            rect(
+                search.left + 14.0,
+                search.top,
+                search.right - 12.0,
+                search.bottom,
+            ),
+            "Search clips",
+            model.search_focused,
+            TextInputTarget::Search,
+        )?;
         self.pill(
             rect(right - 136.0, 205.0, right, 249.0),
             SURFACE,
@@ -974,7 +926,7 @@ impl Renderer {
         let indices = model.visible_clip_indices(200);
         if indices.is_empty() {
             self.empty_state(
-                if model.query.is_empty() {
+                if model.search.value.is_empty() {
                     "No clips yet"
                 } else {
                     "No matching clips"
@@ -1085,11 +1037,21 @@ impl Renderer {
                 self.fill(
                     tab,
                     if model.settings_section == section {
-                        SUCCESS
+                        ACCENT_MUTED
                     } else {
-                        mix(SURFACE, SUCCESS, self.hover_progress * 0.12)
+                        mix(SURFACE, ACCENT, self.hover_progress * 0.12)
                     },
                     9.0,
+                )?;
+                self.stroke(
+                    tab,
+                    if model.settings_section == section {
+                        ACCENT
+                    } else {
+                        BORDER
+                    },
+                    9.0,
+                    1.0,
                 )?;
             } else {
                 self.stroke(tab, BORDER, 9.0, 1.0)?;
@@ -1118,7 +1080,7 @@ impl Renderer {
                     "Choose a monitor and use its current Windows refresh rate.",
                     left,
                     right,
-                    270.0,
+                    settings_row_top(0),
                     Action::ChooseDisplay,
                     SettingControl::Dropdown,
                 )?;
@@ -1128,7 +1090,7 @@ impl Renderer {
                     "Available rates follow the selected monitor.",
                     left,
                     right,
-                    346.0,
+                    settings_row_top(1),
                     Action::ChooseFrameRate,
                     SettingControl::Dropdown,
                 )?;
@@ -1138,7 +1100,7 @@ impl Renderer {
                     "Include the pointer in saved clips.",
                     left,
                     right,
-                    422.0,
+                    settings_row_top(2),
                     Action::ToggleCursor,
                     SettingControl::Toggle,
                 )?;
@@ -1150,7 +1112,7 @@ impl Renderer {
                     "How much encoded video stays in memory.",
                     left,
                     right,
-                    270.0,
+                    settings_row_top(0),
                     Action::ChooseDuration,
                     SettingControl::Dropdown,
                 )?;
@@ -1160,7 +1122,7 @@ impl Renderer {
                     "Hardware encoder selection; Auto is recommended.",
                     left,
                     right,
-                    346.0,
+                    settings_row_top(1),
                     Action::ChooseCodec,
                     SettingControl::Dropdown,
                 )?;
@@ -1170,7 +1132,7 @@ impl Renderer {
                     "Balances image detail and replay memory.",
                     left,
                     right,
-                    422.0,
+                    settings_row_top(2),
                     Action::ChooseQuality,
                     SettingControl::Dropdown,
                 )?;
@@ -1194,7 +1156,7 @@ impl Renderer {
                     "Record game and system sound.",
                     left,
                     right,
-                    270.0,
+                    settings_row_top(0),
                     Action::ToggleDesktopAudio,
                     SettingControl::Toggle,
                 )?;
@@ -1204,7 +1166,7 @@ impl Renderer {
                     "Add an input device to each replay.",
                     left,
                     right,
-                    422.0,
+                    settings_row_top(2),
                     Action::ToggleMicrophone,
                     SettingControl::Toggle,
                 )?;
@@ -1214,7 +1176,7 @@ impl Renderer {
                     "Changes only the recorded system sound, not Windows volume.",
                     left,
                     right,
-                    346.0,
+                    settings_row_top(1),
                     Action::ChooseDesktopGain,
                     SettingControl::Dropdown,
                 )?;
@@ -1224,7 +1186,7 @@ impl Renderer {
                     "Choose an active Windows input endpoint.",
                     left,
                     right,
-                    498.0,
+                    settings_row_top(3),
                     Action::ChooseMicrophone,
                     SettingControl::Dropdown,
                 )?;
@@ -1234,7 +1196,7 @@ impl Renderer {
                     "Clean input level without digital noise boost.",
                     left,
                     right,
-                    574.0,
+                    settings_row_top(4),
                     Action::ChooseMicrophoneGain,
                     SettingControl::Dropdown,
                 )?;
@@ -1255,7 +1217,7 @@ impl Renderer {
                     },
                     left,
                     right - 54.0,
-                    270.0,
+                    settings_row_top(0),
                     Action::CaptureHotkey,
                     SettingControl::Button,
                 )?;
@@ -1278,7 +1240,7 @@ impl Renderer {
                     "Choose a local folder through the Windows picker.",
                     left,
                     right,
-                    270.0,
+                    settings_row_top(0),
                     Action::ChooseStorage,
                     SettingControl::Button,
                 )?;
@@ -1288,7 +1250,7 @@ impl Renderer {
                     "Old clips are never uploaded.",
                     left,
                     right,
-                    346.0,
+                    settings_row_top(1),
                     Action::ChooseStorageLimit,
                     SettingControl::Dropdown,
                 )?;
@@ -1296,7 +1258,7 @@ impl Renderer {
         }
         self.pill(
             rect(right - 160.0, 205.0, right, 249.0),
-            SUCCESS,
+            ACCENT,
             "Save settings",
             CANVAS,
             Some(Action::SaveSettings),
@@ -1339,7 +1301,7 @@ impl Renderer {
         )?;
         self.pill(
             rect(right - 274.0, 112.0, right - 142.0, 152.0),
-            SUCCESS,
+            ACCENT,
             "Edit clip",
             CANVAS,
             Some(Action::EditActiveClip),
@@ -1385,7 +1347,7 @@ impl Renderer {
             let playhead = rail.left + (rail.right - rail.left) * progress;
             self.fill(
                 rect(rail.left, rail.top, playhead, rail.bottom),
-                SUCCESS,
+                ACCENT,
                 3.0,
             )?;
             self.fill(
@@ -1483,7 +1445,7 @@ impl Renderer {
         let timeline = rect(left, timeline_top, right, timeline_top + 104.0);
         self.fill(timeline, SURFACE, 11.0)?;
         self.text(
-            "KEEP THIS MOMENT",
+            "Keep this moment",
             rect(
                 left + 16.0,
                 timeline_top + 10.0,
@@ -1541,7 +1503,7 @@ impl Renderer {
                 timeline.bottom + 50.0,
             ),
             if model.editor_timing.is_some() && !model.editor_working {
-                SUCCESS
+                ACCENT
             } else {
                 SURFACE_HOVER
             },
@@ -1578,7 +1540,7 @@ impl Renderer {
                 for keyframe in timing.keyframes.iter().step_by(stride) {
                     let fraction = (keyframe.as_secs_f64() / duration).clamp(0.0, 1.0) as f32;
                     let x = rail.left + (rail.right - rail.left) * fraction;
-                    self.fill(rect(x, top + 22.0, x + 1.0, top + 27.0), SUCCESS, 0.0)?;
+                    self.fill(rect(x, top + 22.0, x + 1.0, top + 27.0), ACCENT, 0.0)?;
                 }
             }
             let start_fraction =
@@ -1586,7 +1548,7 @@ impl Renderer {
             let end_fraction = (model.editor_end.as_secs_f64() / duration).clamp(0.0, 1.0) as f32;
             let start_x = rail.left + (rail.right - rail.left) * start_fraction;
             let end_x = rail.left + (rail.right - rail.left) * end_fraction;
-            self.fill(rect(start_x, rail.top, end_x, rail.bottom), SUCCESS, 0.0)?;
+            self.fill(rect(start_x, rail.top, end_x, rail.bottom), ACCENT, 0.0)?;
             let start_handle = rect(start_x - 6.0, top - 6.0, start_x + 6.0, top + 30.0);
             let end_handle = rect(end_x - 6.0, top - 6.0, end_x + 6.0, top + 30.0);
             let playhead_fraction =
@@ -1626,13 +1588,13 @@ impl Renderer {
         right: f32,
     ) -> Result<(), String> {
         self.text(
-            &subtitle.to_ascii_uppercase(),
+            subtitle,
             rect(left, 116.0, right, 138.0),
             &self.small.clone(),
-            SUCCESS,
+            SECONDARY,
         )?;
         self.text(
-            &title.to_ascii_uppercase(),
+            title,
             rect(left, 141.0, right, 181.0),
             &self.heading.clone(),
             PRIMARY,
@@ -1676,7 +1638,7 @@ impl Renderer {
             self.fill(
                 card,
                 if self.is_hovered(&action) {
-                    mix(SURFACE, SUCCESS, self.hover_progress * 0.065)
+                    mix(SURFACE, ACCENT, self.hover_progress * 0.065)
                 } else {
                     SURFACE
                 },
@@ -1685,7 +1647,7 @@ impl Renderer {
             self.stroke(
                 card,
                 if self.is_hovered(&action) {
-                    mix(BORDER, SUCCESS, self.hover_progress * 0.55)
+                    mix(BORDER, ACCENT, self.hover_progress * 0.55)
                 } else {
                     BORDER
                 },
@@ -1741,13 +1703,13 @@ impl Renderer {
             self.fill(
                 area,
                 if active {
-                    0x101d31
+                    ACCENT_MUTED
                 } else {
-                    mix(SURFACE, SUCCESS, self.hover_progress * 0.10)
+                    mix(SURFACE, ACCENT, self.hover_progress * 0.10)
                 },
                 9.0,
             )?;
-            self.stroke(area, if active { 0x234a7d } else { BORDER }, 9.0, 1.0)?;
+            self.stroke(area, if active { ACCENT } else { BORDER }, 9.0, 1.0)?;
         }
         self.text(
             name,
@@ -1760,6 +1722,215 @@ impl Renderer {
             rect(area.right - 32.0, area.top, area.right, area.bottom),
             &self.small.clone(),
             SECONDARY,
+        )?;
+        self.hits.push(HitRegion { rect: area, action });
+        Ok(())
+    }
+
+    fn render_text_input(
+        &mut self,
+        input: &TextInput,
+        field: LogicalRect,
+        placeholder: &str,
+        focused: bool,
+        target: TextInputTarget,
+    ) -> Result<(), String> {
+        let body = self.body.clone();
+        if input.value.is_empty() {
+            self.text(placeholder, field, &body, SECONDARY)?;
+        } else {
+            if focused {
+                let (start, end) = input.selection();
+                if end > start {
+                    let before: String = input.value.chars().take(start).collect();
+                    let selected: String =
+                        input.value.chars().skip(start).take(end - start).collect();
+                    let offset = self.measure(&before, &body);
+                    let width = self.measure(&selected, &body);
+                    self.fill(
+                        rect(
+                            field.left + offset,
+                            field.top + 8.0,
+                            (field.left + offset + width).min(field.right),
+                            field.bottom - 8.0,
+                        ),
+                        SELECTION,
+                        3.0,
+                    )?;
+                }
+            }
+            self.text(&input.value, field, &body, PRIMARY)?;
+        }
+
+        if focused {
+            let prefixes = (0..=input.characters())
+                .map(|count| {
+                    let prefix: String = input.value.chars().take(count).collect();
+                    self.measure(&prefix, &body)
+                })
+                .collect::<Vec<_>>();
+            let caret_x = (field.left + prefixes[input.caret]).min(field.right);
+            self.fill(
+                rect(caret_x, field.top + 8.0, caret_x + 1.5, field.bottom - 8.0),
+                PRIMARY,
+                0.0,
+            )?;
+            for index in 0..=input.characters() {
+                let left = if index == 0 {
+                    field.left
+                } else {
+                    field.left + (prefixes[index - 1] + prefixes[index]) / 2.0
+                };
+                let right = if index == input.characters() {
+                    field.right
+                } else {
+                    field.left + (prefixes[index] + prefixes[index + 1]) / 2.0
+                };
+                self.hits.push(HitRegion {
+                    rect: rect(
+                        left.min(field.right),
+                        field.top,
+                        right.min(field.right),
+                        field.bottom,
+                    ),
+                    action: match target {
+                        TextInputTarget::Search => Action::PlaceSearchCaret(index),
+                        TextInputTarget::Prompt => Action::PlacePromptCaret(index),
+                    },
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn render_context_menu(
+        &mut self,
+        model: &UiModel,
+        width: f32,
+        height: f32,
+    ) -> Result<(), String> {
+        let Some(context) = model.context_menu else {
+            return Ok(());
+        };
+        let Some(clip) = model.clips.get(context.clip) else {
+            return Ok(());
+        };
+        self.hits.push(HitRegion {
+            rect: rect(0.0, 0.0, width, height),
+            action: Action::DismissContextMenu,
+        });
+
+        let visible_collections = model.collections.len().min(6);
+        let collection_rows = if visible_collections == 0 {
+            0
+        } else {
+            visible_collections + 1
+        };
+        let menu_width = 252.0;
+        let menu_height = 66.0 + (3 + collection_rows) as f32 * 44.0 + 18.0;
+        let left = context.x.min(width - menu_width - 16.0).max(16.0);
+        let top = context.y.min(height - menu_height - 16.0).max(16.0);
+        let menu = rect(left, top, left + menu_width, top + menu_height);
+        self.fill(menu, SURFACE_RAISED, 10.0)?;
+        self.stroke(menu, BORDER, 10.0, 1.0)?;
+        self.text(
+            "Clip actions",
+            rect(left + 16.0, top + 12.0, menu.right - 16.0, top + 30.0),
+            &self.small.clone(),
+            SECONDARY,
+        )?;
+        self.text(
+            &clip.title,
+            rect(left + 16.0, top + 31.0, menu.right - 16.0, top + 58.0),
+            &self.body.clone(),
+            PRIMARY,
+        )?;
+
+        let mut row_top = top + 66.0;
+        self.context_menu_row(
+            rect(left + 8.0, row_top, menu.right - 8.0, row_top + 40.0),
+            "Edit clip",
+            Action::EditClip(context.clip),
+            false,
+        )?;
+        row_top += 44.0;
+        self.context_menu_row(
+            rect(left + 8.0, row_top, menu.right - 8.0, row_top + 40.0),
+            "Rename",
+            Action::RenameClip(context.clip),
+            false,
+        )?;
+        row_top += 44.0;
+
+        if visible_collections > 0 {
+            self.text(
+                "Move to collection",
+                rect(
+                    left + 16.0,
+                    row_top + 4.0,
+                    menu.right - 16.0,
+                    row_top + 28.0,
+                ),
+                &self.small.clone(),
+                SECONDARY,
+            )?;
+            row_top += 44.0;
+            for (collection, item) in model
+                .collections
+                .iter()
+                .take(visible_collections)
+                .enumerate()
+            {
+                self.context_menu_row(
+                    rect(left + 8.0, row_top, menu.right - 8.0, row_top + 40.0),
+                    &item.name,
+                    Action::MoveClipToCollection {
+                        clip: context.clip,
+                        collection,
+                    },
+                    false,
+                )?;
+                row_top += 44.0;
+            }
+        }
+
+        self.fill(
+            rect(left + 16.0, row_top + 1.0, menu.right - 16.0, row_top + 2.0),
+            BORDER,
+            0.0,
+        )?;
+        row_top += 6.0;
+        self.context_menu_row(
+            rect(left + 8.0, row_top, menu.right - 8.0, row_top + 40.0),
+            "Delete clip",
+            Action::DeleteClip(context.clip),
+            true,
+        )
+    }
+
+    fn context_menu_row(
+        &mut self,
+        area: LogicalRect,
+        label: &str,
+        action: Action,
+        dangerous: bool,
+    ) -> Result<(), String> {
+        if self.is_hovered(&action) {
+            self.fill(
+                area,
+                if dangerous {
+                    mix(SURFACE_HOVER, DANGER, 0.28)
+                } else {
+                    mix(SURFACE_HOVER, ACCENT, self.hover_progress * 0.10)
+                },
+                9.0,
+            )?;
+        }
+        self.text(
+            label,
+            rect(area.left + 12.0, area.top, area.right - 12.0, area.bottom),
+            &self.body.clone(),
+            if dangerous { DANGER } else { PRIMARY },
         )?;
         self.hits.push(HitRegion { rect: area, action });
         Ok(())
@@ -1785,8 +1956,8 @@ impl Renderer {
         let left = (width - modal_width) / 2.0;
         let top = (height - modal_height) / 2.0;
         let modal = rect(left, top, left + modal_width, top + modal_height);
-        self.fill(modal, SURFACE, 14.0)?;
-        self.stroke(modal, BORDER, 14.0, 1.0)?;
+        self.fill(modal, SURFACE_RAISED, 12.0)?;
+        self.stroke(modal, BORDER, 12.0, 1.0)?;
         let (title, detail, confirmation) = match target {
             DeleteTarget::Clip(index) => {
                 let name = model
@@ -1869,8 +2040,8 @@ impl Renderer {
         let left = (width - modal_width) / 2.0;
         let top = (height - modal_height) / 2.0;
         let modal = rect(left, top, left + modal_width, top + modal_height);
-        self.fill(modal, SURFACE, 14.0)?;
-        self.stroke(modal, BORDER, 14.0, 1.0)?;
+        self.fill(modal, SURFACE_RAISED, 12.0)?;
+        self.stroke(modal, BORDER, 12.0, 1.0)?;
         self.hits.push(HitRegion {
             rect: modal,
             action: Action::DismissNotice,
@@ -1889,51 +2060,21 @@ impl Renderer {
         )?;
         let field = rect(left + 28.0, top + 90.0, modal.right - 28.0, top + 134.0);
         self.fill(field, STAGE, 10.0)?;
-        self.stroke(field, BORDER, 10.0, 1.0)?;
-        let body = self.body.clone();
-        let text_left = field.left + 14.0;
-        let (start, end) = prompt.selection();
-        if end > start {
-            let before: String = prompt.value.chars().take(start).collect();
-            let selected: String = prompt.value.chars().skip(start).take(end - start).collect();
-            let offset = self.measure(&before, &body);
-            let width = self.measure(&selected, &body);
-            self.fill(
-                rect(
-                    text_left + offset,
-                    field.top + 9.0,
-                    text_left + offset + width,
-                    field.bottom - 9.0,
-                ),
-                SELECTION,
-                3.0,
-            )?;
-        }
-        self.text(
-            &prompt.value,
+        self.stroke(field, ACCENT, 10.0, 1.0)?;
+        self.render_text_input(
+            &prompt.input,
             rect(
-                text_left,
-                field.top + 11.0,
+                field.left + 14.0,
+                field.top,
                 field.right - 14.0,
-                field.bottom - 9.0,
+                field.bottom,
             ),
-            &body,
-            PRIMARY,
-        )?;
-        let caret_prefix: String = prompt.value.chars().take(prompt.caret).collect();
-        let caret_x = text_left + self.measure(&caret_prefix, &body);
-        self.fill(
-            rect(
-                caret_x,
-                field.top + 10.0,
-                caret_x + 1.5,
-                field.bottom - 10.0,
-            ),
-            PRIMARY,
-            0.0,
+            "",
+            true,
+            TextInputTarget::Prompt,
         )?;
         self.text(
-            "Ctrl+A selects all · Enter confirms · Esc cancels",
+            "Ctrl+A select all · Ctrl+C/X/V · Enter confirm · Esc cancel",
             rect(left + 28.0, top + 142.0, modal.right - 28.0, top + 162.0),
             &self.small.clone(),
             SECONDARY,
@@ -1957,7 +2098,7 @@ impl Renderer {
                 modal.right - 22.0,
                 modal.bottom - 22.0,
             ),
-            PRIMARY,
+            ACCENT,
             prompt.confirm(),
             CANVAS,
             Some(Action::ConfirmPrompt),
@@ -1976,11 +2117,11 @@ impl Renderer {
         action: Action,
         control: SettingControl,
     ) -> Result<(), String> {
-        let area = rect(left, top, right, top + 76.0);
+        let area = rect(left, top, right, top + SETTINGS_ROW_HEIGHT);
         self.fill(
             area,
             if self.is_hovered(&action) {
-                mix(SURFACE, SUCCESS, self.hover_progress * 0.055)
+                mix(SURFACE, ACCENT, self.hover_progress * 0.055)
             } else {
                 SURFACE
             },
@@ -2012,17 +2153,20 @@ impl Renderer {
         self.fill(
             control_area,
             if enabled_toggle {
-                SUCCESS
+                ACCENT_MUTED
             } else if self.is_hovered(&action) {
-                mix(SURFACE_HOVER, SUCCESS, self.hover_progress * 0.13)
+                mix(SURFACE_HOVER, ACCENT, self.hover_progress * 0.13)
             } else {
                 SURFACE_HOVER
             },
             9.0,
         )?;
-        if !enabled_toggle {
-            self.stroke(control_area, BORDER, 9.0, 1.0)?;
-        }
+        self.stroke(
+            control_area,
+            if enabled_toggle { ACCENT } else { BORDER },
+            9.0,
+            1.0,
+        )?;
         match control {
             SettingControl::Dropdown => {
                 self.text(
@@ -2047,12 +2191,9 @@ impl Renderer {
                     SECONDARY,
                 )?;
             }
-            SettingControl::Button | SettingControl::Toggle => self.text(
-                value,
-                control_area,
-                &self.body_center.clone(),
-                if enabled_toggle { CANVAS } else { PRIMARY },
-            )?,
+            SettingControl::Button | SettingControl::Toggle => {
+                self.text(value, control_area, &self.body_center.clone(), PRIMARY)?
+            }
         }
         self.hits.push(HitRegion {
             rect: control_area,
@@ -2087,22 +2228,19 @@ impl Renderer {
         let hovered = action
             .as_ref()
             .is_some_and(|candidate| self.is_hovered(candidate));
-        let background = if hovered {
-            mix(
-                background,
-                if background == SUCCESS {
-                    PRIMARY
-                } else {
-                    SUCCESS
-                },
-                self.hover_progress * if background == SUCCESS { 0.10 } else { 0.13 },
-            )
+        let is_accent = background == ACCENT;
+        let rendered_background = if hovered {
+            if is_accent {
+                mix(ACCENT, ACCENT_HOVER, self.hover_progress)
+            } else {
+                mix(background, ACCENT, self.hover_progress * 0.10)
+            }
         } else {
             background
         };
-        self.fill(area, background, 9.0)?;
-        if background != SUCCESS {
-            self.stroke(area, BORDER, 9.0, 1.0)?;
+        self.fill(area, rendered_background, 8.0)?;
+        if !is_accent {
+            self.stroke(area, BORDER, 8.0, 1.0)?;
         }
         self.text(label, area, &self.body_center.clone(), foreground)?;
         if let Some(action) = action {

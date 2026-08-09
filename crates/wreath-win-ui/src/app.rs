@@ -4,10 +4,17 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, GlobalFree, HANDLE, HGLOBAL, HWND, LPARAM,
+    LRESULT, POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT, UpdateWindow};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+use windows::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
+};
+use windows::Win32::System::Memory::{
+    GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
+};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
 };
@@ -17,31 +24,28 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreatePopupMenu,
     CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, FindWindowW, GWLP_USERDATA,
-    GetClientRect, GetCursorPos, GetMessageW, GetWindowLongPtrW, HMENU, IDC_ARROW, LoadCursorW,
-    MF_CHECKED, MF_SEPARATOR, MF_STRING, MINMAXINFO, MSG, PostQuitMessage, RegisterClassW,
-    SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
-    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_CHAR, WM_COMMAND,
-    WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSW,
-    WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW,
+    GetClientRect, GetCursorPos, GetMessageW, GetWindowLongPtrW, IDC_ARROW, LoadCursorW,
+    MF_CHECKED, MF_STRING, MINMAXINFO, MSG, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
+    SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetTimer,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
+    TranslateMessage, WINDOW_EX_STYLE, WM_CHAR, WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO,
+    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP,
+    WM_SIZE, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSW, WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::config::Codec;
 use wreath_core::ipc::{Request, Response};
 
-use crate::model::{Action, DeleteTarget, DisplayOption, PromptKind, UiModel};
+use crate::model::{
+    Action, ClipContextMenu, DeleteTarget, DisplayOption, PromptKind, TextInput, UiModel,
+};
 use crate::player::{PLAYER_EVENT, Player};
 use crate::renderer::{
     Renderer, editor_player_bounds, editor_timeline_fraction, editor_timeline_rail, player_bounds,
 };
 
 const WINDOW_CLASS: windows::core::PCWSTR = w!("WreathApplicationWindow");
-const COMMAND_CLIP_RENAME: usize = 500;
-const COMMAND_CLIP_DELETE: usize = 501;
-const COMMAND_CLIP_MOVE_LIBRARY: usize = 502;
-const COMMAND_CLIP_EDIT: usize = 503;
-const COMMAND_CLIP_MOVE_COLLECTION_BASE: usize = 600;
+const CF_UNICODETEXT_FORMAT: u32 = 13;
 const PLAYER_TIMER: usize = 2;
 const WM_MOUSELEAVE_MESSAGE: u32 = 0x02a3;
 const PREVIEW_SEEK_INTERVAL: Duration = Duration::from_millis(120);
@@ -56,7 +60,7 @@ struct AppState {
     dpi: u32,
     player: Option<Player>,
     video_window: Option<HWND>,
-    context_clip: Option<usize>,
+    text_drag: Option<TextDrag>,
     trim_updates: mpsc::Receiver<TrimUpdate>,
     trim_sender: mpsc::Sender<TrimUpdate>,
     editor_drag: Option<EditorDrag>,
@@ -68,6 +72,12 @@ struct AppState {
 enum EditorDrag {
     Start,
     End,
+}
+
+#[derive(Clone, Copy)]
+enum TextDrag {
+    Search,
+    Prompt,
 }
 
 enum TrimUpdate {
@@ -131,7 +141,7 @@ fn run_initialized() -> Result<(), String> {
         dpi: 96,
         player: None,
         video_window: None,
-        context_clip: None,
+        text_drag: None,
         trim_updates,
         trim_sender,
         editor_drag: None,
@@ -331,14 +341,31 @@ unsafe extern "system" fn window_proc(
                 let scale = state.dpi as f32 / 96.0;
                 let x = signed_low_word(lparam.0) as f32 / scale;
                 let y = signed_high_word(lparam.0) as f32 / scale;
-                state.editor_drag = match state.renderer.hit_test(x, y) {
+                let hit = state.renderer.hit_test(x, y);
+                state.editor_drag = match hit.as_ref() {
                     Some(Action::DragEditorStart) => Some(EditorDrag::Start),
                     Some(Action::DragEditorEnd) => Some(EditorDrag::End),
                     _ => None,
                 };
-                if state.editor_drag.is_some() {
+                state.text_drag = match hit.as_ref() {
+                    Some(Action::PlaceSearchCaret(position)) => {
+                        state.model.search_focused = true;
+                        state.model.search.move_caret(*position, key_pressed(0x10));
+                        Some(TextDrag::Search)
+                    }
+                    Some(Action::PlacePromptCaret(position)) => {
+                        if let Some(prompt) = &mut state.model.prompt {
+                            prompt.input.move_caret(*position, key_pressed(0x10));
+                        }
+                        Some(TextDrag::Prompt)
+                    }
+                    _ => None,
+                };
+                if state.editor_drag.is_some() || state.text_drag.is_some() {
                     unsafe { SetCapture(window) };
-                    update_editor_drag(state, x, true);
+                    if state.editor_drag.is_some() {
+                        update_editor_drag(state, x, true);
+                    }
                     redraw(window);
                 }
             }
@@ -364,7 +391,10 @@ unsafe extern "system" fn window_proc(
                 if state.editor_drag.is_some() {
                     update_editor_drag(state, x, false);
                 }
-                if hover_changed || state.editor_drag.is_some() {
+                if state.text_drag.is_some() {
+                    update_text_drag(state, x, y);
+                }
+                if hover_changed || state.editor_drag.is_some() || state.text_drag.is_some() {
                     redraw(window);
                 }
             }
@@ -389,6 +419,11 @@ unsafe extern "system" fn window_proc(
                     state.editor_drag = None;
                     let _ = unsafe { ReleaseCapture() };
                     redraw(window);
+                } else if state.text_drag.is_some() {
+                    update_text_drag(state, x, y);
+                    state.text_drag = None;
+                    let _ = unsafe { ReleaseCapture() };
+                    redraw(window);
                 } else if let Some(action) = state.renderer.hit_test(x, y) {
                     handle_action(window, state, action);
                 }
@@ -401,15 +436,9 @@ unsafe extern "system" fn window_proc(
                 let x = signed_low_word(lparam.0) as f32 / scale;
                 let y = signed_high_word(lparam.0) as f32 / scale;
                 if let Some(Action::OpenClip(index)) = state.renderer.hit_test(x, y) {
-                    state.context_clip = Some(index);
-                    show_clip_menu(window, &state.model);
+                    state.model.context_menu = Some(ClipContextMenu { clip: index, x, y });
+                    redraw(window);
                 }
-            }
-            LRESULT(0)
-        }
-        WM_COMMAND => {
-            if let Some(state) = state_mut(window) {
-                handle_clip_command(window, state, wparam.0 & 0xffff);
             }
             LRESULT(0)
         }
@@ -422,11 +451,11 @@ unsafe extern "system" fn window_proc(
                         character => {
                             if let Some(prompt) = &mut state.model.prompt {
                                 match character {
-                                    1 => prompt.select_all(),
-                                    8 => prompt.backspace(),
+                                    1 | 3 | 22 | 24 => {}
+                                    8 => prompt.input.backspace(),
                                     character => {
                                         if let Some(character) = char::from_u32(character) {
-                                            prompt.insert(character);
+                                            prompt.input.insert(character);
                                         }
                                     }
                                 }
@@ -443,21 +472,30 @@ unsafe extern "system" fn window_proc(
         }
         WM_KEYDOWN if state_mut(window).is_some_and(|state| state.model.prompt.is_some()) => {
             let extend = key_pressed(0x10);
-            let handled = matches!(wparam.0 as u32, 0x25 | 0x27 | 0x24 | 0x23 | 0x2e);
-            if handled
-                && let Some(state) = state_mut(window)
-                && let Some(prompt) = &mut state.model.prompt
-            {
-                match wparam.0 as u32 {
-                    0x25 => prompt.caret_left(extend),
-                    0x27 => prompt.caret_right(extend),
-                    0x24 => prompt.caret_home(extend),
-                    0x23 => prompt.caret_end(extend),
-                    _ => prompt.delete(),
-                }
-                redraw(window);
-            }
+            let handled = state_mut(window)
+                .and_then(|state| state.model.prompt.as_mut())
+                .is_some_and(|prompt| {
+                    handle_text_key(window, &mut prompt.input, wparam.0 as u32, extend)
+                });
             if handled {
+                redraw(window);
+                LRESULT(0)
+            } else {
+                unsafe { DefWindowProcW(window, message, wparam, lparam) }
+            }
+        }
+        WM_KEYDOWN if state_mut(window).is_some_and(|state| state.model.search_focused) => {
+            let extend = key_pressed(0x10);
+            let handled = state_mut(window).is_some_and(|state| {
+                if matches!(wparam.0 as u32, 0x0d | 0x1b) {
+                    state.model.search_focused = false;
+                    true
+                } else {
+                    handle_text_key(window, &mut state.model.search, wparam.0 as u32, extend)
+                }
+            });
+            if handled {
+                redraw(window);
                 LRESULT(0)
             } else {
                 unsafe { DefWindowProcW(window, message, wparam, lparam) }
@@ -569,9 +607,51 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         }
         Action::SettingsSection(section) => state.model.settings_section = section,
         Action::OpenClip(index) => {
+            state.model.context_menu = None;
             state.model.open_clip(index);
             open_current_clip(state);
         }
+        Action::EditClip(index) => {
+            state.model.context_menu = None;
+            state.model.open_clip(index);
+            open_current_clip(state);
+            begin_editor(state);
+        }
+        Action::RenameClip(index) => {
+            state.model.context_menu = None;
+            state.model.begin_rename(index);
+        }
+        Action::DeleteClip(index) => {
+            state.model.context_menu = None;
+            state.model.pending_delete = Some(DeleteTarget::Clip(index));
+        }
+        Action::MoveClipToCollection { clip, collection } => {
+            state.model.context_menu = None;
+            let result = state
+                .model
+                .clips
+                .get(clip)
+                .cloned()
+                .zip(state.model.collections.get(collection).cloned())
+                .ok_or_else(|| "Clip or collection is no longer available".to_owned())
+                .and_then(|(clip, collection)| {
+                    wreath_core::clips::move_to_collection(
+                        &clip,
+                        &state.model.config.storage.directory,
+                        &collection.path,
+                        &state.model.paths.thumbnail_dir,
+                    )
+                    .map_err(|error| error.to_string())
+                });
+            match result {
+                Ok(_) => {
+                    let refresh = state.model.refresh();
+                    set_result(&mut state.model, refresh, "Clip moved");
+                }
+                Err(error) => state.model.notice = Some(error),
+            }
+        }
+        Action::DismissContextMenu => state.model.context_menu = None,
         Action::Back => {
             stop_player(state);
             state.model.navigate(state.model.previous_page);
@@ -609,11 +689,13 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
                 update_player_window(state);
             }
             state.model.search_focused = true;
+            state.model.search.select_all();
         }
         Action::ClearSearch => {
-            state.model.query.clear();
+            state.model.search.clear();
             state.model.active_collection = None;
         }
+        Action::PlaceSearchCaret(_) | Action::PlacePromptCaret(_) => {}
         Action::DismissNotice => state.model.notice = None,
         Action::ToggleSidebar => {
             state.model.sidebar_expanded = !state.model.sidebar_expanded;
@@ -856,7 +938,7 @@ fn confirm_prompt(state: &mut AppState) {
     let Some(prompt) = state.model.prompt.take() else {
         return;
     };
-    let name = prompt.value.trim().to_owned();
+    let name = prompt.input.value.trim().to_owned();
     let outcome = match prompt.kind {
         PromptKind::NewCollection => {
             let directory = state.model.config.storage.directory.clone();
@@ -925,97 +1007,6 @@ fn confirm_delete(model: &mut UiModel) {
     }
 }
 
-fn show_clip_menu(window: HWND, model: &UiModel) {
-    let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
-        return;
-    };
-    append_menu_item(menu, COMMAND_CLIP_RENAME, "Rename");
-    append_menu_item(menu, COMMAND_CLIP_EDIT, "Edit clip");
-    append_menu_item(menu, COMMAND_CLIP_MOVE_LIBRARY, "Move to Library");
-    for (index, collection) in model.collections.iter().take(64).enumerate() {
-        append_menu_item(
-            menu,
-            COMMAND_CLIP_MOVE_COLLECTION_BASE + index,
-            &format!("Move to {}", collection.name),
-        );
-    }
-    let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, None) };
-    append_menu_item(menu, COMMAND_CLIP_DELETE, "Delete clip");
-    let mut point = POINT::default();
-    if unsafe { GetCursorPos(&mut point) }.is_ok() {
-        unsafe {
-            let _ = SetForegroundWindow(window);
-            let _ = TrackPopupMenu(menu, TPM_RIGHTBUTTON, point.x, point.y, None, window, None);
-        }
-    }
-    let _ = unsafe { DestroyMenu(menu) };
-}
-
-fn append_menu_item(menu: HMENU, command: usize, label: &str) {
-    let label = wide(label);
-    let _ = unsafe { AppendMenuW(menu, MF_STRING, command, PCWSTR(label.as_ptr())) };
-}
-
-fn handle_clip_command(window: HWND, state: &mut AppState, command: usize) {
-    let Some(index) = state.context_clip else {
-        return;
-    };
-    let Some(clip) = state.model.clips.get(index).cloned() else {
-        return;
-    };
-    if command == COMMAND_CLIP_DELETE {
-        state.model.pending_delete = Some(DeleteTarget::Clip(index));
-        state.context_clip = None;
-        redraw(window);
-        return;
-    }
-    if command == COMMAND_CLIP_EDIT {
-        state.model.open_clip(index);
-        open_current_clip(state);
-        begin_editor(state);
-        state.context_clip = None;
-        redraw(window);
-        return;
-    }
-    if command == COMMAND_CLIP_RENAME {
-        state.model.begin_rename(index);
-        state.context_clip = None;
-        redraw(window);
-        return;
-    }
-    let result = match command {
-        COMMAND_CLIP_MOVE_LIBRARY => wreath_core::clips::move_to_library(
-            &clip,
-            &state.model.config.storage.directory,
-            &state.model.paths.thumbnail_dir,
-        )
-        .map(|_| "Clip moved to Library"),
-        command if command >= COMMAND_CLIP_MOVE_COLLECTION_BASE => {
-            let collection_index = command - COMMAND_CLIP_MOVE_COLLECTION_BASE;
-            let Some(collection) = state.model.collections.get(collection_index) else {
-                return;
-            };
-            wreath_core::clips::move_to_collection(
-                &clip,
-                &state.model.config.storage.directory,
-                &collection.path,
-                &state.model.paths.thumbnail_dir,
-            )
-            .map(|_| "Clip moved")
-        }
-        _ => return,
-    };
-    match result {
-        Ok(message) => {
-            let refresh = state.model.refresh();
-            set_result(&mut state.model, refresh, message);
-        }
-        Err(error) => state.model.notice = Some(error.to_string()),
-    }
-    state.context_clip = None;
-    redraw(window);
-}
-
 fn open_current_clip(state: &mut AppState) {
     update_player_window(state);
     let Some(path) = state.model.active_clip().map(|clip| clip.path.clone()) else {
@@ -1059,6 +1050,23 @@ fn update_editor_drag(state: &mut AppState, x: f32, settle: bool) {
         EditorDrag::End => state.model.editor_end,
     };
     seek_editor_preview(state, position, settle);
+}
+
+fn update_text_drag(state: &mut AppState, x: f32, y: f32) {
+    let Some(drag) = state.text_drag else {
+        return;
+    };
+    match (drag, state.renderer.hit_test(x, y)) {
+        (TextDrag::Search, Some(Action::PlaceSearchCaret(position))) => {
+            state.model.search.move_caret(position, true);
+        }
+        (TextDrag::Prompt, Some(Action::PlacePromptCaret(position))) => {
+            if let Some(prompt) = &mut state.model.prompt {
+                prompt.input.move_caret(position, true);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn seek_editor_preview(state: &mut AppState, position: Duration, settle: bool) {
@@ -1176,21 +1184,112 @@ fn sync_player_state(state: &mut AppState) {
     state.model.player_aspect_ratio = snapshot.aspect_ratio;
 }
 
+fn handle_text_key(window: HWND, input: &mut TextInput, key: u32, extend: bool) -> bool {
+    if key_pressed(0x11) {
+        return match key {
+            0x41 => {
+                input.select_all();
+                true
+            }
+            0x43 => {
+                let selected = input.selected_text();
+                if !selected.is_empty() {
+                    let _ = write_clipboard(window, &selected);
+                }
+                true
+            }
+            0x58 => {
+                let selected = input.selected_text();
+                if !selected.is_empty() && write_clipboard(window, &selected).is_ok() {
+                    input.delete();
+                }
+                true
+            }
+            0x56 => {
+                if let Ok(value) = read_clipboard(window) {
+                    input.insert_text(&value);
+                }
+                true
+            }
+            _ => false,
+        };
+    }
+    match key {
+        0x25 => input.caret_left(extend),
+        0x27 => input.caret_right(extend),
+        0x24 => input.caret_home(extend),
+        0x23 => input.caret_end(extend),
+        0x2e => input.delete(),
+        _ => return false,
+    }
+    true
+}
+
+fn read_clipboard(window: HWND) -> Result<String, String> {
+    unsafe { OpenClipboard(Some(window)) }.map_err(|error| error.to_string())?;
+    let result = (|| {
+        let handle = unsafe { GetClipboardData(CF_UNICODETEXT_FORMAT) }
+            .map_err(|error| error.to_string())?;
+        let memory = HGLOBAL(handle.0);
+        let size = unsafe { GlobalSize(memory) } / std::mem::size_of::<u16>();
+        let pointer = unsafe { GlobalLock(memory) }.cast::<u16>();
+        if pointer.is_null() {
+            return Err("Clipboard text is unavailable".into());
+        }
+        let units = unsafe { std::slice::from_raw_parts(pointer, size) };
+        let length = units.iter().position(|unit| *unit == 0).unwrap_or(size);
+        let value = String::from_utf16_lossy(&units[..length]);
+        let _ = unsafe { GlobalUnlock(memory) };
+        Ok(value)
+    })();
+    let _ = unsafe { CloseClipboard() };
+    result
+}
+
+fn write_clipboard(window: HWND, value: &str) -> Result<(), String> {
+    let units = value.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, units.len() * std::mem::size_of::<u16>()) }
+        .map_err(|error| error.to_string())?;
+    let pointer = unsafe { GlobalLock(HGLOBAL(memory.0)) }.cast::<u16>();
+    if pointer.is_null() {
+        let _ = unsafe { GlobalFree(Some(memory)) };
+        return Err("Cannot allocate clipboard text".into());
+    }
+    unsafe { std::ptr::copy_nonoverlapping(units.as_ptr(), pointer, units.len()) };
+    let _ = unsafe { GlobalUnlock(HGLOBAL(memory.0)) };
+
+    if let Err(error) = unsafe { OpenClipboard(Some(window)) } {
+        let _ = unsafe { GlobalFree(Some(memory)) };
+        return Err(error.to_string());
+    }
+    let result = (|| {
+        unsafe { EmptyClipboard() }.map_err(|error| error.to_string())?;
+        unsafe { SetClipboardData(CF_UNICODETEXT_FORMAT, Some(HANDLE(memory.0))) }
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })();
+    let _ = unsafe { CloseClipboard() };
+    if result.is_err() {
+        let _ = unsafe { GlobalFree(Some(memory)) };
+    }
+    result
+}
+
 fn handle_character(state: &mut AppState, character: u32) {
     if !state.model.search_focused {
         return;
     }
     match character {
+        1 | 3 | 22 | 24 => {}
         8 => {
-            state.model.query.pop();
+            state.model.search.backspace();
         }
         13 => state.model.search_focused = false,
         32..=0x10ffff => {
             if let Some(character) = char::from_u32(character)
                 && !character.is_control()
-                && state.model.query.chars().count() < 80
             {
-                state.model.query.push(character);
+                state.model.search.insert(character);
             }
         }
         _ => {}

@@ -6,6 +6,15 @@ ensure_directories
 require_boxes
 ensure_boxes_daemon
 
+FRESH_INSTALL=false
+if vm_disk_is_blank; then
+    FRESH_INSTALL=true
+fi
+if [[ "$FRESH_INSTALL" == true ]] && domain_exists && [[ "$(domain_state)" == "running" ]]; then
+    printf 'The unfinished VM is still running; stop it before repairing the installer.\n' >&2
+    exit 1
+fi
+
 if [[ ! -r /dev/kvm ]]; then
     printf 'KVM is not readable for %s; this setup intentionally does not change sudoers.\n' "$USER" >&2
     exit 1
@@ -22,9 +31,20 @@ if [[ ! -f "$WINDOWS_ISO" ]] || [[ "$(stat -c %s "$WINDOWS_ISO" 2>/dev/null || p
 fi
 echo "$WINDOWS_ISO_SHA256  $WINDOWS_ISO" | sha256sum --check
 
-if [[ ! -f "$WINDOWS_EFI_IMAGE" ]] || [[ "$(stat -c %s "$WINDOWS_EFI_IMAGE" 2>/dev/null || printf 0)" != "1474560" ]]; then
-    dd if="$WINDOWS_ISO" of="$WINDOWS_EFI_IMAGE" bs=2048 skip=555 count=720 status=none
-    python "$SCRIPT_DIR/inject-startup.py" "$WINDOWS_EFI_IMAGE" "$SCRIPT_DIR/guest/startup.nsh"
+if [[ "$FRESH_INSTALL" == true ]] || [[ ! -f "$WINDOWS_BOOT_ISO" ]]; then
+    cp --force --reflink=auto --sparse=always "$WINDOWS_ISO" "$WINDOWS_BOOT_ISO"
+    dd if="$WINDOWS_ISO" of="$WINDOWS_BOOT_ISO" bs=2048 \
+        skip="$WINDOWS_EFI_NOPROMPT_SECTOR" seek="$WINDOWS_EFI_PROMPT_SECTOR" \
+        count=720 conv=notrunc status=none
+    [[ "$(stat -c %s "$WINDOWS_BOOT_ISO")" == "$WINDOWS_ISO_SIZE" ]]
+    actual_efi_hash="$(
+        dd if="$WINDOWS_BOOT_ISO" bs=2048 skip="$WINDOWS_EFI_PROMPT_SECTOR" \
+            count=720 status=none | sha256sum | awk '{print $1}'
+    )"
+    if [[ "$actual_efi_hash" != "$WINDOWS_EFI_SHA256" ]]; then
+        printf 'The patched Windows EFI image failed verification.\n' >&2
+        exit 1
+    fi
 fi
 
 "$SCRIPT_DIR/rebuild-payload.sh"
@@ -34,20 +54,25 @@ if [[ ! -f "$VM_DISK" ]]; then
     flatpak run --command=qemu-img org.gnome.Boxes create -f qcow2 "$VM_DISK" 128G
 fi
 
-if ! domain_exists; then
+if ! domain_exists || [[ "$FRESH_INSTALL" == true ]]; then
+    if domain_exists && managed_save_exists; then
+        box_virsh managedsave-remove "$DOMAIN_NAME"
+    fi
+    if [[ "$FRESH_INSTALL" == true ]]; then
+        rm -f -- "$STATE_DIR/wreath-win11_VARS.fd" "$STATE_DIR/install-started"
+    fi
     python - "$SCRIPT_DIR/domain.xml.in" "$STATE_DIR/domain.xml" \
-        "$VM_DISK" "$WINDOWS_ISO" "$PAYLOAD_ISO" "$WINDOWS_EFI_IMAGE" \
+        "$VM_DISK" "$WINDOWS_BOOT_ISO" "$PAYLOAD_ISO" \
         "$STATE_DIR/wreath-win11_VARS.fd" <<'PY'
 import sys
 from pathlib import Path
 
-template, output, disk, windows_iso, payload_iso, windows_efi, nvram = sys.argv[1:]
+template, output, disk, windows_iso, payload_iso, nvram = sys.argv[1:]
 text = Path(template).read_text(encoding="utf-8")
 for key, value in {
     "@DISK@": disk,
     "@WINDOWS_ISO@": windows_iso,
     "@PAYLOAD_ISO@": payload_iso,
-    "@WINDOWS_EFI@": windows_efi,
     "@NVRAM@": nvram,
 }.items():
     text = text.replace(key, value)
@@ -57,10 +82,15 @@ PY
     box_virsh define "$STATE_DIR/domain.xml"
 fi
 
-nohup flatpak run org.gnome.Boxes --open-uuid="$DOMAIN_UUID" >/dev/null 2>&1 &
-sleep 2
-if [[ "$(domain_state)" != "running" ]]; then
+if [[ "$FRESH_INSTALL" == true ]]; then
+    start_windows_installer
+elif [[ "$(domain_state)" != "running" ]]; then
     box_virsh start "$DOMAIN_NAME"
 fi
-printf '\nWindows installation started. It is unattended and normally takes 10-25 minutes.\n'
+nohup flatpak run org.gnome.Boxes --open-uuid="$DOMAIN_UUID" >/dev/null 2>&1 &
+if [[ "$FRESH_INSTALL" == true ]]; then
+    printf '\nWindows installation started. It is unattended and normally takes 10-25 minutes.\n'
+else
+    printf '\nWindows VM started. The existing installation was left unchanged.\n'
+fi
 printf 'VM user: Wreath (automatic login); fallback password: WreathTest!2026\n'
