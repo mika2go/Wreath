@@ -82,6 +82,25 @@ pub enum PromptKind {
 
 pub const PROMPT_MAX_CHARACTERS: usize = 80;
 
+/// The named quality steps, from the cheapest replay buffer to the largest.
+pub const QUALITY_PRESETS: [(u8, &str); 5] = [
+    (50, "Low"),
+    (65, "Medium"),
+    (75, "High"),
+    (85, "Ultra"),
+    (100, "Insane"),
+];
+
+/// How a quality value reads. A value set outside the application, through
+/// `wreathctl config quality`, keeps its percentage rather than borrowing a
+/// name it does not match.
+pub fn quality_label(quality: u8) -> String {
+    QUALITY_PRESETS
+        .iter()
+        .find(|(value, _)| *value == quality)
+        .map_or_else(|| format!("{quality}%"), |(_, name)| (*name).to_owned())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompt {
     pub kind: PromptKind,
@@ -449,8 +468,8 @@ impl UiModel {
     ///
     /// The menu used to list bare percentages, which say nothing about the
     /// thing people care about — how large the clip ends up. Each choice now
-    /// carries the bitrate it aims for and the size a full replay reaches on
-    /// the selected monitor, at the configured frame rate, codec and duration.
+    /// carries a name and the size a full replay reaches on the selected
+    /// monitor, at the configured frame rate, codec and duration.
     pub fn quality_options(&self) -> Vec<(u8, String)> {
         let (width, height) = self
             .selected_display()
@@ -469,7 +488,10 @@ impl UiModel {
             disabled: false,
         };
         let seconds = self.config.capture.duration_seconds;
-        let mut values = vec![50, 65, 75, 85, 95, 100];
+        let mut values = QUALITY_PRESETS
+            .iter()
+            .map(|(value, _)| *value)
+            .collect::<Vec<_>>();
         values.push(self.config.capture.quality.min(100));
         values.sort_unstable();
         values.dedup();
@@ -478,12 +500,12 @@ impl UiModel {
             .map(|quality| {
                 let mut spec = wreath_core::replay::ReplaySpec::from_config(&self.config, &monitor);
                 spec.quality = quality;
-                let megabits = spec.target_bitrate_kbps().saturating_add(500) / 1_000;
                 let megabytes = spec.estimated_buffer_megabytes();
                 (
                     quality,
                     format!(
-                        "{quality}% · {megabits} Mbit/s · about {megabytes} MB per {seconds} s"
+                        "{} · about {megabytes} MB per {seconds} s",
+                        quality_label(quality)
                     ),
                 )
             })
@@ -619,7 +641,7 @@ mod tests {
     /// A bare percentage says nothing about what a setting costs, which is the
     /// one thing people want to know before changing it.
     #[test]
-    fn quality_choices_carry_their_bitrate_and_clip_size() {
+    fn quality_choices_are_named_and_carry_their_clip_size() {
         let mut model = model();
         model.displays.push(DisplayOption {
             name: "DISPLAY1".into(),
@@ -640,14 +662,32 @@ mod tests {
             .expect("the configured quality is always offered");
 
         assert_eq!(*value, 75);
-        assert_eq!(label, "75% · 27 Mbit/s · about 94 MB per 30 s");
+        assert_eq!(label, "High · about 94 MB per 30 s");
 
         // A lower setting has to read as visibly cheaper.
         let cheaper = options
             .iter()
             .find(|(value, _)| *value == 50)
             .expect("50 is offered");
-        assert_eq!(cheaper.1, "50% · 21 Mbit/s · about 75 MB per 30 s");
+        assert_eq!(cheaper.1, "Low · about 75 MB per 30 s");
+    }
+
+    /// A quality set from the command line is not one of the steps, so it keeps
+    /// its percentage instead of being labelled as a step it is not.
+    #[test]
+    fn a_quality_outside_the_steps_keeps_its_percentage() {
+        let mut model = model();
+        model.config.capture.quality = 62;
+
+        let options = model.quality_options();
+        let labels = options
+            .iter()
+            .map(|(_, label)| label.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(options.iter().any(|(value, _)| *value == 62));
+        assert!(labels.iter().any(|label| label.starts_with("62% · ")));
+        assert_eq!(options.len(), QUALITY_PRESETS.len() + 1);
     }
 
     #[test]

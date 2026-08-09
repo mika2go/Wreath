@@ -29,7 +29,7 @@ use windows::Win32::UI::Shell::{
 use windows::core::{PCWSTR, w};
 use windows_numerics::Vector2;
 
-use crate::model::{Action, DeleteTarget, Page, SettingsSection, UiModel};
+use crate::model::{Action, DeleteTarget, Page, SettingsSection, UiModel, quality_label};
 
 const CANVAS: u32 = 0x0d0d0f;
 const STAGE: u32 = 0x101012;
@@ -848,7 +848,7 @@ impl Renderer {
                 )?;
                 self.setting_row(
                     "Quality",
-                    &format!("{}%", model.config.capture.quality),
+                    &quality_label(model.config.capture.quality),
                     "Balances image detail and replay memory.",
                     left,
                     right,
