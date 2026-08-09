@@ -55,6 +55,7 @@ pub struct HotkeyConfig {
 pub struct AudioConfig {
     pub desktop: bool,
     pub desktop_gain_percent: u16,
+    pub exclude_discord: bool,
     pub microphone: bool,
     pub microphone_device: Option<String>,
     pub microphone_gain_percent: u16,
@@ -200,6 +201,7 @@ impl Default for AudioConfig {
         Self {
             desktop: true,
             desktop_gain_percent: 100,
+            exclude_discord: false,
             microphone: false,
             microphone_device: None,
             microphone_gain_percent: 100,
@@ -349,6 +351,7 @@ mod tests {
     fn older_audio_config_gets_a_unity_desktop_level() {
         let config: Config = toml::from_str("[audio]\ndesktop = true\n").unwrap();
         assert_eq!(config.audio.desktop_gain_percent, 100);
+        assert!(!config.audio.exclude_discord);
     }
 
     #[test]

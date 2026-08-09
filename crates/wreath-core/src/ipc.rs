@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::config::HotkeyConfig;
+
 #[derive(Debug)]
 pub enum IpcError {
     Io(io::Error),
@@ -43,6 +45,7 @@ pub enum Request {
     Save,
     Pause,
     Resume,
+    SetHotkey { hotkey: HotkeyConfig },
     Reload,
     Shutdown,
 }
@@ -129,6 +132,18 @@ mod tests {
 
         let mut reader = BufReader::new(Cursor::new(bytes));
         assert_eq!(read_request(&mut reader).unwrap(), Request::Save);
+    }
+
+    #[test]
+    fn hotkey_update_round_trips_over_line_framing() {
+        let request = Request::SetHotkey {
+            hotkey: HotkeyConfig::parse("CTRL+ALT+F8").unwrap(),
+        };
+        let mut bytes = Vec::new();
+        write_request(&mut bytes, &request).unwrap();
+
+        let mut reader = BufReader::new(Cursor::new(bytes));
+        assert_eq!(read_request(&mut reader).unwrap(), request);
     }
 
     #[test]

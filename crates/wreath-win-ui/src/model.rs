@@ -46,8 +46,10 @@ pub enum Action {
     DeleteClip(usize),
     DismissNotice,
     ToggleSidebar,
+    ToggleAutostart,
     ToggleCursor,
     ToggleDesktopAudio,
+    ToggleDiscordExclusion,
     ChooseDesktopGain,
     ToggleMicrophone,
     ChooseDuration,
@@ -383,7 +385,12 @@ pub struct UiModel {
     pub active_collection: Option<PathBuf>,
     pub active_clip: Option<usize>,
     pub notice: Option<String>,
+    pub autostart_enabled: bool,
     pub hotkey_capture: bool,
+    pub hotkey_modifiers: Vec<String>,
+    pub hotkey_pending: bool,
+    pub hotkey_deferred: bool,
+    pub hotkey_error: Option<String>,
     pub displays: Vec<DisplayOption>,
     pub microphone_names: Vec<(String, String)>,
     pub player_ready: bool,
@@ -428,7 +435,12 @@ impl UiModel {
             active_collection: None,
             active_clip: None,
             notice: None,
+            autostart_enabled: false,
             hotkey_capture: false,
+            hotkey_modifiers: Vec::new(),
+            hotkey_pending: false,
+            hotkey_deferred: false,
+            hotkey_error: None,
             displays: Vec::new(),
             microphone_names: Vec::new(),
             player_ready: false,
@@ -468,6 +480,8 @@ impl UiModel {
         self.context_menu = None;
         self.settings_menu = None;
         self.hotkey_capture = false;
+        self.hotkey_modifiers.clear();
+        self.hotkey_error = None;
         if !matches!(page, Page::Player | Page::Editor) {
             self.active_clip = None;
         }
@@ -713,7 +727,12 @@ mod tests {
             active_collection: None,
             active_clip: None,
             notice: None,
+            autostart_enabled: false,
             hotkey_capture: false,
+            hotkey_modifiers: Vec::new(),
+            hotkey_pending: false,
+            hotkey_deferred: false,
+            hotkey_error: None,
             displays: Vec::new(),
             microphone_names: Vec::new(),
             player_ready: false,

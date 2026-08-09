@@ -184,7 +184,7 @@ pub fn localized_hotkey_label(hotkey: &HotkeyConfig) -> String {
 
 pub fn default_windows_hotkey() -> HotkeyConfig {
     HotkeyConfig {
-        modifiers: vec!["CTRL".into(), "ALT".into()],
+        modifiers: vec!["CTRL".into()],
         key: "R".into(),
     }
 }
@@ -192,7 +192,9 @@ pub fn default_windows_hotkey() -> HotkeyConfig {
 /// Migrates the original Windows default, which used the OS-reserved Windows
 /// key and therefore was not a dependable global shortcut.
 pub fn migrate_legacy_windows_hotkey(hotkey: &mut HotkeyConfig) -> bool {
-    if hotkey.modifiers == ["SUPER", "SHIFT"] && hotkey.key == "R" {
+    if (hotkey.modifiers == ["SUPER", "SHIFT"] || hotkey.modifiers == ["CTRL", "ALT"])
+        && hotkey.key == "R"
+    {
         *hotkey = default_windows_hotkey();
         true
     } else {
@@ -210,6 +212,7 @@ pub struct NativeHotkey {
 pub enum HotkeyError {
     UnsupportedModifier(String),
     UnsupportedKey(String),
+    UnsafeCombination,
     Registration(String),
 }
 
@@ -220,6 +223,9 @@ impl fmt::Display for HotkeyError {
                 write!(formatter, "unsupported Windows hotkey modifier: {modifier}")
             }
             Self::UnsupportedKey(key) => write!(formatter, "unsupported Windows hotkey: {key}"),
+            Self::UnsafeCombination => formatter.write_str(
+                "use Ctrl or Shift with one other key; F1-F24 and Print Screen also work alone",
+            ),
             Self::Registration(message) => {
                 write!(formatter, "cannot register Windows hotkey: {message}")
             }
@@ -228,6 +234,29 @@ impl fmt::Display for HotkeyError {
 }
 
 impl std::error::Error for HotkeyError {}
+
+/// Refuses ordinary typing and multi-modifier chords. A newly selected shortcut
+/// is either Ctrl/Shift plus exactly one key, or a standalone function/Print
+/// Screen key. Existing config files remain loadable; this rule is applied only
+/// when choosing a new key.
+pub fn validate_hotkey_choice(hotkey: &HotkeyConfig) -> Result<(), HotkeyError> {
+    if !hotkey.is_bound() {
+        return Ok(());
+    }
+    NativeHotkey::try_from(hotkey)?;
+    let standalone_key = hotkey.key == "PRINTSCREEN"
+        || hotkey
+            .key
+            .strip_prefix('F')
+            .and_then(|number| number.parse::<u8>().ok())
+            .is_some_and(|number| (1..=24).contains(&number));
+    let supported_pair = matches!(hotkey.modifiers.as_slice(), [modifier] if matches!(modifier.as_str(), "CTRL" | "SHIFT"));
+    if (hotkey.modifiers.is_empty() && standalone_key) || supported_pair {
+        Ok(())
+    } else {
+        Err(HotkeyError::UnsafeCombination)
+    }
+}
 
 impl TryFrom<&HotkeyConfig> for NativeHotkey {
     type Error = HotkeyError;
@@ -288,7 +317,7 @@ impl Drop for HotkeyRegistration {
 #[cfg(target_os = "windows")]
 pub struct HotkeyListener {
     thread_id: u32,
-    rebind: std::sync::mpsc::SyncSender<HotkeyRebind>,
+    rebind: std::sync::mpsc::Sender<HotkeyRebind>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -315,7 +344,7 @@ impl HotkeyListener {
 
         let hotkey = hotkey.clone();
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
-        let (rebind_sender, rebind_receiver) = mpsc::sync_channel::<HotkeyRebind>(1);
+        let (rebind_sender, rebind_receiver) = mpsc::channel::<HotkeyRebind>();
         let thread = std::thread::Builder::new()
             .name("wreath-hotkey".into())
             .spawn(move || {
@@ -340,29 +369,37 @@ impl HotkeyListener {
                     if message.message == WM_HOTKEY && message.wParam.0 == id as usize {
                         on_hotkey();
                     } else if message.message == REBIND_MESSAGE {
-                        let Ok(request) = rebind_receiver.try_recv() else {
-                            continue;
-                        };
-                        drop(registration.take());
-                        match register_optional(id, &request.hotkey) {
-                            Ok(new_registration) => {
-                                current_hotkey = request.hotkey;
-                                registration = new_registration;
-                                let _ = request.reply.send(Ok(()));
-                            }
-                            Err(error) => {
-                                match register_optional(id, &current_hotkey) {
-                                    Ok(previous_registration) => {
-                                        registration = previous_registration;
-                                        let _ = request.reply.send(Err(error));
+                        while let Ok(request) = rebind_receiver.try_recv() {
+                            drop(registration.take());
+                            match register_optional(id, &request.hotkey) {
+                                Ok(new_registration) => {
+                                    if request.reply.send(Ok(())).is_ok() {
+                                        current_hotkey = request.hotkey;
+                                        registration = new_registration;
+                                    } else {
+                                        drop(new_registration);
+                                        match register_optional(id, &current_hotkey) {
+                                            Ok(previous_registration) => {
+                                                registration = previous_registration;
+                                            }
+                                            Err(_) => return,
+                                        }
                                     }
-                                    Err(restore_error) => {
-                                        let _ = request.reply.send(Err(HotkeyError::Registration(
-                                            format!(
-                                                "new shortcut failed ({error}); previous shortcut could not be restored ({restore_error})"
-                                            ),
-                                        )));
-                                        return;
+                                }
+                                Err(error) => {
+                                    match register_optional(id, &current_hotkey) {
+                                        Ok(previous_registration) => {
+                                            registration = previous_registration;
+                                            let _ = request.reply.send(Err(error));
+                                        }
+                                        Err(restore_error) => {
+                                            let _ = request.reply.send(Err(
+                                                HotkeyError::Registration(format!(
+                                                    "new shortcut failed ({error}); previous shortcut could not be restored ({restore_error})"
+                                                )),
+                                            ));
+                                            return;
+                                        }
                                     }
                                 }
                             }
@@ -401,7 +438,7 @@ impl HotkeyListener {
         unsafe { PostThreadMessageW(self.thread_id, REBIND_MESSAGE, WPARAM(0), LPARAM(0)) }
             .map_err(|error| HotkeyError::Registration(error.to_string()))?;
         reply_receiver
-            .recv()
+            .recv_timeout(std::time::Duration::from_secs(2))
             .map_err(|error| HotkeyError::Registration(error.to_string()))?
     }
 }
@@ -440,10 +477,7 @@ mod tests {
         let native = NativeHotkey::try_from(&hotkey).unwrap();
 
         assert_eq!(native.virtual_key, u32::from(b'R'));
-        assert_eq!(
-            native.modifiers,
-            MOD_CONTROL_VALUE | MOD_ALT_VALUE | MOD_NOREPEAT_VALUE
-        );
+        assert_eq!(native.modifiers, MOD_CONTROL_VALUE | MOD_NOREPEAT_VALUE);
     }
 
     #[test]
@@ -507,6 +541,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn new_shortcuts_are_exactly_one_modifier_plus_one_key() {
+        for hotkey in [
+            HotkeyConfig {
+                modifiers: Vec::new(),
+                key: "R".into(),
+            },
+            HotkeyConfig {
+                modifiers: vec!["CTRL".into(), "SHIFT".into()],
+                key: "R".into(),
+            },
+            HotkeyConfig {
+                modifiers: vec!["ALT".into()],
+                key: "R".into(),
+            },
+            HotkeyConfig {
+                modifiers: vec!["CTRL".into(), "SHIFT".into()],
+                key: "F8".into(),
+            },
+        ] {
+            assert_eq!(
+                validate_hotkey_choice(&hotkey),
+                Err(HotkeyError::UnsafeCombination)
+            );
+        }
+
+        for hotkey in [
+            HotkeyConfig {
+                modifiers: Vec::new(),
+                key: "F8".into(),
+            },
+            HotkeyConfig {
+                modifiers: vec!["CTRL".into()],
+                key: "C".into(),
+            },
+            HotkeyConfig {
+                modifiers: vec!["SHIFT".into()],
+                key: "9".into(),
+            },
+            default_windows_hotkey(),
+        ] {
+            assert_eq!(validate_hotkey_choice(&hotkey), Ok(()));
+        }
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn registered_hotkey_dispatches_its_callback() {
@@ -526,5 +605,38 @@ mod tests {
         }
 
         receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn failed_rebind_restores_the_previous_registered_hotkey() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_HOTKEY};
+
+        let original = HotkeyConfig {
+            modifiers: vec!["CTRL".into(), "ALT".into(), "SHIFT".into()],
+            key: "F23".into(),
+        };
+        let occupied = HotkeyConfig {
+            modifiers: vec!["CTRL".into(), "ALT".into(), "SHIFT".into()],
+            key: "F22".into(),
+        };
+        let blocker = HotkeyRegistration::register(98, &occupied).unwrap();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let listener = HotkeyListener::spawn(43, &original, move || {
+            let _ = sender.send(());
+        })
+        .unwrap();
+
+        assert!(listener.rebind(&occupied).is_err());
+        unsafe {
+            PostThreadMessageW(listener.thread_id, WM_HOTKEY, WPARAM(43), LPARAM(0)).unwrap();
+        }
+        receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        drop(listener);
+        drop(blocker);
     }
 }

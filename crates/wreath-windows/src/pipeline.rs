@@ -221,13 +221,17 @@ struct PipelineAudio {
     auxiliary_microphone: Option<crate::audio::MicrophoneCapture>,
     mixer: Option<crate::audio_mixer::PcmMixer>,
     master_converter: Option<crate::audio_mixer::PcmStreamConverter>,
+    microphone_track_converter: Option<crate::audio_mixer::PcmStreamConverter>,
     output_sample_rate: u32,
     output_channels: u16,
     master_gain_percent: u16,
+    microphone_gain_percent: u16,
     pending_master: std::collections::VecDeque<crate::audio::Pcm16Chunk>,
     microphone_watermark: Option<std::time::Duration>,
     microphone_clipped: u64,
     encoder: crate::audio_encoder::AacEncoder,
+    desktop_encoder: Option<crate::audio_encoder::AacEncoder>,
+    microphone_encoder: Option<crate::audio_encoder::AacEncoder>,
 }
 
 #[cfg(target_os = "windows")]
@@ -236,7 +240,7 @@ impl PipelineAudio {
         config: &wreath_core::config::AudioConfig,
     ) -> Result<Option<Self>, crate::audio::AudioError> {
         let (master, auxiliary_microphone) = if config.desktop {
-            let desktop = crate::audio::LoopbackCapture::spawn()?;
+            let desktop = crate::audio::LoopbackCapture::spawn(config.exclude_discord)?;
             let microphone = config
                 .microphone
                 .then(|| {
@@ -287,7 +291,37 @@ impl PipelineAudio {
                 )
             })
             .transpose()?;
+        let microphone_track_converter = auxiliary_microphone
+            .as_ref()
+            .map(|microphone| {
+                let microphone_format = microphone.format();
+                crate::audio_mixer::PcmStreamConverter::new_voice(
+                    microphone_format.sample_rate,
+                    microphone_format.channels,
+                    output_sample_rate,
+                    output_channels,
+                )
+            })
+            .transpose()?;
         let encoder = crate::audio_encoder::AacEncoder::initialize(settings)?;
+        let desktop_encoder = mixer
+            .as_ref()
+            .map(|_| {
+                crate::audio_encoder::AacEncoder::initialize_for_track(
+                    settings,
+                    wreath_core::replay_buffer::TrackKind::DesktopAudio,
+                )
+            })
+            .transpose()?;
+        let microphone_encoder = mixer
+            .as_ref()
+            .map(|_| {
+                crate::audio_encoder::AacEncoder::initialize_for_track(
+                    settings,
+                    wreath_core::replay_buffer::TrackKind::MicrophoneAudio,
+                )
+            })
+            .transpose()?;
         wreath_core::diagnostic!(
             "Wreath audio pipeline: master {} Hz/{} ch -> encoder {} Hz/{} ch at {} B/s, microphone mixer {}, desktop gain {}%, microphone gain {}%",
             format.sample_rate,
@@ -305,6 +339,7 @@ impl PipelineAudio {
             auxiliary_microphone,
             mixer,
             master_converter,
+            microphone_track_converter,
             output_sample_rate,
             output_channels,
             master_gain_percent: if config.desktop {
@@ -316,10 +351,13 @@ impl PipelineAudio {
             } else {
                 config.microphone_gain_percent.min(100)
             },
+            microphone_gain_percent: config.microphone_gain_percent,
             pending_master: std::collections::VecDeque::with_capacity(12),
             microphone_watermark: None,
             microphone_clipped: 0,
             encoder,
+            desktop_encoder,
+            microphone_encoder,
         }))
     }
 
@@ -374,8 +412,14 @@ impl PipelineAudio {
         if self.mixer.is_none() {
             return self.encoder.encode(normalized);
         }
+        let mut packets = self
+            .desktop_encoder
+            .as_mut()
+            .ok_or_else(|| crate::audio::AudioError("desktop track encoder is unavailable".into()))?
+            .encode(normalized.clone())?;
         self.pending_master.push_back(normalized);
-        self.encode_synchronized_master()
+        packets.extend(self.encode_synchronized_master()?);
+        Ok(packets)
     }
 
     fn push_microphone(
@@ -389,6 +433,26 @@ impl PipelineAudio {
         let normalized = crate::audio::normalize_to_pcm16(format, chunk)?;
         self.note_microphone_clipping(&normalized.data);
         let microphone_end = pcm_chunk_end(&normalized, format.sample_rate);
+        let mut packets = Vec::new();
+        if let Some(converter) = &mut self.microphone_track_converter
+            && let Some(mut microphone_track) = converter.push(normalized.clone())?
+        {
+            if self.microphone_gain_percent != 100 {
+                crate::audio_mixer::apply_gain_pcm16(
+                    &mut microphone_track,
+                    self.output_channels,
+                    self.microphone_gain_percent,
+                )?;
+            }
+            packets.extend(
+                self.microphone_encoder
+                    .as_mut()
+                    .ok_or_else(|| {
+                        crate::audio::AudioError("microphone track encoder is unavailable".into())
+                    })?
+                    .encode(microphone_track)?,
+            );
+        }
         self.mixer
             .as_mut()
             .ok_or_else(|| crate::audio::AudioError("microphone mixer is unavailable".into()))?
@@ -397,7 +461,8 @@ impl PipelineAudio {
             self.microphone_watermark
                 .map_or(microphone_end, |current| current.max(microphone_end)),
         );
-        self.encode_synchronized_master()
+        packets.extend(self.encode_synchronized_master()?);
+        Ok(packets)
     }
 
     fn encode_synchronized_master(
@@ -437,7 +502,11 @@ impl PipelineAudio {
     }
 
     fn bytes_per_second(&self) -> u32 {
-        self.encoder.settings().bytes_per_second
+        std::iter::once(&self.encoder)
+            .chain(self.desktop_encoder.iter())
+            .chain(self.microphone_encoder.iter())
+            .map(|encoder| encoder.settings().bytes_per_second)
+            .sum()
     }
 
     fn discard_queued(&mut self) {
@@ -451,7 +520,14 @@ impl PipelineAudio {
 
     fn start_new_epoch(&mut self) -> Result<(), crate::audio::AudioError> {
         self.discard_queued();
-        self.encoder.flush()
+        self.encoder.flush()?;
+        if let Some(encoder) = &mut self.desktop_encoder {
+            encoder.flush()?;
+        }
+        if let Some(encoder) = &mut self.microphone_encoder {
+            encoder.flush()?;
+        }
+        Ok(())
     }
 }
 

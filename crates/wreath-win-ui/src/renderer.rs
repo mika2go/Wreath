@@ -1208,6 +1208,10 @@ impl Renderer {
                 )?;
             }
             SettingsSection::Audio => {
+                let column_gap = 12.0;
+                let column_middle = (left + right) / 2.0;
+                let game_right = column_middle - column_gap / 2.0;
+                let microphone_left = column_middle + column_gap / 2.0;
                 let microphone_name = model
                     .config
                     .audio
@@ -1221,69 +1225,87 @@ impl Renderer {
                     })
                     .map_or("Windows default", |(_, name)| name.as_str());
                 self.setting_row(
-                    "Desktop audio",
+                    "Game audio",
                     on_off(model.config.audio.desktop),
                     "Record game and system sound.",
                     left,
-                    right,
+                    game_right,
                     settings_row_top(0),
                     Action::ToggleDesktopAudio,
                     SettingControl::Toggle,
                 )?;
                 self.setting_row(
-                    "Microphone",
-                    on_off(model.config.audio.microphone),
-                    "Add an input device to each replay.",
-                    left,
-                    right,
-                    settings_row_top(2),
-                    Action::ToggleMicrophone,
-                    SettingControl::Toggle,
-                )?;
-                self.setting_row(
-                    "Desktop level",
+                    "Game audio level",
                     &format!("{}%", model.config.audio.desktop_gain_percent),
-                    "Changes only the recorded system sound, not Windows volume.",
+                    "Recording level; Windows volume stays unchanged.",
                     left,
-                    right,
+                    game_right,
                     settings_row_top(1),
                     Action::ChooseDesktopGain,
                     SettingControl::Dropdown,
                 )?;
                 self.setting_row(
+                    "Exclude Discord",
+                    on_off(model.config.audio.exclude_discord),
+                    "Remove Discord voices from saved clips.",
+                    left,
+                    game_right,
+                    settings_row_top(2),
+                    Action::ToggleDiscordExclusion,
+                    SettingControl::Toggle,
+                )?;
+                self.setting_row(
+                    "Microphone",
+                    on_off(model.config.audio.microphone),
+                    "Capture your selected input with its own level.",
+                    microphone_left,
+                    right,
+                    settings_row_top(0),
+                    Action::ToggleMicrophone,
+                    SettingControl::Toggle,
+                )?;
+                self.setting_row(
                     "Input device",
                     microphone_name,
-                    "Choose an active Windows input endpoint.",
-                    left,
+                    "Choose an active Windows input.",
+                    microphone_left,
                     right,
-                    settings_row_top(3),
+                    settings_row_top(1),
                     Action::ChooseMicrophone,
                     SettingControl::Dropdown,
                 )?;
                 self.setting_row(
                     "Microphone level",
                     &format!("{}%", model.config.audio.microphone_gain_percent),
-                    "Clean input level without digital noise boost.",
-                    left,
+                    "Recording level for your voice.",
+                    microphone_left,
                     right,
-                    settings_row_top(4),
+                    settings_row_top(2),
                     Action::ChooseMicrophoneGain,
                     SettingControl::Dropdown,
                 )?;
             }
             SettingsSection::Controls => {
-                let shortcut = if model.hotkey_capture {
-                    "Press shortcut…".into()
+                let shortcut = if model.hotkey_pending {
+                    "Activating…".into()
+                } else if model.hotkey_capture {
+                    hotkey_capture_label(&model.hotkey_modifiers)
                 } else {
                     wreath_windows::hotkey::localized_hotkey_label(&model.config.hotkey)
                 };
                 self.setting_row(
                     "Save replay",
                     &shortcut,
-                    if model.hotkey_capture {
-                        "Press any key or combination now; Escape cancels."
+                    if model.hotkey_pending {
+                        "Checking availability without restarting capture."
+                    } else if let Some(error) = &model.hotkey_error {
+                        error
+                    } else if model.hotkey_capture {
+                        "Hold Ctrl or Shift, then press one other key. F1–F24 and Print Screen work alone; Escape cancels."
+                    } else if model.hotkey_deferred {
+                        "Saved. It becomes active when background capture starts."
                     } else {
-                        "Uses this keyboard's Windows key names; no confirmation needed."
+                        "Click to change. Use Ctrl or Shift with one other key."
                     },
                     left,
                     right - 54.0,
@@ -1302,6 +1324,16 @@ impl Renderer {
                     rect: clear,
                     action: Action::ClearHotkey,
                 });
+                self.setting_row(
+                    "Start with Windows",
+                    on_off(model.autostart_enabled),
+                    "Launch Wreath in the tray and start the replay buffer after sign-in.",
+                    left,
+                    right,
+                    settings_row_top(1),
+                    Action::ToggleAutostart,
+                    SettingControl::Toggle,
+                )?;
             }
             SettingsSection::Storage => {
                 self.setting_row(
@@ -1911,23 +1943,24 @@ impl Renderer {
         };
         let left = rail + padding;
         let right = width - padding;
-        let row = match menu_state.kind {
-            SettingsMenuKind::Display | SettingsMenuKind::Duration => 0,
+        let column_middle = (left + right) / 2.0;
+        let (anchor_left, anchor_right, row) = match menu_state.kind {
+            SettingsMenuKind::DesktopGain => (left, column_middle - 6.0, 1),
+            SettingsMenuKind::Microphone => (column_middle + 6.0, right, 1),
+            SettingsMenuKind::MicrophoneGain => (column_middle + 6.0, right, 2),
+            SettingsMenuKind::Display | SettingsMenuKind::Duration => (left, right, 0),
             SettingsMenuKind::FrameRate
             | SettingsMenuKind::Codec
-            | SettingsMenuKind::DesktopGain
-            | SettingsMenuKind::StorageLimit => 1,
-            SettingsMenuKind::Quality => 2,
-            SettingsMenuKind::Microphone => 3,
-            SettingsMenuKind::MicrophoneGain => 4,
+            | SettingsMenuKind::StorageLimit => (left, right, 1),
+            SettingsMenuKind::Quality => (left, right, 2),
         };
-        let available = right - left;
+        let available = anchor_right - anchor_left;
         let control_width = (available * 0.38).clamp(190.0, 360.0);
         let row_top = settings_row_top(row);
         let anchor = rect(
-            right - control_width - 16.0,
+            anchor_right - control_width - 16.0,
             row_top + 17.0,
-            right - 16.0,
+            anchor_right - 16.0,
             row_top + 59.0,
         );
         let columns = if menu_state.kind == SettingsMenuKind::DesktopGain {
@@ -1940,7 +1973,7 @@ impl Renderer {
         let rows = menu_state.items.len().div_ceil(columns);
         let menu_height = 12.0 + rows as f32 * item_height;
         let menu_width = control_width.max(if has_details { 310.0 } else { 190.0 });
-        let menu_left = (anchor.right - menu_width).max(left);
+        let menu_left = (anchor.right - menu_width).max(anchor_left);
         let below = anchor.bottom + 8.0;
         let above = anchor.top - menu_height - 8.0;
         let menu_top = if below + menu_height <= height - 18.0 {
@@ -2916,6 +2949,24 @@ fn age(modified: SystemTime) -> String {
 
 fn on_off(value: bool) -> &'static str {
     if value { "On" } else { "Off" }
+}
+
+fn hotkey_capture_label(modifiers: &[String]) -> String {
+    let modifiers = modifiers
+        .iter()
+        .map(|modifier| match modifier.as_str() {
+            "SUPER" => "Win",
+            "CTRL" => "Ctrl",
+            "ALT" => "Alt",
+            "SHIFT" => "Shift",
+            value => value,
+        })
+        .collect::<Vec<_>>();
+    if modifiers.is_empty() {
+        "Press shortcut…".into()
+    } else {
+        format!("{} + …", modifiers.join(" + "))
+    }
 }
 
 #[cfg(test)]

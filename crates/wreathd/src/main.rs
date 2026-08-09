@@ -176,6 +176,9 @@ impl Daemon {
             Request::Save => self.save_replay(),
             Request::Pause => self.pause_capture(),
             Request::Resume => self.resume_capture(),
+            Request::SetHotkey { .. } => Response::Error {
+                message: "shortcut updates through the app are available on Windows".into(),
+            },
             Request::Reload => self.reload(),
             Request::Shutdown => {
                 self.capture_requested = false;

@@ -1,5 +1,6 @@
 use std::io::BufReader;
 use std::sync::mpsc;
+use std::sync::{Arc, atomic::AtomicBool, atomic::Ordering};
 
 use wreath_core::config::Config;
 use wreath_core::ipc::{self, DaemonState, GraphicsAdapter, Request, Response};
@@ -24,20 +25,32 @@ pub fn run() -> Result<(), String> {
     let (connections, handled) = listen(server)?;
     let mut pipeline = ReplayPipeline::spawn(config.clone()).map_err(|error| error.to_string())?;
     let pipe_name = paths.pipe_name().to_owned();
-    let _hotkey =
-        HotkeyListener::spawn(
-            1,
-            &config.hotkey,
-            move || match wreath_windows::control::send_request(&pipe_name, &Request::Save) {
-                Ok(Response::Saved { .. }) => wreath_windows::feedback::broadcast_clip_saved(),
-                Ok(Response::Error { message }) => {
-                    eprintln!("wreathd: hotkey save failed: {message}")
+    let save_in_flight = Arc::new(AtomicBool::new(false));
+    let hotkey = HotkeyListener::spawn(1, &config.hotkey, move || {
+        if save_in_flight.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let pipe_name = pipe_name.clone();
+        let save_in_flight_for_worker = Arc::clone(&save_in_flight);
+        let spawn = std::thread::Builder::new()
+            .name("wreath-hotkey-save".into())
+            .spawn(move || {
+                match wreath_windows::control::send_request(&pipe_name, &Request::Save) {
+                    Ok(Response::Saved { .. }) => wreath_windows::feedback::broadcast_clip_saved(),
+                    Ok(Response::Error { message }) => {
+                        eprintln!("wreathd: hotkey save failed: {message}")
+                    }
+                    Err(error) => eprintln!("wreathd: hotkey save failed: {error}"),
+                    Ok(_) => {}
                 }
-                Err(error) => eprintln!("wreathd: hotkey save failed: {error}"),
-                Ok(_) => {}
-            },
-        )
-        .map_err(|error| error.to_string())?;
+                save_in_flight_for_worker.store(false, Ordering::Release);
+            });
+        if let Err(error) = spawn {
+            save_in_flight.store(false, Ordering::Release);
+            eprintln!("wreathd: cannot start hotkey save worker: {error}");
+        }
+    })
+    .map_err(|error| error.to_string())?;
     let mut shutdown = false;
     while !shutdown {
         let mut connection = connections
@@ -87,13 +100,16 @@ pub fn run() -> Result<(), String> {
                 .unwrap_or_else(|error| Response::Error {
                     message: error.to_string(),
                 }),
+            Request::SetHotkey { hotkey: new_hotkey } => {
+                set_hotkey(&paths, &mut config, &hotkey, new_hotkey)
+            }
             Request::Save => pipeline
                 .save()
                 .map(|path| Response::Saved { path })
                 .unwrap_or_else(|error| Response::Error {
                     message: error.to_string(),
                 }),
-            Request::Reload => reload(&paths, &mut config, &mut pipeline, &_hotkey),
+            Request::Reload => reload(&paths, &mut config, &mut pipeline, &hotkey),
         };
         ipc::write_response(&mut connection, &response).map_err(|error| error.to_string())?;
         handled
@@ -101,6 +117,42 @@ pub fn run() -> Result<(), String> {
             .map_err(|error| format!("Windows control listener stopped: {error}"))?;
     }
     Ok(())
+}
+
+fn set_hotkey(
+    paths: &AppPaths,
+    config: &mut Config,
+    listener: &HotkeyListener,
+    new_hotkey: wreath_core::config::HotkeyConfig,
+) -> Response {
+    if let Err(error) = wreath_windows::hotkey::validate_hotkey_choice(&new_hotkey) {
+        return Response::Error {
+            message: error.to_string(),
+        };
+    }
+    if new_hotkey == config.hotkey {
+        return Response::Ok;
+    }
+    if let Err(error) = listener.rebind(&new_hotkey) {
+        return Response::Error {
+            message: format!("cannot activate the new Windows shortcut: {error}"),
+        };
+    }
+
+    let previous_hotkey = std::mem::replace(&mut config.hotkey, new_hotkey);
+    if let Err(error) = config.save(paths) {
+        config.hotkey = previous_hotkey.clone();
+        let restoration = listener.rebind(&previous_hotkey);
+        return Response::Error {
+            message: match restoration {
+                Ok(()) => format!("cannot save the new Windows shortcut: {error}"),
+                Err(restore_error) => format!(
+                    "cannot save the new Windows shortcut ({error}); the previous shortcut could not be restored ({restore_error})"
+                ),
+            },
+        };
+    }
+    Response::Ok
 }
 
 type AcceptedConnection = Result<std::fs::File, String>;

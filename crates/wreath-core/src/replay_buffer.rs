@@ -4,7 +4,10 @@ use std::time::Duration;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackKind {
     Video,
+    /// Compatibility mix played by ordinary media players.
     Audio,
+    DesktopAudio,
+    MicrophoneAudio,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

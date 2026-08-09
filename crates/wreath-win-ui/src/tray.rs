@@ -5,8 +5,8 @@ use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM,
 };
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_ERROR, NIIF_INFO, NIM_ADD, NIM_DELETE,
-    NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW,
+    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_ERROR, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
@@ -38,6 +38,8 @@ const COMMAND_EXIT: usize = 109;
 struct AppState {
     paths: AppPaths,
     clips_directory: std::path::PathBuf,
+    discord_exclusion_enabled: bool,
+    excluded_discord_process_id: Option<u32>,
     icon: NOTIFYICONDATAW,
     recovery: crate::recovery::RecoveryThrottle,
 }
@@ -63,13 +65,19 @@ pub fn run() -> Result<(), String> {
     }
 
     let paths = AppPaths::discover();
-    let clips_directory = wreath_core::config::Config::load(&paths)
-        .map_err(|error| error.to_string())?
-        .storage
-        .directory;
+    let config = wreath_core::config::Config::load(&paths).map_err(|error| error.to_string())?;
+    let clips_directory = config.storage.directory.clone();
+    let discord_exclusion_enabled = config.audio.exclude_discord;
+    let excluded_discord_process_id = if discord_exclusion_enabled {
+        wreath_windows::audio::discord_process_id().ok().flatten()
+    } else {
+        None
+    };
     let state = Box::new(AppState {
         paths,
         clips_directory,
+        discord_exclusion_enabled,
+        excluded_discord_process_id,
         icon: NOTIFYICONDATAW::default(),
         recovery: crate::recovery::RecoveryThrottle::new(Instant::now()),
     });
@@ -139,7 +147,6 @@ unsafe extern "system" fn window_proc(
     match message {
         wreath_windows::feedback::CLIP_SAVED_MESSAGE => {
             wreath_windows::feedback::play_clip_saved_sound();
-            notify(window, "Clip saved", "Replay added to your Library", false);
             LRESULT(0)
         }
         WM_COMMAND => {
@@ -158,6 +165,7 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == STATUS_TIMER => {
+            refresh_discord_exclusion(window);
             refresh_status(window);
             LRESULT(0)
         }
@@ -176,18 +184,15 @@ fn handle_command(window: HWND, command: usize) {
     match command {
         COMMAND_OPEN_APP => {
             if let Err(error) = open_app() {
-                notify(window, "Wreath error", &error, true);
+                notify_error(window, &error);
             }
         }
         COMMAND_SAVE => match send(Request::Save) {
-            Ok(Response::Saved { path }) => {
+            Ok(Response::Saved { path: _ }) => {
                 wreath_windows::feedback::play_clip_saved_sound();
-                notify(window, "Clip saved", &path.display().to_string(), false);
                 wreath_windows::feedback::notify_app_clip_saved();
             }
-            Ok(Response::Error { message }) | Err(message) => {
-                notify(window, "Wreath error", &message, true)
-            }
+            Ok(Response::Error { message }) | Err(message) => notify_error(window, &message),
             Ok(_) => {}
         },
         COMMAND_PAUSE => handle_simple(window, Request::Pause, "Capture paused"),
@@ -205,17 +210,8 @@ fn handle_command(window: HWND, command: usize) {
         COMMAND_TOGGLE_AUTOSTART => {
             let enable = !crate::autostart::is_enabled();
             match crate::autostart::set_enabled(enable) {
-                Ok(()) => notify(
-                    window,
-                    "Wreath",
-                    if enable {
-                        "Wreath will start with Windows"
-                    } else {
-                        "Wreath autostart disabled"
-                    },
-                    false,
-                ),
-                Err(error) => notify(window, "Wreath error", &error, true),
+                Ok(()) => {}
+                Err(error) => notify_error(window, &error),
             }
         }
         COMMAND_RELOAD_CONFIG => handle_simple(window, Request::Reload, "Settings reloaded"),
@@ -228,12 +224,10 @@ fn handle_command(window: HWND, command: usize) {
     refresh_status(window);
 }
 
-fn handle_simple(window: HWND, request: Request, confirmation: &str) {
+fn handle_simple(window: HWND, request: Request, _confirmation: &str) {
     match send(request) {
-        Ok(Response::Ok) => notify(window, "Wreath", confirmation, false),
-        Ok(Response::Error { message }) | Err(message) => {
-            notify(window, "Wreath error", &message, true)
-        }
+        Ok(Response::Ok) => {}
+        Ok(Response::Error { message }) | Err(message) => notify_error(window, &message),
         Ok(_) => {}
     }
 }
@@ -291,6 +285,48 @@ fn refresh_status(window: HWND) {
     }
 }
 
+fn refresh_discord_exclusion(window: HWND) {
+    let reload = {
+        let Some(state) = state_mut(window) else {
+            return;
+        };
+        let Ok(config) = wreath_core::config::Config::load(&state.paths) else {
+            return;
+        };
+        let enabled = config.audio.exclude_discord;
+        let process_id = if enabled {
+            match wreath_windows::audio::discord_process_id() {
+                Ok(process_id) => process_id,
+                Err(error) => {
+                    wreath_core::diagnostic!(
+                        "Wreath desktop audio: cannot refresh Discord exclusion: {error}"
+                    );
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let reload = enabled
+            && state.discord_exclusion_enabled
+            && state.excluded_discord_process_id != process_id;
+        state.discord_exclusion_enabled = enabled;
+        state.excluded_discord_process_id = process_id;
+        reload
+    };
+    if !reload {
+        return;
+    }
+    wreath_core::diagnostic!(
+        "Wreath desktop audio: Discord process tree changed; restarting capture filter"
+    );
+    match send(Request::Reload) {
+        Ok(Response::Ok) => {}
+        Ok(Response::Error { message }) | Err(message) => notify_error(window, &message),
+        Ok(_) => {}
+    }
+}
+
 fn recovery_due(window: HWND) -> bool {
     let now = Instant::now();
     let Some(state) = state_mut(window) else {
@@ -305,12 +341,12 @@ fn reset_recovery(window: HWND) {
     }
 }
 
-fn notify(window: HWND, title: &str, detail: &str, error: bool) {
+fn notify_error(window: HWND, detail: &str) {
     if let Some(state) = state_mut(window) {
-        copy_wide(&mut state.icon.szInfoTitle, title);
+        copy_wide(&mut state.icon.szInfoTitle, "Wreath error");
         copy_wide(&mut state.icon.szInfo, detail);
         state.icon.uFlags = NIF_INFO;
-        state.icon.dwInfoFlags = if error { NIIF_ERROR } else { NIIF_INFO };
+        state.icon.dwInfoFlags = NIIF_ERROR;
         let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &state.icon) };
     }
 }

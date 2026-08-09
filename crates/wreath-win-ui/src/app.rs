@@ -27,9 +27,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IDC_ARROW, LoadCursorW, MINMAXINFO, MSG, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
     SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetTimer,
     SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_CHAR,
-    WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSW,
-    WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW,
+    WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE,
+    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::config::Codec;
@@ -63,6 +63,8 @@ struct AppState {
     text_drag: Option<TextDrag>,
     trim_updates: mpsc::Receiver<TrimUpdate>,
     trim_sender: mpsc::Sender<TrimUpdate>,
+    hotkey_updates: mpsc::Receiver<HotkeyUpdate>,
+    hotkey_sender: mpsc::Sender<HotkeyUpdate>,
     editor_drag: Option<EditorDrag>,
     preview_seek: Option<Instant>,
     mouse_tracking: bool,
@@ -90,6 +92,16 @@ enum TrimUpdate {
         replacing: bool,
         result: Result<wreath_core::trim::TrimReport, String>,
     },
+}
+
+struct HotkeyUpdate {
+    hotkey: wreath_core::config::HotkeyConfig,
+    result: Result<HotkeyActivation, String>,
+}
+
+enum HotkeyActivation {
+    Active,
+    SavedForNextStart,
 }
 
 pub fn run() -> Result<(), String> {
@@ -131,9 +143,11 @@ fn run_initialized() -> Result<(), String> {
     }
 
     let mut model = UiModel::load()?;
+    model.autostart_enabled = crate::autostart::is_enabled();
     refresh_displays(&mut model);
     refresh_microphones(&mut model);
     let (trim_sender, trim_updates) = mpsc::channel();
+    let (hotkey_sender, hotkey_updates) = mpsc::channel();
     let state = Box::new(AppState {
         model,
         renderer: Renderer::new()?,
@@ -145,6 +159,8 @@ fn run_initialized() -> Result<(), String> {
         text_drag: None,
         trim_updates,
         trim_sender,
+        hotkey_updates,
+        hotkey_sender,
         editor_drag: None,
         preview_seek: None,
         mouse_tracking: false,
@@ -254,8 +270,9 @@ unsafe extern "system" fn window_proc(
                 let result = state.model.refresh();
                 if result.is_ok() {
                     state.renderer.retry_unavailable_thumbnails();
+                } else if let Err(error) = result {
+                    state.model.notice = Some(error);
                 }
-                set_result(&mut state.model, result, "Clip added to Library");
                 redraw(window);
             }
             LRESULT(0)
@@ -548,11 +565,25 @@ unsafe extern "system" fn window_proc(
             if state_mut(window).is_some_and(|state| state.model.hotkey_capture) =>
         {
             if let Some(state) = state_mut(window) {
-                if capture_hotkey(&mut state.model, wparam.0 as u32) {
-                    let shortcut =
-                        wreath_windows::hotkey::localized_hotkey_label(&state.model.config.hotkey);
-                    save_settings(&mut state.model, &format!("{shortcut} is saved and active"));
+                if let Some(hotkey) = capture_hotkey(&mut state.model, wparam.0 as u32) {
+                    begin_hotkey_update(state, hotkey);
                 }
+                redraw(window);
+            }
+            LRESULT(0)
+        }
+        WM_KEYUP | WM_SYSKEYUP
+            if state_mut(window).is_some_and(|state| state.model.hotkey_capture) =>
+        {
+            if let Some(state) = state_mut(window) {
+                state.model.hotkey_modifiers = pressed_hotkey_modifiers();
+                redraw(window);
+            }
+            LRESULT(0)
+        }
+        WM_KILLFOCUS if state_mut(window).is_some_and(|state| state.model.hotkey_capture) => {
+            if let Some(state) = state_mut(window) {
+                cancel_hotkey_capture(&mut state.model);
                 redraw(window);
             }
             LRESULT(0)
@@ -603,8 +634,10 @@ unsafe extern "system" fn window_proc(
         WM_TIMER if wparam.0 == PLAYER_TIMER => {
             if let Some(state) = state_mut(window) {
                 let trim_changed = poll_trim_updates(state);
+                let hotkey_changed = poll_hotkey_updates(state);
                 let motion_changed = state.renderer.advance_motion();
                 if trim_changed
+                    || hotkey_changed
                     || motion_changed
                     || matches!(
                         state.model.page,
@@ -639,6 +672,9 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             ) {
                 stop_player(state);
             }
+            if page == crate::model::Page::Settings {
+                state.model.autostart_enabled = crate::autostart::is_enabled();
+            }
             state.model.navigate(page);
             if matches!(
                 page,
@@ -650,6 +686,8 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         }
         Action::SettingsSection(section) => {
             state.model.settings_menu = None;
+            cancel_hotkey_capture(&mut state.model);
+            state.model.hotkey_error = None;
             state.model.settings_section = section;
         }
         Action::OpenClip(index) => {
@@ -712,16 +750,13 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             set_result(&mut state.model, result, "Library refreshed");
         }
         Action::SaveReplay => match send(Request::Save) {
-            Ok(Response::Saved { path }) => {
+            Ok(Response::Saved { path: _ }) => {
                 let result = state.model.refresh();
                 if result.is_ok() {
                     state.renderer.retry_unavailable_thumbnails();
+                } else if let Err(error) = result {
+                    state.model.notice = Some(error);
                 }
-                set_result(
-                    &mut state.model,
-                    result,
-                    &format!("Saved {}", path.display()),
-                );
                 wreath_windows::feedback::broadcast_clip_saved();
             }
             Ok(Response::Error { message }) | Err(message) => state.model.notice = Some(message),
@@ -747,11 +782,21 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             state.model.sidebar_expanded = !state.model.sidebar_expanded;
             update_player_window(state);
         }
+        Action::ToggleAutostart => {
+            let enabled = !state.model.autostart_enabled;
+            match crate::autostart::set_enabled(enabled) {
+                Ok(()) => state.model.autostart_enabled = enabled,
+                Err(error) => state.model.notice = Some(error),
+            }
+        }
         Action::ToggleCursor => {
             state.model.config.capture.cursor = !state.model.config.capture.cursor
         }
         Action::ToggleDesktopAudio => {
             state.model.config.audio.desktop = !state.model.config.audio.desktop
+        }
+        Action::ToggleDiscordExclusion => {
+            state.model.config.audio.exclude_discord = !state.model.config.audio.exclude_discord
         }
         Action::ChooseDesktopGain => choose_desktop_gain(&mut state.model),
         Action::ToggleMicrophone => {
@@ -768,13 +813,18 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         Action::DismissSettingsMenu => state.model.settings_menu = None,
         Action::SelectSettingsOption(index) => select_settings_option(&mut state.model, index),
         Action::CaptureHotkey => {
-            state.model.hotkey_capture = true;
-            state.model.notice =
-                Some("Press any keyboard key or combination now; Escape cancels".into());
+            if !state.model.hotkey_pending {
+                state.model.hotkey_capture = true;
+                state.model.hotkey_modifiers.clear();
+                state.model.hotkey_error = None;
+                state.model.notice = None;
+            }
         }
         Action::ClearHotkey => {
-            state.model.config.hotkey = wreath_core::config::HotkeyConfig::unbound();
-            save_settings(&mut state.model, "Save replay shortcut unbound");
+            if !state.model.hotkey_pending {
+                cancel_hotkey_capture(&mut state.model);
+                begin_hotkey_update(state, wreath_core::config::HotkeyConfig::unbound());
+            }
         }
         Action::ChooseStorage => choose_storage(&mut state.model),
         Action::SaveSettings => {
@@ -971,47 +1021,187 @@ fn poll_trim_updates(state: &mut AppState) -> bool {
     changed
 }
 
-fn capture_hotkey(model: &mut UiModel, virtual_key: u32) -> bool {
+fn begin_hotkey_update(state: &mut AppState, hotkey: wreath_core::config::HotkeyConfig) {
+    cancel_hotkey_capture(&mut state.model);
+    if hotkey == state.model.config.hotkey {
+        state.model.notice = None;
+        return;
+    }
+    state.model.hotkey_pending = true;
+    state.model.hotkey_deferred = false;
+    state.model.hotkey_error = None;
+    state.model.notice = None;
+    let paths = state.model.paths.clone();
+    let updates = state.hotkey_sender.clone();
+    let hotkey_for_worker = hotkey.clone();
+    let spawned = std::thread::Builder::new()
+        .name("wreath-hotkey-update".into())
+        .spawn(move || {
+            let result = activate_hotkey(&paths, &hotkey_for_worker);
+            let _ = updates.send(HotkeyUpdate {
+                hotkey: hotkey_for_worker,
+                result,
+            });
+        });
+    if let Err(error) = spawned {
+        state.model.hotkey_pending = false;
+        state.model.hotkey_error = Some(format!("Cannot start shortcut update: {error}"));
+        state.model.notice = None;
+    }
+}
+
+fn activate_hotkey(
+    paths: &wreath_core::paths::AppPaths,
+    hotkey: &wreath_core::config::HotkeyConfig,
+) -> Result<HotkeyActivation, String> {
+    const RETRIES: usize = 40;
+    const RETRY_DELAY: Duration = Duration::from_millis(50);
+
+    let request = Request::SetHotkey {
+        hotkey: hotkey.clone(),
+    };
+    let mut last_connection_error = String::new();
+    for attempt in 0..RETRIES {
+        match send(request.clone()) {
+            Ok(Response::Ok) => return Ok(HotkeyActivation::Active),
+            Ok(Response::Error { message }) => return Err(message),
+            Ok(_) => return Err("Background service returned an unexpected response".into()),
+            Err(error) => last_connection_error = error,
+        }
+        if attempt + 1 < RETRIES {
+            std::thread::sleep(RETRY_DELAY);
+        }
+    }
+
+    wreath_windows::hotkey::validate_hotkey_choice(hotkey).map_err(|error| error.to_string())?;
+    let availability = hotkey
+        .is_bound()
+        .then(|| wreath_windows::hotkey::HotkeyRegistration::register(2, hotkey))
+        .transpose()
+        .map_err(|error| format!("That shortcut is unavailable: {error}"))?;
+    drop(availability);
+    let mut config = wreath_core::config::Config::load(paths).map_err(|error| error.to_string())?;
+    config.hotkey = hotkey.clone();
+    config.save(paths).map_err(|error| {
+        format!(
+            "Background service was unavailable ({last_connection_error}); cannot save shortcut: {error}"
+        )
+    })?;
+    Ok(HotkeyActivation::SavedForNextStart)
+}
+
+fn poll_hotkey_updates(state: &mut AppState) -> bool {
+    let mut changed = false;
+    while let Ok(update) = state.hotkey_updates.try_recv() {
+        changed = true;
+        state.model.hotkey_pending = false;
+        match update.result {
+            Ok(HotkeyActivation::Active) => {
+                state.model.config.hotkey = update.hotkey;
+                state.model.hotkey_deferred = false;
+                state.model.hotkey_error = None;
+                state.model.notice = None;
+            }
+            Ok(HotkeyActivation::SavedForNextStart) => {
+                state.model.config.hotkey = update.hotkey;
+                state.model.hotkey_deferred = true;
+                state.model.hotkey_error = None;
+                state.model.notice = None;
+            }
+            Err(error) => {
+                state.model.hotkey_deferred = false;
+                state.model.hotkey_error = Some(format!("Cannot change shortcut: {error}"));
+                state.model.notice = None;
+            }
+        }
+    }
+    changed
+}
+
+fn capture_hotkey(
+    model: &mut UiModel,
+    virtual_key: u32,
+) -> Option<wreath_core::config::HotkeyConfig> {
     match virtual_key {
         0x1b => {
-            model.hotkey_capture = false;
-            model.notice = Some("Shortcut change cancelled".into());
-            false
+            cancel_hotkey_capture(model);
+            model.hotkey_error = None;
+            model.notice = None;
+            None
         }
-        0x10 | 0x11 | 0x12 | 0x5b | 0x5c => false,
+        0x10 | 0x11 | 0x12 | 0x5b | 0x5c => {
+            let mut modifiers = pressed_hotkey_modifiers()
+                .into_iter()
+                .chain(model.hotkey_modifiers.iter().cloned())
+                .collect::<Vec<_>>();
+            let modifier = match virtual_key {
+                0x10 => "SHIFT",
+                0x11 => "CTRL",
+                0x12 => "ALT",
+                0x5b | 0x5c => "SUPER",
+                _ => unreachable!(),
+            };
+            if !modifiers.iter().any(|value| value == modifier) {
+                modifiers.push(modifier.into());
+            }
+            model.hotkey_modifiers = canonical_hotkey_modifiers(modifiers);
+            None
+        }
         key => {
             let Some(key_name) = wreath_windows::hotkey::key_name_from_virtual_key(key) else {
-                model.notice = Some("That key cannot be used as a Windows shortcut".into());
-                return false;
+                model.hotkey_error = Some("That key cannot be used as a Windows shortcut.".into());
+                model.notice = None;
+                return None;
             };
-            let mut modifiers = Vec::new();
-            if key_pressed(0x5b) || key_pressed(0x5c) {
-                modifiers.push("SUPER".into());
-            }
-            if key_pressed(0x11) {
-                modifiers.push("CTRL".into());
-            }
-            if key_pressed(0x12) {
-                modifiers.push("ALT".into());
-            }
-            if key_pressed(0x10) {
-                modifiers.push("SHIFT".into());
-            }
+            let modifiers = canonical_hotkey_modifiers(
+                pressed_hotkey_modifiers()
+                    .into_iter()
+                    .chain(model.hotkey_modifiers.iter().cloned())
+                    .collect(),
+            );
+            model.hotkey_modifiers = modifiers.clone();
             let hotkey = wreath_core::config::HotkeyConfig {
                 modifiers,
                 key: key_name,
             };
-            if hotkey != model.config.hotkey
-                && let Err(error) = wreath_windows::hotkey::HotkeyRegistration::register(2, &hotkey)
-            {
-                model.notice = Some(format!("That shortcut is unavailable: {error}"));
-                return false;
+            if let Err(error) = wreath_windows::hotkey::validate_hotkey_choice(&hotkey) {
+                model.hotkey_error = Some(format!("Choose a safer shortcut: {error}."));
+                model.notice = None;
+                return None;
             }
-            model.config.hotkey = hotkey;
-            model.hotkey_capture = false;
-            true
+            Some(hotkey)
         }
     }
+}
+
+fn pressed_hotkey_modifiers() -> Vec<String> {
+    let mut modifiers = Vec::new();
+    if key_pressed(0x5b) || key_pressed(0x5c) {
+        modifiers.push("SUPER".into());
+    }
+    if key_pressed(0x11) {
+        modifiers.push("CTRL".into());
+    }
+    if key_pressed(0x12) {
+        modifiers.push("ALT".into());
+    }
+    if key_pressed(0x10) {
+        modifiers.push("SHIFT".into());
+    }
+    modifiers
+}
+
+fn canonical_hotkey_modifiers(modifiers: Vec<String>) -> Vec<String> {
+    ["SUPER", "CTRL", "ALT", "SHIFT"]
+        .into_iter()
+        .filter(|candidate| modifiers.iter().any(|value| value == candidate))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn cancel_hotkey_capture(model: &mut UiModel) {
+    model.hotkey_capture = false;
+    model.hotkey_modifiers.clear();
 }
 
 fn key_pressed(virtual_key: i32) -> bool {

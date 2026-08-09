@@ -855,7 +855,7 @@ dependencies = [
 
 [[package]]
 name = "wreath-core"
-version = "0.2.36"
+version = "0.2.37"
 dependencies = [
  "serde",
  "serde_json",
@@ -864,7 +864,7 @@ dependencies = [
 
 [[package]]
 name = "wreath-ui"
-version = "0.2.36"
+version = "0.2.37"
 dependencies = [
  "gdk-pixbuf",
  "gtk4",
@@ -874,7 +874,7 @@ dependencies = [
 
 [[package]]
 name = "wreath-win-ui"
-version = "0.2.36"
+version = "0.2.37"
 dependencies = [
  "windows",
  "windows-core",
@@ -886,16 +886,17 @@ dependencies = [
 
 [[package]]
 name = "wreath-windows"
-version = "0.2.36"
+version = "0.2.37"
 dependencies = [
  "crossbeam-channel",
  "windows",
+ "windows-core",
  "wreath-core",
 ]
 
 [[package]]
 name = "wreathctl"
-version = "0.2.36"
+version = "0.2.37"
 dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "wreath-core",
@@ -904,7 +905,7 @@ dependencies = [
 
 [[package]]
 name = "wreathd"
-version = "0.2.36"
+version = "0.2.37"
 dependencies = [
  "winresource",
  "wreath-core",
