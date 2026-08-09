@@ -1,6 +1,7 @@
 use std::io::BufReader;
 use std::sync::mpsc;
 use std::sync::{Arc, atomic::AtomicBool, atomic::Ordering};
+use std::time::Duration;
 
 use wreath_core::config::Config;
 use wreath_core::ipc::{self, DaemonState, GraphicsAdapter, Request, Response};
@@ -28,26 +29,44 @@ pub fn run() -> Result<(), String> {
     let save_in_flight = Arc::new(AtomicBool::new(false));
     let hotkey = HotkeyListener::spawn(1, &config.hotkey, move || {
         if save_in_flight.swap(true, Ordering::AcqRel) {
+            wreath_core::diagnostic!(
+                "Wreath hotkey: replay request ignored because a save is already running"
+            );
             return;
         }
+        wreath_core::diagnostic!("Wreath hotkey: replay requested");
         let pipe_name = pipe_name.clone();
         let save_in_flight_for_worker = Arc::clone(&save_in_flight);
         let spawn = std::thread::Builder::new()
             .name("wreath-hotkey-save".into())
             .spawn(move || {
-                match wreath_windows::control::send_request(&pipe_name, &Request::Save) {
-                    Ok(Response::Saved { .. }) => wreath_windows::feedback::broadcast_clip_saved(),
-                    Ok(Response::Error { message }) => {
-                        eprintln!("wreathd: hotkey save failed: {message}")
+                let _reset = SaveInFlightReset(save_in_flight_for_worker);
+                match wreath_windows::control::send_request_with_timeout(
+                    &pipe_name,
+                    &Request::Save,
+                    Duration::from_secs(5),
+                ) {
+                    Ok(Response::Saved { path }) => {
+                        wreath_core::diagnostic!(
+                            "Wreath hotkey: replay saved to {}",
+                            path.display()
+                        );
+                        wreath_windows::feedback::broadcast_clip_saved();
                     }
-                    Err(error) => eprintln!("wreathd: hotkey save failed: {error}"),
-                    Ok(_) => {}
+                    Ok(Response::Error { message }) => {
+                        wreath_core::diagnostic!("Wreath hotkey: replay save failed: {message}")
+                    }
+                    Err(error) => {
+                        wreath_core::diagnostic!("Wreath hotkey: replay request failed: {error}")
+                    }
+                    Ok(response) => wreath_core::diagnostic!(
+                        "Wreath hotkey: unexpected replay response: {response:?}"
+                    ),
                 }
-                save_in_flight_for_worker.store(false, Ordering::Release);
             });
         if let Err(error) = spawn {
             save_in_flight.store(false, Ordering::Release);
-            eprintln!("wreathd: cannot start hotkey save worker: {error}");
+            wreath_core::diagnostic!("Wreath hotkey: cannot start save worker: {error}");
         }
     })
     .map_err(|error| error.to_string())?;
@@ -117,6 +136,14 @@ pub fn run() -> Result<(), String> {
             .map_err(|error| format!("Windows control listener stopped: {error}"))?;
     }
     Ok(())
+}
+
+struct SaveInFlightReset(Arc<AtomicBool>);
+
+impl Drop for SaveInFlightReset {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 fn set_hotkey(

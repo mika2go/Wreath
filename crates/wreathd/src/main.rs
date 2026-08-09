@@ -69,6 +69,7 @@ fn main() -> ExitCode {
 #[cfg(target_os = "windows")]
 fn main() -> ExitCode {
     if let Err(error) = windows::run() {
+        wreath_core::diagnostic!("Wreath daemon stopped: {error}");
         eprintln!("wreathd: {error}");
         return ExitCode::FAILURE;
     }

@@ -329,6 +329,8 @@ struct HotkeyRebind {
 
 #[cfg(target_os = "windows")]
 const REBIND_MESSAGE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
+#[cfg(target_os = "windows")]
+const HOTKEY_WATCHDOG_INTERVAL_MS: u32 = 30_000;
 
 #[cfg(target_os = "windows")]
 impl HotkeyListener {
@@ -340,7 +342,9 @@ impl HotkeyListener {
         use std::sync::mpsc;
 
         use windows::Win32::System::Threading::GetCurrentThreadId;
-        use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetMessageW, KillTimer, MSG, SetTimer, WM_HOTKEY, WM_TIMER,
+        };
 
         let hotkey = hotkey.clone();
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
@@ -360,14 +364,41 @@ impl HotkeyListener {
                 if ready_sender.send(Ok(thread_id)).is_err() {
                     return;
                 }
+                let watchdog_timer = unsafe {
+                    SetTimer(
+                        None,
+                        0,
+                        HOTKEY_WATCHDOG_INTERVAL_MS,
+                        None,
+                    )
+                };
+                if watchdog_timer == 0 {
+                    wreath_core::diagnostic!(
+                        "Wreath hotkey: cannot start registration watchdog: {}",
+                        std::io::Error::last_os_error()
+                    );
+                }
                 let mut message = MSG::default();
                 loop {
                     let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
-                    if result.0 <= 0 {
+                    if result.0 == 0 {
                         break;
+                    }
+                    if result.0 == -1 {
+                        wreath_core::diagnostic!(
+                            "Wreath hotkey: Windows message loop failed, retrying: {}",
+                            std::io::Error::last_os_error()
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        continue;
                     }
                     if message.message == WM_HOTKEY && message.wParam.0 == id as usize {
                         on_hotkey();
+                    } else if message.message == WM_TIMER
+                        && watchdog_timer != 0
+                        && message.wParam.0 == watchdog_timer
+                    {
+                        refresh_registration(id, &current_hotkey, &mut registration);
                     } else if message.message == REBIND_MESSAGE {
                         while let Ok(request) = rebind_receiver.try_recv() {
                             drop(registration.take());
@@ -382,7 +413,9 @@ impl HotkeyListener {
                                             Ok(previous_registration) => {
                                                 registration = previous_registration;
                                             }
-                                            Err(_) => return,
+                                            Err(error) => wreath_core::diagnostic!(
+                                                "Wreath hotkey: previous shortcut could not be restored after a cancelled update; watchdog will retry: {error}"
+                                            ),
                                         }
                                     }
                                 }
@@ -398,13 +431,18 @@ impl HotkeyListener {
                                                     "new shortcut failed ({error}); previous shortcut could not be restored ({restore_error})"
                                                 )),
                                             ));
-                                            return;
+                                            wreath_core::diagnostic!(
+                                                "Wreath hotkey: shortcut restoration failed; watchdog will retry: {restore_error}"
+                                            );
                                         }
                                     }
                                 }
                             }
                         }
                     }
+                }
+                if watchdog_timer != 0 {
+                    let _ = unsafe { KillTimer(None, watchdog_timer) };
                 }
                 drop(registration);
             })
@@ -440,6 +478,22 @@ impl HotkeyListener {
         reply_receiver
             .recv_timeout(std::time::Duration::from_secs(2))
             .map_err(|error| HotkeyError::Registration(error.to_string()))?
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn refresh_registration(
+    id: i32,
+    hotkey: &HotkeyConfig,
+    registration: &mut Option<HotkeyRegistration>,
+) {
+    drop(registration.take());
+    match register_optional(id, hotkey) {
+        Ok(new_registration) => *registration = new_registration,
+        Err(error) => wreath_core::diagnostic!(
+            "Wreath hotkey: automatic registration repair failed; retrying in {} seconds: {error}",
+            HOTKEY_WATCHDOG_INTERVAL_MS / 1_000
+        ),
     }
 }
 
@@ -638,5 +692,20 @@ mod tests {
         receiver.recv_timeout(Duration::from_secs(2)).unwrap();
         drop(listener);
         drop(blocker);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn watchdog_refresh_restores_the_registered_hotkey() {
+        let hotkey = HotkeyConfig {
+            modifiers: vec!["CTRL".into(), "ALT".into(), "SHIFT".into()],
+            key: "F21".into(),
+        };
+        let mut registration = register_optional(44, &hotkey).unwrap();
+
+        refresh_registration(44, &hotkey, &mut registration);
+
+        assert!(registration.is_some());
+        assert!(HotkeyRegistration::register(99, &hotkey).is_err());
     }
 }

@@ -5,6 +5,8 @@ const MIN_REPLAY_MEMORY_BYTES: u64 = 8 * 1_048_576;
 #[cfg(target_os = "windows")]
 const PIPELINE_COMMAND_CAPACITY: usize = 4;
 #[cfg(target_os = "windows")]
+const SAVE_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+#[cfg(target_os = "windows")]
 /// Frames the encoder may hold at once. Three left hardware encoders without
 /// enough in flight to pipeline properly, and every frame that arrived while
 /// they were all busy was dropped, which shows up as the picture holding still.
@@ -131,7 +133,7 @@ impl ReplayPipeline {
     }
 
     pub fn save(&self) -> Result<std::path::PathBuf, crate::video::VideoError> {
-        match self.send_command(PipelineCommandKind::Save)? {
+        match self.send_command_with_timeout(PipelineCommandKind::Save, SAVE_COMMAND_TIMEOUT)? {
             PipelineCommandResult::Saved(path) => Ok(path),
             PipelineCommandResult::Ok => Err(crate::video::VideoError::Initialization(
                 "video pipeline returned no saved path".into(),
@@ -153,6 +155,45 @@ impl ReplayPipeline {
         reply_receiver
             .recv()
             .map_err(|error| crate::video::VideoError::Initialization(error.to_string()))?
+            .map_err(crate::video::VideoError::Initialization)
+    }
+
+    fn send_command_with_timeout(
+        &self,
+        kind: PipelineCommandKind,
+        timeout: std::time::Duration,
+    ) -> Result<PipelineCommandResult, crate::video::VideoError> {
+        use crossbeam_channel::{RecvTimeoutError, SendTimeoutError};
+
+        let (reply_sender, reply_receiver) = crossbeam_channel::bounded(1);
+        self.commands
+            .send_timeout(
+                PipelineCommand {
+                    kind,
+                    reply: reply_sender,
+                },
+                timeout,
+            )
+            .map_err(|error| match error {
+                SendTimeoutError::Timeout(_) => crate::video::VideoError::Initialization(format!(
+                    "video pipeline did not accept the save request within {} seconds",
+                    timeout.as_secs()
+                )),
+                SendTimeoutError::Disconnected(_) => {
+                    crate::video::VideoError::Initialization("video pipeline stopped".into())
+                }
+            })?;
+        reply_receiver
+            .recv_timeout(timeout)
+            .map_err(|error| match error {
+                RecvTimeoutError::Timeout => crate::video::VideoError::Initialization(format!(
+                    "video pipeline did not finish saving within {} seconds",
+                    timeout.as_secs()
+                )),
+                RecvTimeoutError::Disconnected => {
+                    crate::video::VideoError::Initialization("video pipeline stopped".into())
+                }
+            })?
             .map_err(crate::video::VideoError::Initialization)
     }
 }

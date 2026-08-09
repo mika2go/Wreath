@@ -1,5 +1,7 @@
 use std::fmt;
 use std::io;
+#[cfg(target_os = "windows")]
+use std::time::{Duration, Instant};
 
 use wreath_core::ipc::IpcError;
 
@@ -83,14 +85,129 @@ pub fn send_request(
     pipe_name: &str,
     request: &wreath_core::ipc::Request,
 ) -> Result<wreath_core::ipc::Response, ControlError> {
+    send_request_with_timeout(pipe_name, request, Duration::from_secs(2))
+}
+
+/// Connects to the daemon without dropping a request just because the single
+/// named-pipe instance is serving the tray or another UI client. Windows
+/// reports that short race as `ERROR_PIPE_BUSY`; waiting and reopening is the
+/// expected client-side recovery path.
+#[cfg(target_os = "windows")]
+pub fn send_request_with_timeout(
+    pipe_name: &str,
+    request: &wreath_core::ipc::Request,
+    connect_timeout: Duration,
+) -> Result<wreath_core::ipc::Response, ControlError> {
     use std::fs::OpenOptions;
     use std::io::BufReader;
 
-    let mut pipe = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(pipe_name)
-        .map_err(ControlError::Io)?;
+    let deadline = Instant::now() + connect_timeout;
+    let mut pipe = loop {
+        match OpenOptions::new().read(true).write(true).open(pipe_name) {
+            Ok(pipe) => break pipe,
+            Err(error) if retryable_pipe_open_error(&error) && Instant::now() < deadline => {
+                wait_for_pipe(pipe_name, deadline)?;
+            }
+            Err(error) => return Err(ControlError::Io(error)),
+        }
+    };
     wreath_core::ipc::write_request(&mut pipe, request).map_err(ControlError::Protocol)?;
     wreath_core::ipc::read_response(&mut BufReader::new(pipe)).map_err(ControlError::Protocol)
+}
+
+#[cfg(target_os = "windows")]
+fn retryable_pipe_open_error(error: &io::Error) -> bool {
+    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY};
+
+    matches!(
+        error.raw_os_error(),
+        Some(code)
+            if code == ERROR_PIPE_BUSY.0 as i32 || code == ERROR_FILE_NOT_FOUND.0 as i32
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn wait_for_pipe(pipe_name: &str, deadline: Instant) -> Result<(), ControlError> {
+    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SEM_TIMEOUT};
+    use windows::Win32::System::Pipes::WaitNamedPipeW;
+    use windows::core::PCWSTR;
+
+    let name = pipe_name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let wait_ms = remaining.as_millis().clamp(1, 250) as u32;
+    if unsafe { WaitNamedPipeW(PCWSTR(name.as_ptr()), wait_ms) }.as_bool() {
+        return Ok(());
+    }
+
+    let error = io::Error::last_os_error();
+    let transient = matches!(
+        error.raw_os_error(),
+        Some(code)
+            if code == ERROR_SEM_TIMEOUT.0 as i32 || code == ERROR_FILE_NOT_FOUND.0 as i32
+    );
+    if transient && Instant::now() < deadline {
+        // A daemon that is starting or recreating its sole pipe instance can
+        // briefly return FILE_NOT_FOUND between two accepted clients.
+        std::thread::sleep(Duration::from_millis(10));
+        Ok(())
+    } else {
+        Err(ControlError::Io(error))
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_busy_pipe_waits_for_the_next_server_instance() {
+        use std::io::BufReader;
+        use std::sync::mpsc;
+
+        use wreath_core::ipc::{Request, Response};
+
+        let pipe_name = format!(
+            r"\\.\pipe\wreath-control-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let server = NamedPipeServer::new(&pipe_name).unwrap();
+        let (first_request_sender, first_request_receiver) = mpsc::sync_channel(1);
+        let server_thread = std::thread::spawn(move || {
+            let mut first = server.accept().unwrap();
+            let request =
+                wreath_core::ipc::read_request(&mut BufReader::new(first.try_clone().unwrap()))
+                    .unwrap();
+            assert_eq!(request, Request::Status);
+            first_request_sender.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(150));
+            wreath_core::ipc::write_response(&mut first, &Response::Ok).unwrap();
+            drop(first);
+
+            let mut second = server.accept().unwrap();
+            let request =
+                wreath_core::ipc::read_request(&mut BufReader::new(second.try_clone().unwrap()))
+                    .unwrap();
+            assert_eq!(request, Request::Save);
+            wreath_core::ipc::write_response(&mut second, &Response::Ok).unwrap();
+        });
+
+        let first_pipe = pipe_name.clone();
+        let first_client = std::thread::spawn(move || {
+            send_request_with_timeout(&first_pipe, &Request::Status, Duration::from_secs(2))
+        });
+        first_request_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+
+        let second =
+            send_request_with_timeout(&pipe_name, &Request::Save, Duration::from_secs(2)).unwrap();
+
+        assert_eq!(second, Response::Ok);
+        assert_eq!(first_client.join().unwrap().unwrap(), Response::Ok);
+        server_thread.join().unwrap();
+    }
 }
