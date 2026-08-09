@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.2.32",
+    [string]$Version = "0.2.33",
     [string]$Target = "x86_64-pc-windows-msvc"
 )
 
@@ -97,6 +97,22 @@ function Get-RequiredCommand([string]$Name) {
     return $Command.Source
 }
 
+function Get-DumpbinCommand {
+    $VsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio/Installer/vswhere.exe"
+    if (-not (Test-Path -LiteralPath $VsWhere -PathType Leaf)) {
+        throw "Visual Studio locator is unavailable: $VsWhere"
+    }
+    $Matches = @(& $VsWhere `
+        -latest `
+        -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe")
+    if ($Matches.Count -eq 0) {
+        throw "Visual Studio did not provide the x64 dumpbin.exe dependency inspector"
+    }
+    return $Matches[0]
+}
+
 function Get-CommandOutput(
     [string]$Command,
     [string[]]$Arguments
@@ -135,6 +151,7 @@ $CargoCommand = Get-RequiredCommand "cargo"
 $RustcCommand = Get-RequiredCommand "rustc"
 $GitCommand = Get-RequiredCommand "git"
 $NsisCommand = Get-RequiredCommand "makensis"
+$DumpbinCommand = Get-DumpbinCommand
 $CargoVersion = Get-CommandOutput $CargoCommand @("--version")
 $RustcVersion = Get-CommandOutput $RustcCommand @("-Vv")
 $NsisVersion = Get-CommandOutput $NsisCommand @("/VERSION")
@@ -168,9 +185,25 @@ try {
     & $CargoCommand clippy --locked --target $Target --all-targets @PackageArguments -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "Windows clippy gate failed" }
 
-    Invoke-CargoPackageSet `
-        -Arguments @("build", "--locked", "--release", "--target", $Target) `
-        -SelectedPackages @("wreath-win-ui", "wreathd", "wreathctl")
+    $HadRustFlags = Test-Path Env:RUSTFLAGS
+    $PreviousRustFlags = $env:RUSTFLAGS
+    try {
+        $StaticCrtFlag = "-C target-feature=+crt-static"
+        $env:RUSTFLAGS = if ([string]::IsNullOrWhiteSpace($PreviousRustFlags)) {
+            $StaticCrtFlag
+        } else {
+            "$PreviousRustFlags $StaticCrtFlag"
+        }
+        Invoke-CargoPackageSet `
+            -Arguments @("build", "--locked", "--release", "--target", $Target) `
+            -SelectedPackages @("wreath-win-ui", "wreathd", "wreathctl")
+    } finally {
+        if ($HadRustFlags) {
+            $env:RUSTFLAGS = $PreviousRustFlags
+        } else {
+            Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
+        }
+    }
 
     $BinaryEvidence = foreach ($Entry in $Executables.GetEnumerator()) {
         $Path = Join-Path $BinaryDirectory $Entry.Key
@@ -181,10 +214,15 @@ try {
         if ($File.Length -gt $Entry.Value) {
             throw "$($Entry.Key) is $($File.Length) bytes; budget is $($Entry.Value) bytes"
         }
+        $Dependencies = Get-CommandOutput $DumpbinCommand @("/DEPENDENTS", $Path)
+        if ($Dependencies -match '(?im)^\s*(VCRUNTIME|MSVCP)\d+(?:_\d+)?\.dll\s*$') {
+            throw "$($Entry.Key) depends on a Visual C++ runtime DLL instead of the static CRT"
+        }
         [pscustomobject]@{
             File = $Entry.Key
             Bytes = $File.Length
             Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
+            StaticCrt = $true
         }
     }
 
