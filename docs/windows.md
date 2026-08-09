@@ -52,6 +52,13 @@ old OS-reserved `Win+Shift+R` default are migrated automatically. Capture
 sessions request borderless presentation before recording starts. Status and
 error notices have a visible close button, and storage is shown only in MB/GB.
 
+Excluding Discord captures the desktop through Windows' process-loopback
+device, which leaves out the Discord process tree instead of the app's own
+mix. The filter is bound to the process tree it was built around, so the
+recorder rebuilds its capture whenever Discord starts, restarts, or closes.
+Where Windows refuses the filtered stream, the recorder falls back to the full
+desktop mix and says so in the log rather than losing game audio altogether.
+
 The optional CLI can discover the exact Windows device identifiers and update
 the configuration without hand-editing TOML. Changes are validated, written
 atomically, and reloaded by a running recorder. If the live pipeline rejects a

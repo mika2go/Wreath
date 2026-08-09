@@ -150,6 +150,9 @@ fn integer_to_i16(sample: &[u8]) -> i16 {
 #[cfg(target_os = "windows")]
 pub struct LoopbackCapture {
     stream: CaptureStream,
+    /// The Discord tree this stream was built to leave out, so callers can
+    /// tell whether a restarted Discord has invalidated the filter.
+    excluded_process_id: Option<u32>,
 }
 
 /// Timer-driven WASAPI microphone capture. The endpoint is opened in raw mode
@@ -366,7 +369,14 @@ impl LoopbackCapture {
         CaptureStream::spawn(CaptureEndpoint::Loopback {
             excluded_process_id,
         })
-        .map(|stream| Self { stream })
+        .map(|stream| Self {
+            stream,
+            excluded_process_id,
+        })
+    }
+
+    pub fn excluded_process_id(&self) -> Option<u32> {
+        self.excluded_process_id
     }
 
     pub fn format(&self) -> AudioFormat {
@@ -505,24 +515,38 @@ fn capture_loop(
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
                 .map_err(|error| AudioError(error.to_string()))?;
+        let default_loopback = || {
+            let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
+                .map_err(|error| AudioError(error.to_string()))?;
+            initialize_capture_client(
+                &device,
+                AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                0,
+                false,
+            )
+        };
         let (client, format, device_period_hns, format_mode, timer_driven) = match endpoint {
             CaptureEndpoint::Loopback {
                 excluded_process_id: Some(process_id),
-            } => {
-                let (client, format) = initialize_process_loopback_client(process_id)?;
-                (client, format, 0, CaptureFormatMode::ProcessLoopback, false)
-            }
+            } => match initialize_process_loopback_client(process_id) {
+                Ok((client, format)) => {
+                    (client, format, 0, CaptureFormatMode::ProcessLoopback, false)
+                }
+                // Losing the filter costs the user Discord-free clips. Losing
+                // desktop audio, or the recorder along with it, costs far
+                // more, so the unfiltered mix is the better failure.
+                Err(error) => {
+                    wreath_core::diagnostic!(
+                        "Wreath desktop audio: Discord exclusion unavailable, recording the full desktop mix instead: {error}"
+                    );
+                    let (client, format, period, mode) = default_loopback()?;
+                    (client, format, period, mode, false)
+                }
+            },
             CaptureEndpoint::Loopback {
                 excluded_process_id: None,
             } => {
-                let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
-                    .map_err(|error| AudioError(error.to_string()))?;
-                let (client, format, period, mode) = initialize_capture_client(
-                    &device,
-                    AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                    0,
-                    false,
-                )?;
+                let (client, format, period, mode) = default_loopback()?;
                 (client, format, period, mode, false)
             }
             CaptureEndpoint::Microphone {
@@ -674,6 +698,9 @@ impl windows::Win32::Media::Audio::IActivateAudioInterfaceCompletionHandler_Impl
 }
 
 #[cfg(target_os = "windows")]
+const ACTIVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[cfg(target_os = "windows")]
 fn initialize_process_loopback_client(
     process_id: u32,
 ) -> Result<(windows::Win32::Media::Audio::IAudioClient, AudioFormat), AudioError> {
@@ -682,10 +709,11 @@ fn initialize_process_loopback_client(
 
     use windows::Win32::Media::Audio::{
         AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-        AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-        AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
-        AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
-        ActivateAudioInterfaceAsync, IActivateAudioInterfaceCompletionHandler, IAudioClient,
+        AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
+        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, AUDIOCLIENT_ACTIVATION_PARAMS,
+        AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+        AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync,
+        IActivateAudioInterfaceCompletionHandler, IAudioClient,
         PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
         WAVEFORMATEX,
     };
@@ -696,7 +724,10 @@ fn initialize_process_loopback_client(
     use windows::Win32::System::Variant::VT_BLOB;
     use windows::core::Interface;
 
-    let mut parameters = AUDIOCLIENT_ACTIVATION_PARAMS {
+    // Windows reads this blob while it activates the interface, which happens
+    // after the call returns. It is boxed so that a giving-up caller can leave
+    // it behind instead of handing Windows a pointer into a dead stack frame.
+    let parameters = Box::into_raw(Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
         ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
             ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
@@ -704,7 +735,7 @@ fn initialize_process_loopback_client(
                 ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
             },
         },
-    };
+    }));
     let activation = ManuallyDrop::new(PROPVARIANT {
         Anonymous: PROPVARIANT_0 {
             Anonymous: ManuallyDrop::new(PROPVARIANT_0_0 {
@@ -715,7 +746,7 @@ fn initialize_process_loopback_client(
                 Anonymous: PROPVARIANT_0_0_0 {
                     blob: BLOB {
                         cbSize: size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
-                        pBlobData: std::ptr::from_mut(&mut parameters).cast(),
+                        pBlobData: parameters.cast(),
                     },
                 },
             }),
@@ -735,15 +766,25 @@ fn initialize_process_loopback_client(
     .map_err(|error| AudioError(format!("cannot activate Discord audio exclusion: {error}")))?;
 
     let (lock, wake) = &*completed;
-    let mut finished = lock
+    let finished = lock
         .lock()
         .map_err(|_| AudioError("Discord audio exclusion activation was interrupted".into()))?;
-    while !*finished {
-        finished = wake
-            .wait(finished)
-            .map_err(|_| AudioError("Discord audio exclusion activation was interrupted".into()))?;
+    // Windows completes this activation on a thread of its own. Waiting on it
+    // without a deadline would put a stalled audio stack between the user and
+    // a working recorder, so the wait gives up and the caller falls back to
+    // the unfiltered desktop mix.
+    let (finished, wait) = wake
+        .wait_timeout_while(finished, ACTIVATION_TIMEOUT, |completed| !*completed)
+        .map_err(|_| AudioError("Discord audio exclusion activation was interrupted".into()))?;
+    if wait.timed_out() {
+        return Err(AudioError(format!(
+            "Windows did not activate the Discord audio filter within {} seconds",
+            ACTIVATION_TIMEOUT.as_secs()
+        )));
     }
     drop(finished);
+    // The activation is over, so Windows is done reading the parameters.
+    drop(unsafe { Box::from_raw(parameters) });
 
     let mut activation_result = windows::core::HRESULT::default();
     let mut activated = None;
@@ -779,10 +820,17 @@ fn initialize_process_loopback_client(
     unsafe {
         client.Initialize(
             AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+            // The process-loopback client taps the render side, so it needs
+            // AUDCLNT_STREAMFLAGS_LOOPBACK exactly like an ordinary loopback
+            // stream. Without it Windows refuses the endpoint, and the refusal
+            // was what made the Discord exclusion never take effect. Buffer
+            // duration and periodicity stay zero, matching the shape Windows
+            // documents for this virtual device.
+            AUDCLNT_STREAMFLAGS_LOOPBACK
+                | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
                 | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
                 | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-            200_000,
+            0,
             0,
             &desired,
             None,

@@ -33,6 +33,10 @@ pub struct PipelineStatus {
     pub adapter: Option<GraphicsAdapterInfo>,
     pub buffered_seconds: u16,
     pub encoded_bytes: usize,
+    /// The Discord process tree the running desktop capture was built around.
+    /// A Discord that started or restarted since then carries a different one,
+    /// which is what tells a reload that the filter has to be rebuilt.
+    pub excluded_process_id: Option<u32>,
     pub error: Option<String>,
 }
 
@@ -45,6 +49,7 @@ impl Default for PipelineStatus {
             adapter: None,
             buffered_seconds: 0,
             encoded_bytes: 0,
+            excluded_process_id: None,
             error: None,
         }
     }
@@ -254,6 +259,13 @@ impl AudioCaptureSource {
         match self {
             Self::Desktop(capture) => capture.receiver(),
             Self::Microphone(capture) => capture.receiver(),
+        }
+    }
+
+    fn excluded_process_id(&self) -> Option<u32> {
+        match self {
+            Self::Desktop(capture) => capture.excluded_process_id(),
+            Self::Microphone(_) => None,
         }
     }
 }
@@ -702,6 +714,9 @@ fn run_pipeline(
         pipeline.monitor = Some(capture_info.monitor.clone());
         pipeline.codec = Some(encoder.codec());
         pipeline.adapter = Some(runtime.adapter().clone());
+        pipeline.excluded_process_id = audio
+            .as_ref()
+            .and_then(|audio| audio.master.excluded_process_id());
         pipeline.error = None;
     });
     if ready.send(Ok(())).is_err() {
