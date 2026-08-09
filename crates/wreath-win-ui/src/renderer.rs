@@ -256,7 +256,7 @@ pub fn fullscreen_timeline_rail(width: u32, height: u32) -> LogicalRect {
 pub fn fullscreen_volume_rail(width: u32, height: u32) -> LogicalRect {
     let width = width as f32;
     let height = height as f32;
-    rect(116.0, height - 34.0, width.min(246.0), height - 28.0)
+    rect(204.0, height - 34.0, width.min(334.0), height - 28.0)
 }
 
 fn fit_aspect(area: LogicalRect, aspect_ratio: f32) -> LogicalRect {
@@ -760,7 +760,29 @@ impl Renderer {
             FloatingIconSize::Media,
         )?;
         self.floating_icon(
-            rect(66.0, row_top, 106.0, row_bottom),
+            rect(62.0, row_top, 102.0, row_bottom),
+            "‹",
+            if model.adjacent_clip(-1).is_some() {
+                PRIMARY
+            } else {
+                SECONDARY
+            },
+            model.adjacent_clip(-1).map(|_| Action::PreviousClip),
+            FloatingIconSize::Navigation,
+        )?;
+        self.floating_icon(
+            rect(106.0, row_top, 146.0, row_bottom),
+            "›",
+            if model.adjacent_clip(1).is_some() {
+                PRIMARY
+            } else {
+                SECONDARY
+            },
+            model.adjacent_clip(1).map(|_| Action::NextClip),
+            FloatingIconSize::Navigation,
+        )?;
+        self.floating_icon(
+            rect(154.0, row_top, 194.0, row_bottom),
             if model.player_volume_percent == 0 {
                 "🔇"
             } else {

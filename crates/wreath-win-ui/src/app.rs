@@ -8,7 +8,7 @@ use windows::Win32::Foundation::{
     LRESULT, POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    BeginPaint, ClientToScreen, EndPaint, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO,
     MonitorFromWindow, PAINTSTRUCT, UpdateWindow,
 };
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
@@ -22,7 +22,8 @@ use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+    GetAsyncKeyState, GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT,
+    TrackMouseEvent, VK_LBUTTON,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
@@ -34,7 +35,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     TranslateMessage, WINDOW_EX_STYLE, WINDOWPLACEMENT, WM_CHAR, WM_DESTROY, WM_DPICHANGED,
     WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP,
-    WM_TIMER, WNDCLASSW, WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
+    WM_TIMER, WNDCLASSW, WS_CHILD, WS_DISABLED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::config::Codec;
@@ -61,7 +63,7 @@ const PREVIEW_SEEK_INTERVAL: Duration = Duration::from_millis(33);
 const PREVIEW_SEEK_SETTLE: Duration = Duration::from_millis(160);
 const PREVIEW_SLACK_SECONDS: f64 = 0.05;
 const NOTICE_LIFETIME: Duration = Duration::from_secs(3);
-const FULLSCREEN_CONTROLS_LIFETIME: Duration = Duration::from_millis(2_200);
+const FULLSCREEN_CONTROLS_LIFETIME: Duration = Duration::from_secs(3);
 const FULLSCREEN_CONTROLS_HEIGHT: f32 = 80.0;
 
 struct AppState {
@@ -90,6 +92,7 @@ struct AppState {
     fullscreen_controls_until: Option<Instant>,
     fullscreen_controls_visible: bool,
     fullscreen_cursor_position: Option<(i32, i32)>,
+    fullscreen_primary_button_down: bool,
     notice_expiry: NoticeExpiry,
 }
 
@@ -229,6 +232,7 @@ fn run_initialized() -> Result<(), String> {
         fullscreen_controls_until: None,
         fullscreen_controls_visible: false,
         fullscreen_cursor_position: None,
+        fullscreen_primary_button_down: false,
         notice_expiry: NoticeExpiry::default(),
     });
     let state = Box::into_raw(state);
@@ -275,10 +279,10 @@ fn run_initialized() -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     let fullscreen_overlay = unsafe {
         CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             FULLSCREEN_CONTROLS_CLASS,
             w!(""),
-            WS_CHILD,
+            WS_POPUP,
             0,
             0,
             0,
@@ -440,6 +444,7 @@ unsafe extern "system" fn window_proc(
         }
         WM_LBUTTONDOWN => {
             if let Some(state) = state_mut(window) {
+                reveal_fullscreen_controls(state);
                 let scale = state.dpi as f32 / 96.0;
                 let x = signed_low_word(lparam.0) as f32 / scale;
                 let y = signed_high_word(lparam.0) as f32 / scale;
@@ -918,6 +923,7 @@ unsafe extern "system" fn fullscreen_controls_proc(
         }
         WM_LBUTTONDOWN => {
             if let Some(state) = state_mut(window) {
+                reveal_fullscreen_controls(state);
                 let scale = state.dpi as f32 / 96.0;
                 let x = signed_low_word(lparam.0) as f32 / scale;
                 let y = signed_high_word(lparam.0) as f32 / scale;
@@ -2034,14 +2040,21 @@ fn position_fullscreen_overlay(state: &mut AppState) {
     let Some(overlay) = state.fullscreen_overlay else {
         return;
     };
+    let Ok(owner) = (unsafe { GetParent(overlay) }) else {
+        return;
+    };
+    let mut origin = POINT::default();
+    if !unsafe { ClientToScreen(owner, &mut origin) }.as_bool() {
+        return;
+    }
     let scale = state.dpi as f32 / 96.0;
     let height = (FULLSCREEN_CONTROLS_HEIGHT * scale).round().max(1.0) as i32;
     let _ = unsafe {
         SetWindowPos(
             overlay,
             Some(HWND_TOP),
-            0,
-            state.height as i32 - height,
+            origin.x,
+            origin.y + state.height as i32 - height,
             state.width as i32,
             height,
             SWP_NOACTIVATE,
@@ -2069,8 +2082,20 @@ fn reveal_fullscreen_controls(state: &mut AppState) {
 fn track_fullscreen_cursor(state: &mut AppState) {
     if state.fullscreen.is_none() {
         state.fullscreen_cursor_position = None;
+        state.fullscreen_primary_button_down = false;
         return;
     }
+    // Media Foundation renders into its own child window, which can consume a
+    // click before either Wreath window receives WM_LBUTTONDOWN. Polling the
+    // physical button edge keeps the controls responsive over the video too.
+    let button_state = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) };
+    let primary_down = button_state < 0;
+    let clicked_since_last_poll = (button_state as u16 & 0x0001) != 0;
+    if clicked_since_last_poll || (primary_down && !state.fullscreen_primary_button_down) {
+        reveal_fullscreen_controls(state);
+    }
+    state.fullscreen_primary_button_down = primary_down;
+
     let mut cursor = POINT::default();
     if unsafe { GetCursorPos(&mut cursor) }.is_err() {
         return;
@@ -2164,6 +2189,7 @@ fn exit_player_fullscreen(window: HWND, state: &mut AppState) {
     state.fullscreen_controls_visible = false;
     state.overlay_mouse_tracking = false;
     state.fullscreen_cursor_position = None;
+    state.fullscreen_primary_button_down = false;
     if let Some(overlay) = state.fullscreen_overlay {
         unsafe {
             let _ = ShowWindow(overlay, SW_HIDE);
