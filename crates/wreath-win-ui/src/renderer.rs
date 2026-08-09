@@ -643,65 +643,81 @@ impl Renderer {
         let rail = sidebar_width(width, model.sidebar_expanded);
         self.fill(rect(0.0, 0.0, rail, height), STAGE, 0.0)?;
         self.fill(rect(rail - 1.0, 0.0, rail, height), BORDER, 0.0)?;
+        self.fill(rect(rail, 83.0, width, 84.0), BORDER, 0.0)?;
 
-        let search_width = if width < 1_100.0 { 208.0 } else { 244.0 };
-        let search = rect(width - search_width - 36.0, 20.0, width - 36.0, 58.0);
-        let search_action = Action::Search;
-        let search_fill = if self.is_hovered(&search_action) {
-            mix(SURFACE, ACCENT, self.hover_progress * 0.07)
-        } else {
-            SURFACE
-        };
-        self.fill(search, search_fill, 8.0)?;
-        self.stroke(
-            search,
-            if model.search_focused {
-                ACCENT
-            } else {
-                mix(BORDER, SURFACE, 0.38)
-            },
-            8.0,
-            1.0,
-        )?;
-        self.hits.push(HitRegion {
-            rect: search,
-            action: search_action,
-        });
-        self.render_text_input(
-            &model.search,
-            rect(
-                search.left + 36.0,
-                search.top,
-                search.right - 64.0,
-                search.bottom,
-            ),
-            "Search your clips",
-            model.search_focused,
-            TextInputTarget::Search,
+        self.text(
+            "Local capture",
+            rect(rail + 48.0, 20.0, rail + 290.0, 40.0),
+            &self.small.clone(),
+            SECONDARY,
         )?;
         self.text(
-            "⌕",
-            rect(
-                search.left + 10.0,
-                search.top,
-                search.left + 32.0,
-                search.bottom,
-            ),
-            &self.body_center.clone(),
-            if model.search_focused {
-                PRIMARY
-            } else {
-                SECONDARY
-            },
+            "WREATH",
+            rect(rail + 48.0, 39.0, rail + 240.0, 70.0),
+            &self.section.clone(),
+            PRIMARY,
         )?;
-        let shortcut = rect(
-            search.right - 55.0,
-            search.top + 8.0,
-            search.right - 8.0,
-            search.bottom - 8.0,
-        );
-        self.fill(shortcut, ACCENT_MUTED, 5.0)?;
-        self.text("Ctrl K", shortcut, &self.small.clone(), SECONDARY)?;
+
+        if model.page == Page::Library {
+            let search_width = if width < 1_100.0 { 208.0 } else { 244.0 };
+            let search = rect(width - search_width - 36.0, 20.0, width - 36.0, 58.0);
+            let search_action = Action::Search;
+            let search_fill = if self.is_hovered(&search_action) {
+                mix(SURFACE, ACCENT, self.hover_progress * 0.07)
+            } else {
+                SURFACE
+            };
+            self.fill(search, search_fill, 8.0)?;
+            self.stroke(
+                search,
+                if model.search_focused {
+                    ACCENT
+                } else {
+                    mix(BORDER, SURFACE, 0.38)
+                },
+                8.0,
+                1.0,
+            )?;
+            self.hits.push(HitRegion {
+                rect: search,
+                action: search_action,
+            });
+            self.render_text_input(
+                &model.search,
+                rect(
+                    search.left + 36.0,
+                    search.top,
+                    search.right - 64.0,
+                    search.bottom,
+                ),
+                "Search your clips",
+                model.search_focused,
+                TextInputTarget::Search,
+            )?;
+            self.text(
+                "⌕",
+                rect(
+                    search.left + 10.0,
+                    search.top,
+                    search.left + 32.0,
+                    search.bottom,
+                ),
+                &self.body_center.clone(),
+                if model.search_focused {
+                    PRIMARY
+                } else {
+                    SECONDARY
+                },
+            )?;
+            let shortcut = rect(
+                search.right - 55.0,
+                search.top + 8.0,
+                search.right - 8.0,
+                search.bottom - 8.0,
+            );
+            self.fill(shortcut, ACCENT_MUTED, 5.0)?;
+            self.text("Ctrl K", shortcut, &self.small.clone(), SECONDARY)?;
+        }
 
         let nav = [
             (Page::Home, Glyph::Home, "Home"),
@@ -1573,32 +1589,25 @@ impl Renderer {
         } else {
             0.0
         };
-        if progress > 0.0 {
+        if model.player_duration_seconds > 0.0 {
             let playhead = rail.left + (rail.right - rail.left) * progress;
-            self.fill(
-                rect(rail.left, rail.top, playhead, rail.bottom),
-                ACCENT,
-                3.0,
-            )?;
-            self.fill(
-                rect(
-                    playhead - 4.0,
-                    rail.top - 4.0,
-                    playhead + 4.0,
-                    rail.bottom + 4.0,
-                ),
-                SURFACE_HOVER,
-                4.0,
-            )?;
+            if progress > 0.0 {
+                self.fill(
+                    rect(rail.left, rail.top, playhead, rail.bottom),
+                    ACCENT,
+                    3.0,
+                )?;
+            }
+            let center_y = (rail.top + rail.bottom) / 2.0;
             self.fill(
                 rect(
-                    playhead - 1.5,
-                    rail.top - 5.0,
-                    playhead + 1.5,
-                    rail.bottom + 5.0,
+                    playhead - 5.0,
+                    center_y - 5.0,
+                    playhead + 5.0,
+                    center_y + 5.0,
                 ),
                 PRIMARY,
-                1.5,
+                5.0,
             )?;
         }
         self.hits.push(HitRegion {
