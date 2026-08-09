@@ -379,10 +379,20 @@ try {
         if ($RemainingProcesses.Count -ne 0) {
             throw "NSIS uninstall left Wreath background processes running: $($RemainingProcesses.Name -join ', ')"
         }
-        foreach ($Executable in $Executables.Keys) {
-            if (Test-Path -LiteralPath (Join-Path $SmokeInstallDirectory $Executable)) {
-                throw "NSIS uninstall left $Executable installed"
+        $FileRemovalDeadline = [DateTime]::UtcNow.AddSeconds(15)
+        do {
+            $RemainingExecutables = @(
+                $Executables.Keys | Where-Object {
+                    Test-Path -LiteralPath (Join-Path $SmokeInstallDirectory $_)
+                }
+            )
+            if ($RemainingExecutables.Count -eq 0) {
+                break
             }
+            Start-Sleep -Milliseconds 250
+        } while ([DateTime]::UtcNow -lt $FileRemovalDeadline)
+        if ($RemainingExecutables.Count -ne 0) {
+            throw "NSIS uninstall left installed files: $($RemainingExecutables -join ', ')"
         }
         $RemainingRunValues = Get-ItemProperty `
             -LiteralPath $RunKey `
