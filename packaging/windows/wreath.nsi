@@ -117,6 +117,14 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\Wreath\Uninstall Wreath.lnk"
   RMDir "$SMPROGRAMS\Wreath"
 
+  ; First try an immediate delete. A force-stopped process can disappear from
+  ; the process table just before Windows releases its executable mapping, so
+  ; wait briefly and retry before falling back to a reboot-time deletion.
+  Delete "$INSTDIR\wreath-win-ui.exe"
+  Delete "$INSTDIR\wreath-tray.exe"
+  Delete "$INSTDIR\wreathd.exe"
+  Delete "$INSTDIR\wreathctl.exe"
+  Sleep 1000
   Delete /REBOOTOK "$INSTDIR\wreath-win-ui.exe"
   Delete /REBOOTOK "$INSTDIR\wreath-tray.exe"
   Delete /REBOOTOK "$INSTDIR\wreathd.exe"
