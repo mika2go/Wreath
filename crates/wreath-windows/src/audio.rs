@@ -396,10 +396,17 @@ fn capture_loop(
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
                 .map_err(|error| AudioError(error.to_string()))?;
+        let mut device_label = String::from("unknown device");
         let (client, format, device_period_hns, format_mode, timer_driven) = match endpoint {
             CaptureEndpoint::Loopback => {
                 let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
                     .map_err(|error| AudioError(error.to_string()))?;
+                // Loopback follows the default playback endpoint. Naming it is
+                // the difference between "no game sound in my clips" and
+                // "Windows is playing that sound somewhere else".
+                if let Ok(name) = device_name(&device) {
+                    device_label = name;
+                }
                 let (client, format, period, mode) = initialize_capture_client(
                     &device,
                     AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
@@ -423,6 +430,9 @@ fn capture_loop(
                         "configured microphone endpoint `{endpoint_id}` is unavailable: {error}"
                     ))
                 })?;
+                if let Ok(name) = device_name(&device) {
+                    device_label = name;
+                }
                 let (client, format, period, mode) =
                     initialize_capture_client(&device, 0, MICROPHONE_BUFFER_DURATION_HNS, true)?;
                 (client, format, period, mode, true)
@@ -430,6 +440,9 @@ fn capture_loop(
             CaptureEndpoint::Microphone { endpoint_id: None } => {
                 let device = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }
                     .map_err(|error| AudioError(error.to_string()))?;
+                if let Ok(name) = device_name(&device) {
+                    device_label = name;
+                }
                 let (client, format, period, mode) =
                     initialize_capture_client(&device, 0, MICROPHONE_BUFFER_DURATION_HNS, true)?;
                 (client, format, period, mode, true)
@@ -442,7 +455,7 @@ fn capture_loop(
         };
         let endpoint_buffer_frames = unsafe { client.GetBufferSize() }.unwrap_or_default();
         wreath_core::diagnostic!(
-            "Wreath {endpoint_name} capture: {format_mode}, {} Hz, {} channel(s), {}-bit, buffer {} frames",
+            "Wreath {endpoint_name} capture: {device_label}, {format_mode}, {} Hz, {} channel(s), {}-bit, buffer {} frames",
             format.sample_rate,
             format.channels,
             format.bits_per_sample,
@@ -473,7 +486,7 @@ fn capture_loop(
 
         let mut clock = CapturePacketClock::default();
         let mut dropped_packet = false;
-        let mut diagnostics = CaptureDiagnostics::new(endpoint_name);
+        let mut diagnostics = CaptureDiagnostics::new(endpoint_name, device_label);
         if timer_driven {
             let poll_interval_ms = capture_poll_interval_ms(device_period_hns);
             loop {
@@ -909,11 +922,14 @@ fn audio_effect_name(id: windows::core::GUID) -> String {
 #[cfg(target_os = "windows")]
 struct CaptureDiagnostics {
     endpoint: &'static str,
+    device: String,
     discontinuities: u64,
     timestamp_errors: u64,
     queue_drops: u64,
     resynchronizations: u64,
     packets: u64,
+    silent_packets: u64,
+    reported_silence: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -921,14 +937,17 @@ impl CaptureDiagnostics {
     /// Roughly ten seconds of packets at a typical endpoint period.
     const HEARTBEAT_PACKETS: u64 = 1_024;
 
-    fn new(endpoint: &'static str) -> Self {
+    fn new(endpoint: &'static str, device: String) -> Self {
         Self {
             endpoint,
+            device,
             discontinuities: 0,
             timestamp_errors: 0,
             queue_drops: 0,
             resynchronizations: 0,
             packets: 0,
+            silent_packets: 0,
+            reported_silence: false,
         }
     }
 
@@ -963,15 +982,39 @@ impl CaptureDiagnostics {
     /// Periodic proof of how far the endpoint's own frame count has walked
     /// away from the wall clock. A healthy endpoint stays within a few
     /// milliseconds; anything larger points at dropped or duplicated packets.
-    fn packet(&mut self, sample_clock: std::time::Duration, wall_clock: std::time::Duration) {
+    fn packet(
+        &mut self,
+        sample_clock: std::time::Duration,
+        wall_clock: std::time::Duration,
+        silent: bool,
+    ) {
         self.packets = self.packets.saturating_add(1);
+        if silent {
+            self.silent_packets = self.silent_packets.saturating_add(1);
+        }
+        // An endpoint that is running but carries nothing looks exactly like a
+        // healthy one in a packet count. Windows flags those buffers, so say
+        // it plainly instead: a recording with no game sound is almost always
+        // sound playing through a different device than this one.
+        if !self.reported_silence
+            && self.packets >= Self::HEARTBEAT_PACKETS
+            && self.silent_packets == self.packets
+        {
+            self.reported_silence = true;
+            wreath_core::diagnostic!(
+                "Wreath {} capture: {} has delivered only silence so far; check that Windows plays sound through this device",
+                self.endpoint,
+                self.device
+            );
+        }
         if self.packets % Self::HEARTBEAT_PACKETS == 0 {
             let endpoint = self.endpoint;
             let packets = self.packets;
             let behind = wall_clock.saturating_sub(sample_clock).as_micros();
             let ahead = sample_clock.saturating_sub(wall_clock).as_micros();
             wreath_core::diagnostic!(
-                "Wreath {endpoint} capture health: packets={packets}, sample clock {}{} us from the wall clock, discontinuities={}, timestamp errors={}, queue drops={}, resyncs={}",
+                "Wreath {endpoint} capture health: packets={packets} ({} silent), sample clock {}{} us from the wall clock, discontinuities={}, timestamp errors={}, queue drops={}, resyncs={}",
+                self.silent_packets,
                 if ahead > 0 { "+" } else { "-" },
                 if ahead > 0 { ahead } else { behind },
                 self.discontinuities,
@@ -1144,7 +1187,7 @@ fn read_available_packets(
         if resynchronized {
             diagnostics.resynchronization();
         }
-        diagnostics.packet(timestamp, wall_clock);
+        diagnostics.packet(timestamp, wall_clock, silent);
         let chunk = PcmChunk {
             timestamp,
             frames,
