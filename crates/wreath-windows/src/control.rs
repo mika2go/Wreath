@@ -85,7 +85,9 @@ pub fn send_request(
     pipe_name: &str,
     request: &wreath_core::ipc::Request,
 ) -> Result<wreath_core::ipc::Response, ControlError> {
-    send_request_with_timeout(pipe_name, request, Duration::from_secs(2))
+    // Status, shutdown, and UI commands must stay responsive when the daemon
+    // is absent. The hotkey path opts into its own longer five-second window.
+    send_request_with_timeout(pipe_name, request, Duration::from_millis(250))
 }
 
 /// Connects to the daemon without dropping a request just because the single
