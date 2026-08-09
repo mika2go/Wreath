@@ -266,7 +266,7 @@ try {
         if (-not (Test-Path -LiteralPath $SmokeUninstaller -PathType Leaf)) {
             throw "NSIS smoke install omitted Uninstall.exe"
         }
-        foreach ($IconExecutable in @("wreath-win-ui.exe", "wreath-tray.exe")) {
+        foreach ($IconExecutable in @("wreath-win-ui.exe", "wreath-tray.exe", "wreathd.exe")) {
             $IconPath = Join-Path $SmokeInstallDirectory $IconExecutable
             if (-not [WreathWindowsSmoke]::HasApplicationIcon($IconPath)) {
                 throw "$IconExecutable does not contain the Wreath application icon"

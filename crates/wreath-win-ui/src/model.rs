@@ -75,6 +75,7 @@ pub enum Action {
     DragEditorStart,
     DragEditorEnd,
     SaveCut,
+    ReplaceCut,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

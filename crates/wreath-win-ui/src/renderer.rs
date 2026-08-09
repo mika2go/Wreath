@@ -65,7 +65,6 @@ fn settings_row_top(index: usize) -> f32 {
 
 #[derive(Debug, Clone, Copy)]
 enum Glyph {
-    Logo,
     Home,
     Library,
     Collections,
@@ -573,19 +572,6 @@ impl Renderer {
         self.fill(rect(rail - 1.0, 0.0, rail, height), BORDER, 0.0)?;
         self.fill(rect(rail, 83.0, width, 84.0), BORDER, 0.0)?;
 
-        let logo = rect((rail - 44.0) / 2.0, 20.0, (rail + 44.0) / 2.0, 64.0);
-        self.fill(logo, PRIMARY, 12.0)?;
-        self.glyph(
-            Glyph::Logo,
-            rect(
-                logo.left + 11.0,
-                logo.top + 11.0,
-                logo.right - 11.0,
-                logo.bottom - 11.0,
-            ),
-            CANVAS,
-        )?;
-
         self.text(
             "Local capture",
             rect(rail + 48.0, 20.0, rail + 290.0, 40.0),
@@ -648,7 +634,7 @@ impl Renderer {
             (Page::Collections, Glyph::Collections, "Collections"),
         ];
         for (offset, (page, icon, label)) in nav.iter().enumerate() {
-            let top = 118.0 + offset as f32 * 58.0;
+            let top = 24.0 + offset as f32 * 58.0;
             let active = model.page == *page
                 || (matches!(model.page, Page::Player | Page::Editor)
                     && model.previous_page == *page);
@@ -814,19 +800,6 @@ impl Renderer {
             &self.body.clone(),
             SECONDARY,
         )?;
-        self.pill(
-            rect(
-                panel.right - 208.0,
-                panel.top + 54.0,
-                panel.right - 34.0,
-                panel.top + 106.0,
-            ),
-            ACCENT,
-            "Save replay",
-            CANVAS,
-            Some(Action::SaveReplay),
-        )?;
-
         let signal_left = panel.left + 34.0;
         let signal_right = panel.right - 34.0;
         let signal_y = panel.top + 164.0;
@@ -1475,7 +1448,7 @@ impl Renderer {
         };
         self.text(
             &format!("Edit {}", clip.title),
-            rect(left + 108.0, 104.0, right - 170.0, 138.0),
+            rect(left + 108.0, 104.0, right - 378.0, 138.0),
             &self.section.clone(),
             PRIMARY,
         )?;
@@ -1485,9 +1458,31 @@ impl Renderer {
             } else {
                 "Choose the moment to keep"
             },
-            rect(left + 108.0, 138.0, right, 162.0),
+            rect(left + 108.0, 138.0, right - 378.0, 162.0),
             &self.small.clone(),
             SECONDARY,
+        )?;
+
+        let actions_enabled = model.editor_timing.is_some() && !model.editor_working;
+        let action_background = if actions_enabled {
+            ACCENT
+        } else {
+            SURFACE_HOVER
+        };
+        let action_foreground = if actions_enabled { CANVAS } else { SECONDARY };
+        self.pill(
+            rect(right - 360.0, 108.0, right - 186.0, 148.0),
+            action_background,
+            "Save as new clip",
+            action_foreground,
+            actions_enabled.then_some(Action::SaveCut),
+        )?;
+        self.pill(
+            rect(right - 174.0, 108.0, right, 148.0),
+            action_background,
+            "Save as original",
+            action_foreground,
+            actions_enabled.then_some(Action::ReplaceCut),
         )?;
 
         let stage = fit_aspect(
@@ -1546,38 +1541,9 @@ impl Renderer {
         };
         self.text(
             status,
-            rect(
-                left,
-                timeline.bottom + 14.0,
-                right - 170.0,
-                timeline.bottom + 50.0,
-            ),
+            rect(left, timeline.bottom + 14.0, right, timeline.bottom + 50.0),
             &self.small.clone(),
             SECONDARY,
-        )?;
-        self.pill(
-            rect(
-                right - 154.0,
-                timeline.bottom + 10.0,
-                right,
-                timeline.bottom + 50.0,
-            ),
-            if model.editor_timing.is_some() && !model.editor_working {
-                ACCENT
-            } else {
-                SURFACE_HOVER
-            },
-            if model.editor_working {
-                "Cutting…"
-            } else {
-                "Save new clip"
-            },
-            if model.editor_timing.is_some() && !model.editor_working {
-                CANVAS
-            } else {
-                SECONDARY
-            },
-            (model.editor_timing.is_some() && !model.editor_working).then_some(Action::SaveCut),
         )
     }
 
@@ -2603,18 +2569,6 @@ impl Renderer {
             );
         };
         match glyph {
-            Glyph::Logo => {
-                line(8.0, 3.0, 3.0, 3.0);
-                line(3.0, 3.0, 3.0, 8.0);
-                line(16.0, 3.0, 21.0, 3.0);
-                line(21.0, 3.0, 21.0, 8.0);
-                line(3.0, 16.0, 3.0, 21.0);
-                line(3.0, 21.0, 8.0, 21.0);
-                line(21.0, 16.0, 21.0, 21.0);
-                line(21.0, 21.0, 16.0, 21.0);
-                line(9.0, 8.0, 9.0, 16.0);
-                line(15.0, 8.0, 15.0, 16.0);
-            }
             Glyph::Home => {
                 line(3.0, 11.0, 12.0, 3.5);
                 line(12.0, 3.5, 21.0, 11.0);

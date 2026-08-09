@@ -379,6 +379,22 @@ fn distance(left: Duration, right: Duration) -> Duration {
 mod tests {
     use super::*;
 
+    struct ReplacementBackend;
+
+    impl TrimBackend for ReplacementBackend {
+        fn timing(&self, _source: &Path) -> Result<ClipTiming, TrimError> {
+            Ok(ClipTiming {
+                duration: Duration::from_secs(10),
+                keyframes: vec![Duration::ZERO],
+            })
+        }
+
+        fn cut(&self, plan: &CutPlan) -> Result<(), TrimError> {
+            fs::write(&plan.destination, b"replacement")?;
+            Ok(())
+        }
+    }
+
     fn keyframes() -> Vec<Duration> {
         (0..16)
             .map(|index| Duration::from_secs(index * 2))
@@ -510,5 +526,34 @@ mod tests {
             "matroska"
         );
         assert!(Container::from_path(Path::new("notes.txt")).is_none());
+    }
+
+    #[test]
+    fn replacing_keeps_the_original_path_without_leaving_a_second_clip() {
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "wreath-trim-replace-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let source = directory.join("moment.mp4");
+        fs::write(&source, b"original").unwrap();
+        let request = TrimRequest {
+            source: source.clone(),
+            start: Duration::from_secs(1),
+            end: Duration::from_secs(4),
+            mode: TrimMode::Precise,
+            output: TrimOutput::Replace,
+        };
+
+        let report = trim(&ReplacementBackend, &request, &directory.join("thumbnails")).unwrap();
+
+        assert_eq!(report.path, source);
+        assert_eq!(fs::read(&source).unwrap(), b"replacement");
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -9,6 +9,7 @@ ISO_DIR="$VM_ROOT/iso"
 IMAGE_DIR="$VM_ROOT/images"
 PAYLOAD_DIR="$VM_ROOT/payload"
 STATE_DIR="$VM_ROOT/state"
+TOOL_DIR="$VM_ROOT/tools"
 WINDOWS_ISO="$ISO_DIR/Win11_Enterprise_Eval_25H2_de-de_x64.iso"
 WINDOWS_ISO_URL="https://aka.ms/Win11E-ISO-25H2-de-de"
 WINDOWS_ISO_SHA256="056b8920fe23ba8ace54895df76f0926d7a71eeb8fdaa8f94ff8290cb18a540b"
@@ -157,7 +158,52 @@ ensure_windows_toolchain() {
     fi
 }
 
+signed_arch_package() {
+    local package="$1"
+    local package_url archive signature
+    package_url="$(pacman -Sp --print-format '%l' "$package" | head -n 1)"
+    archive="$STATE_DIR/$(basename "$package_url")"
+    signature="$archive.sig"
+    if [[ ! -f "$archive" || ! -f "$signature" ]]; then
+        curl -L --fail --retry 5 --output "$archive" "$package_url"
+        curl -L --fail --retry 5 --output "$signature" "$package_url.sig"
+    fi
+    pacman-key --verify "$signature" "$archive" >/dev/null
+    printf '%s\n' "$archive"
+}
+
+windows_resource_compiler() {
+    local candidate
+    for candidate in llvm-rc llvm-rc-22 llvm-rc-21 llvm-rc-20; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            command -v "$candidate"
+            return
+        fi
+    done
+
+    local compiler="$TOOL_DIR/llvm-rc"
+    if [[ ! -x "$compiler" || ! -x "$TOOL_DIR/clang" ]]; then
+        if ! command -v pacman >/dev/null 2>&1 || ! command -v bsdtar >/dev/null 2>&1; then
+            printf 'llvm-rc and clang are required to embed the Windows application icon.\n' >&2
+            printf 'Install LLVM and Clang or set RC_PATH to a compatible resource compiler.\n' >&2
+            return 1
+        fi
+        mkdir -p "$TOOL_DIR" "$STATE_DIR"
+        local llvm_package clang_package
+        llvm_package="$(signed_arch_package llvm)"
+        clang_package="$(signed_arch_package clang)"
+        bsdtar -xf "$llvm_package" -C "$TOOL_DIR" --strip-components 2 usr/bin/llvm-rc
+        bsdtar -xf "$clang_package" -C "$TOOL_DIR" --strip-components 2 \
+            usr/bin/clang usr/bin/clang-22 \
+            usr/lib/libclang-cpp.so usr/lib/libclang-cpp.so.22.1
+    fi
+    printf '%s\n' "$compiler"
+}
+
 windows_cargo() {
+    local resource_compiler
+    resource_compiler="${RC_PATH:-$(windows_resource_compiler)}"
     RUSTUP_HOME="$VM_ROOT/rustup" CARGO_HOME="$VM_ROOT/cargo" \
-        PATH="$VM_ROOT/cargo/bin:$PATH" cargo "$@"
+        RC_PATH="$resource_compiler" LD_LIBRARY_PATH="$TOOL_DIR:${LD_LIBRARY_PATH:-}" \
+        PATH="$TOOL_DIR:$VM_ROOT/cargo/bin:$PATH" cargo "$@"
 }

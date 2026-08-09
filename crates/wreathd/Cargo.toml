@@ -11,3 +11,6 @@ wreath-core = { path = "../wreath-core" }
 
 [target.'cfg(windows)'.dependencies]
 wreath-windows = { path = "../wreath-windows" }
+
+[build-dependencies]
+winresource = "0.1.31"

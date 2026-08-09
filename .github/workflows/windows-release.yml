@@ -6,7 +6,7 @@ on:
       version:
         description: Semantic version without the v prefix
         required: true
-        default: 0.2.34
+        default: 0.2.35
         type: string
 
 permissions:

@@ -87,6 +87,7 @@ enum TrimUpdate {
     },
     Finished {
         source: PathBuf,
+        replacing: bool,
         result: Result<wreath_core::trim::TrimReport, String>,
     },
 }
@@ -809,7 +810,8 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         }
         Action::EditActiveClip => begin_editor(state),
         Action::DragEditorStart | Action::DragEditorEnd => {}
-        Action::SaveCut => save_cut(state),
+        Action::SaveCut => save_cut(state, wreath_core::trim::TrimOutput::NewClip(None)),
+        Action::ReplaceCut => save_cut(state, wreath_core::trim::TrimOutput::Replace),
     }
     redraw(window);
 }
@@ -840,7 +842,7 @@ fn begin_editor(state: &mut AppState) {
     }
 }
 
-fn save_cut(state: &mut AppState) {
+fn save_cut(state: &mut AppState, output: wreath_core::trim::TrimOutput) {
     if state.model.editor_working || state.model.editor_timing.is_none() {
         return;
     }
@@ -848,28 +850,43 @@ fn save_cut(state: &mut AppState) {
         state.model.notice = Some("Clip is no longer available".into());
         return;
     };
+    let replacing = matches!(output, wreath_core::trim::TrimOutput::Replace);
     let request = wreath_core::trim::TrimRequest {
         source: source.clone(),
         start: state.model.editor_start,
         end: state.model.editor_end,
         mode: wreath_core::trim::TrimMode::Auto,
-        output: wreath_core::trim::TrimOutput::NewClip(None),
+        output,
     };
     let thumbnails = state.model.paths.thumbnail_dir.clone();
     let updates = state.trim_sender.clone();
+    if replacing {
+        stop_player(state);
+    }
     state.model.editor_working = true;
-    state.model.notice = Some("Cutting on a background worker…".into());
+    state.model.notice = Some(if replacing {
+        "Replacing the original clip on a background worker…".into()
+    } else {
+        "Cutting on a background worker…".into()
+    });
     let spawned = std::thread::Builder::new()
         .name("wreath-editor-cut".into())
         .spawn(move || {
             let result = wreath_windows::trim::MediaFoundationTrimmer::new()
                 .and_then(|backend| wreath_core::trim::trim(&backend, &request, &thumbnails))
                 .map_err(|error| error.to_string());
-            let _ = updates.send(TrimUpdate::Finished { source, result });
+            let _ = updates.send(TrimUpdate::Finished {
+                source,
+                replacing,
+                result,
+            });
         });
     if spawned.is_err() {
         state.model.editor_working = false;
         state.model.notice = Some("Cannot start the cutting worker".into());
+        if replacing {
+            open_current_clip(state);
+        }
     }
 }
 
@@ -895,10 +912,14 @@ fn poll_trim_updates(state: &mut AppState) -> bool {
                     }
                 }
             }
-            TrimUpdate::Finished { source, result } if active.as_ref() == Some(&source) => {
+            TrimUpdate::Finished {
+                source,
+                replacing,
+                result,
+            } if active.as_ref() == Some(&source) => {
                 changed = true;
                 state.model.editor_working = false;
-                match result {
+                let replaced_successfully = match result {
                     Ok(report) => {
                         let result = state.model.refresh();
                         if result.is_ok() && state.model.page == crate::model::Page::Editor {
@@ -918,14 +939,30 @@ fn poll_trim_updates(state: &mut AppState) -> bool {
                         let message = format!(
                             "{} · {name}",
                             if report.reencoded {
-                                "Re-encoded for an exact start"
+                                if replacing {
+                                    "Original replaced and re-encoded for an exact start"
+                                } else {
+                                    "Re-encoded for an exact start"
+                                }
+                            } else if replacing {
+                                "Original replaced with a lossless cut"
                             } else {
                                 "Losslessly cut"
                             }
                         );
                         set_result(&mut state.model, result, &message);
+                        replacing
                     }
-                    Err(error) => state.model.notice = Some(format!("Cannot cut clip: {error}")),
+                    Err(error) => {
+                        state.model.notice = Some(format!("Cannot cut clip: {error}"));
+                        false
+                    }
+                };
+                if replacing {
+                    open_current_clip(state);
+                    if replaced_successfully && state.model.page == crate::model::Page::Editor {
+                        begin_editor(state);
+                    }
                 }
             }
             _ => {}

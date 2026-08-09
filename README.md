@@ -1,187 +1,234 @@
-> [!CAUTION]
-> **TESTING PHASE — expect bugs and breaking changes.**
-> Wreath is under active development and has only been tested on a small number
-> of systems. Do not use it as your only recording workflow yet.
-
 # Wreath
 
-Wreath is a local instant replay recorder for Linux and Windows. It continuously
-keeps a short encoded buffer in memory and writes a video only when the save
-shortcut is pressed.
+**A local-first instant replay recorder for Windows and Linux.**
 
-![Wreath clip library](docs/assets/wreath-library.png)
+Wreath keeps the most recent seconds of gameplay encoded in memory and writes a
+video only when you press the replay shortcut. Capture, clips, thumbnails,
+playback, editing, and configuration stay on your computer.
 
-## Platform support
+[Download for Windows](https://github.com/mika2go/trace/releases/latest) ·
+[Install on Linux](#arch-linux--cachyos) ·
+[Documentation](docs/install.md) ·
+[Report an issue](https://github.com/mika2go/trace/issues)
 
-The Arch Linux/Hyprland edition is the currently tested release path. The
-Windows edition is a separate native implementation rather than a port: it uses
-Windows Graphics Capture, D3D11 conversion, hardware-only Media Foundation
-encoding and WASAPI capture directly, and shares only the configuration, replay
-buffer and control protocol with Linux.
+> [!NOTE]
+> Wreath is feature-complete for its first stable release and is currently
+> being validated across more GPUs, displays, audio devices, and desktops.
+> Keep a second recording method available for irreplaceable sessions while
+> this hardware coverage is still expanding.
 
-| Desktop | Capture | Global shortcut |
-| --- | --- | --- |
-| Hyprland | Direct monitor or desktop portal | Registered automatically |
-| KDE Plasma on Wayland | Direct monitor or desktop portal | Configured once in Plasma |
-| KDE Plasma on X11 | Direct monitor | Configured once in Plasma |
-| Other desktops | Targets reported by GPU Screen Recorder | Configured by the desktop |
-| Windows 10/11 | Windows Graphics Capture + hardware Media Foundation encoder | Native global hotkey |
+## Why Wreath
 
-Hyprland remains the primary integration. Wreath uses its runtime API for the
-shortcut and focused-monitor metadata, without editing the Hyprland config.
-KDE Plasma and other desktops do not require Hyprland, Quickshell, or a custom
-shell.
+- Hardware video encoding on AMD, Intel, and NVIDIA; no CPU encoding fallback.
+- H.264, HEVC, and AV1 capture at up to 60 fps.
+- Configurable replay duration, quality, display, cursor, audio, and storage.
+- Desktop audio plus an optional independently controlled microphone.
+- Searchable local clip library with rename, delete, collections, playback,
+  trimming, and lossless keyframe-aware cuts.
+- Native Windows recorder and interface without Electron, GTK, a browser
+  engine, telemetry, accounts, or uploads.
+- Small Linux background service with a separate GTK4 library that exits when
+  its window closes.
 
-## Features
+## Wreath vs. Medal: a much smaller background footprint
 
-- Hardware encoding on AMD, Intel, and NVIDIA — through GPU Screen Recorder on
-  Linux, through Media Foundation on Windows, with no CPU fallback on either
-- H.264, HEVC, and AV1
-- Configurable replay length, quality, cursor capture, and output directory, at
-  up to 60 fps
-- Desktop audio and an optional microphone with an independent recording level
-- Unprocessed microphone capture on Windows: the endpoint is opened in WASAPI
-  raw mode, so the driver's gain control, noise suppression and echo
-  cancellation stay out of the recording
-- Quiet confirmation sound and a desktop notification after a clip is saved
-- GTK4 clip library with playback, search, rename, delete, and collections
-- Direct monitor capture with a desktop portal fallback
-- Optional Quickshell/Pywal colors with standalone defaults
-- No account, telemetry, uploads, or network client
+In a Windows 11 Task Manager snapshot from the same machine, Medal's grouped
+background processes used **426.8 MB** of memory. The Wreath recorder process
+used **186.8 MB**.
 
-Capture is capped at 60 fps. Hardware encoders could not sustain more at the
-resolutions people record at, so the higher settings only dropped frames and
-doubled clip size.
+> **Wreath used 240 MB less memory — a 56% reduction.** Medal occupied about
+> **2.28×** as much memory in this snapshot.
 
-## Install
+| Task Manager reading | Medal (7 processes) | Wreath recorder | Difference |
+| --- | ---: | ---: | ---: |
+| Memory | 426.8 MB | **186.8 MB** | **−240.0 MB / −56%** |
+| CPU | **0.0%** | 0.4% | +0.4 percentage points |
+| Disk | **0 MB/s** | 0.1 MB/s | +0.1 MB/s |
+| Network | 0.1 Mbit/s | **0 Mbit/s** | −0.1 Mbit/s |
 
-Run the installer as your regular desktop user:
+That difference reflects Wreath's deliberately small native architecture: the
+recorder is written in Rust, the Windows interface uses native Direct2D and
+DirectWrite, and there is no embedded browser engine, account client,
+advertising layer, telemetry pipeline, or upload service running behind it.
+
+This is a transparent Task Manager snapshot, not a controlled benchmark. Medal
+is shown as a seven-process group, while the Wreath figure represents its
+recorder process; results also vary with replay length, codec, resolution,
+drivers, and whether either application's library window is open. The raw
+readings above are included so the comparison is reproducible rather than a
+context-free marketing claim.
+
+## Windows 10 / 11
+
+### Install
+
+1. Open the [latest release](https://github.com/mika2go/trace/releases/latest).
+2. Download `Wreath-<version>-x64-setup.exe`.
+3. Run the installer as your normal Windows user. Administrator access is not
+   required.
+4. Open **Wreath** from the Start menu.
+
+The installer is currently unsigned, so Windows may show a SmartScreen warning.
+Download it only from the release page above. Every release includes a matching
+`Wreath-<version>-x64-build.json` with SHA-256 hashes and native build evidence.
+
+Wreath installs per user below `%LOCALAPPDATA%\Wreath`. Automatic startup is
+optional and can be enabled from the tray menu.
+
+### Save your first replay
+
+1. Open **Settings** and select the display you want to capture.
+2. Choose the replay length, frame rate, codec, quality, and audio sources.
+3. Wait until the home page reports **Capture ready**.
+4. Press `Ctrl+Alt+R` to save the current replay buffer.
+5. Open **Library** to play, rename, organize, trim, or delete the clip.
+
+Closing the main window does not stop capture. The tray process and recorder
+continue in the background until you exit Wreath from the tray menu.
+
+### Windows command line
+
+`wreathctl.exe` is installed beside Wreath and can inspect or update the active
+recorder without editing TOML by hand:
+
+```powershell
+wreathctl status
+wreathctl monitors
+wreathctl microphones
+wreathctl codecs
+wreathctl config duration 30
+wreathctl config fps 60
+wreathctl config codec h264
+wreathctl config microphone default
+```
+
+See [Windows internals, diagnostics, and native builds](docs/windows.md) for the
+full command set and troubleshooting information.
+
+## Arch Linux / CachyOS
+
+The supported Linux installer targets Arch Linux and Arch-based distributions.
+Hyprland and KDE Plasma are the primary tested desktops.
+
+Run the installer as your regular desktop user, not through `sudo`:
 
 ```bash
 sudo pacman -S --needed git
-git clone https://github.com/mika2go/wreath.git
+git clone https://github.com/mika2go/trace.git wreath
 cd wreath
 ./scripts/install-arch.sh --install-deps
 ```
 
-The installer uses `sudo` only for packages and files below `/usr`. It builds
-Wreath, installs the desktop files, and starts the systemd user service.
+The script uses `sudo` only to install packages and files below `/usr`. It
+builds the locked workspace, runs the test suite, installs Wreath, and enables
+the `wreathd.service` user service. Existing Wreath, Hyprland, Quickshell, and
+KDE configuration files are not overwritten.
 
-It does not modify existing files in:
+Verify the installation:
 
-- `~/.config/hypr`
-- `~/.config/quickshell`
-- KDE configuration directories
-- `~/.config/wreath`
-
-See [the installation guide](docs/install.md) for the `PKGBUILD`, GPU drivers,
-portal packages, KDE setup, and troubleshooting.
-
-The experimental Windows NSIS installer is documented in
-[the Windows build guide](docs/windows.md).
-
-## Shortcuts
-
-On Hyprland, Wreath registers the selected shortcut at runtime. Changing it in
-the settings window updates the active bind immediately.
-
-On KDE Plasma, add a global shortcut in:
-
-```text
-System Settings → Keyboard → Shortcuts → Add New → Command or Script
+```bash
+wreathctl doctor
+wreathctl monitors
+systemctl --user status wreathd.service
 ```
 
-Set the command to:
+On Hyprland, Wreath registers the default `Super+Shift+R` shortcut at runtime.
+On KDE Plasma and other desktops, create a global shortcut that runs:
 
 ```text
 /usr/bin/wreathctl save
 ```
 
-The default shortcut is `Meta+Shift+R`. Plasma owns this binding, so it must
-also be updated in System Settings after choosing a different shortcut in
-Wreath.
+Detailed packages, GPU drivers, portals, desktop shortcuts, and manual build
+steps are documented in the [Linux installation guide](docs/install.md).
 
-## Command line
+## Platform support
+
+| Platform | Capture backend | Replay shortcut | Status |
+| --- | --- | --- | --- |
+| Windows 10 / 11 | Windows Graphics Capture, D3D11, Media Foundation, WASAPI | Native `Ctrl+Alt+R` | Active preview |
+| Hyprland / Wayland | GPU Screen Recorder, direct monitor or portal | Registered automatically | Primary Linux target |
+| KDE Plasma / Wayland | GPU Screen Recorder, direct monitor or portal | Configured in Plasma | Tested |
+| KDE Plasma / X11 | GPU Screen Recorder, direct monitor | Configured in Plasma | Tested |
+| Other Linux desktops | Recorder-discovered target or desktop portal | Configured by the desktop | Best effort |
+
+Capture is capped at 60 fps. Higher rates were not reliable at typical gaming
+resolutions and produced larger files with dropped frames.
+
+## Local data and privacy
+
+Wreath has no account system, telemetry, advertising, cloud synchronization, or
+upload client. The Linux service is packaged without IP network access.
+
+| Data | Windows | Linux |
+| --- | --- | --- |
+| Configuration | `%LOCALAPPDATA%\Wreath\config.toml` | `$XDG_CONFIG_HOME/wreath/config.toml` |
+| Clips | `%USERPROFILE%\Videos\Wreath` | `$HOME/Videos/Wreath` |
+| Logs | `%LOCALAPPDATA%\Wreath\wreath.log` | `journalctl --user -u wreathd.service` |
+| Control endpoint | `\\.\pipe\wreath` | `$XDG_RUNTIME_DIR/wreath.sock` |
+
+Uninstalling Wreath removes the application but deliberately keeps existing
+clips and configuration.
+
+## Troubleshooting
+
+### Windows
+
+- Open `%LOCALAPPDATA%\Wreath\wreath.log` for capture, encoder, display, and
+  audio diagnostics.
+- Run `wreathctl status` to see the selected GPU, encoder, buffer duration, and
+  memory use.
+- Use **Reload settings** after reconnecting a monitor or waking the computer.
+- If capture remains unavailable, exit Wreath from the tray and start it again.
+
+### Linux
 
 ```bash
-wreathctl status
-wreathctl save
-wreathctl monitors
 wreathctl doctor
-wreathctl sound
-wreathctl config duration 30
-wreathctl config fps 60
-wreathctl config hotkey SUPER+SHIFT+R
+wreathctl monitors
+journalctl --user -u wreathd.service -b
+gpu-screen-recorder --info
 ```
 
-Manage the recorder with:
-
-```bash
-systemctl --user status wreathd.service
-systemctl --user restart wreathd.service
-```
-
-The service is attached to the user manager's `default.target`. It keeps
-running independently of desktop-specific graphical-session targets and
-restarts both the daemon and a failed recorder process automatically.
-
-## Performance
-
-The replay is already encoded when it is saved. Pressing the shortcut sends a
-small request to the background service; it does not start a second recording
-or render the clip again.
-
-Reference measurement: Ryzen 7 7800X3D, AMD Navi 32, 1080p60, H.264,
-30-second buffer, desktop audio, and microphone.
-
-| Resource | Recorder | Library while open |
-| --- | ---: | ---: |
-| CPU | 5.7% of one thread | 0.13% of one thread |
-| Memory | 279 MiB | 161.5 MiB |
-| AMD encoder | 9.2% | — |
-| AMD graphics | 0.8% | — |
-| GPU memory | 50.7 MiB VRAM + 25.2 MiB GTT | — |
-| Disk I/O while buffering | 0 B read / 0 B written | — |
-
-These figures were measured with Wreath `0.1.0.r27.g67cec71`. Results depend on
-the GPU, driver, codec, resolution, frame rate, and audio sources. The library
-is a separate process and exits when its window is closed.
+If `wreathctl save` works but the keyboard shortcut does not, the recorder is
+healthy and only the desktop shortcut needs correction.
 
 ## Development
 
+Requirements: Rust 1.85 or newer and the platform dependencies documented in
+the installation guides.
+
 ```bash
-cargo build --workspace
-cargo test --workspace
-cargo run -p wreath-ui
+cargo fmt --all -- --check
+cargo test --locked --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo build --locked --workspace
 ```
 
-The repository contains the Linux UI plus shared and platform-specific binaries:
+The workspace contains:
 
-- `wreathd`: background recorder and replay buffer
-- `wreathctl`: local control client used by shortcuts
-- `wreath-ui`: clip library and settings
-- `wreath-win-ui`: full native Windows application (Direct2D/DirectWrite/WIC/Media Foundation)
-- `wreath-tray`: independent low-overhead Windows tray and autostart process
+| Package | Purpose |
+| --- | --- |
+| `wreath-core` | Shared configuration, protocol, replay, and trimming logic |
+| `wreathd` | Background recorder and replay buffer |
+| `wreathctl` | Local control and diagnostics client |
+| `wreath-ui` | Linux GTK4 application |
+| `wreath-windows` | Native Windows capture and encoding backend |
+| `wreath-win-ui` | Native Windows application and tray |
 
-See [the architecture notes](docs/architecture.md) for the process layout.
+Additional documentation:
 
-## Local data
-
-- Configuration: `$XDG_CONFIG_HOME/wreath`
-- Clips: `$HOME/Videos/Wreath` by default
-- Runtime socket: `$XDG_RUNTIME_DIR/wreath.sock`
-- Portal session token: `$XDG_CACHE_HOME/wreath`
-
-The packaged service blocks IP networking. Capture, thumbnails, playback,
-configuration, and clip management stay local.
+- [Architecture](docs/architecture.md)
+- [Linux installation](docs/install.md)
+- [Windows build and diagnostics](docs/windows.md)
+- [Windows performance validation](docs/windows-performance.md)
+- [Windows 11 VM testing](docs/windows-vm.md)
 
 ## License
 
-MIT
+Wreath is available under the [MIT License](LICENSE).
 
----
+## Acknowledgements
 
-## Testers
-
-**Nev** — tested every build and found basically all of the Windows audio and
-clip bugs. Thanks man.
+**Nev** tested the Windows builds and reported many of the audio and clipping
+issues fixed during development.
