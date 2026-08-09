@@ -20,7 +20,9 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 use windows::Win32::Graphics::Gdi::{DeleteObject, HPALETTE};
 use windows::Win32::Graphics::Imaging::{
-    CLSID_WICImagingFactory, IWICImagingFactory, WICBitmapIgnoreAlpha,
+    CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICImagingFactory, IWICPalette,
+    WICBitmapDitherTypeNone, WICBitmapIgnoreAlpha, WICBitmapPaletteTypeCustom,
+    WICDecodeMetadataCacheOnLoad,
 };
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IBindCtx};
 use windows::Win32::UI::Shell::{
@@ -58,6 +60,9 @@ const DANGER: u32 = 0xf15b68;
 const SETTINGS_ROW_TOP: f32 = 270.0;
 const SETTINGS_ROW_HEIGHT: f32 = 76.0;
 const SETTINGS_ROW_GAP: f32 = 12.0;
+const HOME_GIRL_ASPECT_RATIO: f32 = 1206.0 / 1693.0;
+const HOME_GIRL_BOTTOM_OVERFLOW: f32 = 70.0;
+const HOME_GIRL_PNG: &[u8] = include_bytes!("../../../assets/wreath-home-girl.png");
 
 fn settings_row_top(index: usize) -> f32 {
     SETTINGS_ROW_TOP + index as f32 * (SETTINGS_ROW_HEIGHT + SETTINGS_ROW_GAP)
@@ -209,6 +214,32 @@ fn fit_aspect(area: LogicalRect, aspect_ratio: f32) -> LogicalRect {
     rect(left, top, left + width, top + height)
 }
 
+fn home_girl_layout(
+    width: f32,
+    height: f32,
+    content_left: f32,
+    content_right: f32,
+) -> (LogicalRect, f32) {
+    let minimum_content_width = if width < 1_080.0 { 420.0 } else { 540.0 };
+    let available_height = (height - 250.0).max(180.0);
+    let available_width = (width - content_left - minimum_content_width - 18.0).max(160.0);
+    let girl_height = (height * 0.57)
+        .clamp(240.0, 500.0)
+        .min(available_height)
+        .min(available_width / HOME_GIRL_ASPECT_RATIO);
+    let girl_width = girl_height * HOME_GIRL_ASPECT_RATIO;
+    let destination = rect(
+        width - girl_width,
+        height + HOME_GIRL_BOTTOM_OVERFLOW - girl_height,
+        width + 1.0,
+        height + HOME_GIRL_BOTTOM_OVERFLOW + 1.0,
+    );
+    let text_right = (destination.left - 18.0)
+        .max(content_left + minimum_content_width)
+        .min(content_right);
+    (destination, text_right)
+}
+
 #[derive(Clone)]
 struct HitRegion {
     rect: LogicalRect,
@@ -227,6 +258,7 @@ pub struct Renderer {
     body_center: IDWriteTextFormat,
     hits: Vec<HitRegion>,
     wic_factory: IWICImagingFactory,
+    home_girl: Option<ID2D1Bitmap>,
     thumbnails: HashMap<PathBuf, ID2D1Bitmap>,
     /// Least recently drawn first, so the cache can be bounded.
     thumbnail_order: VecDeque<PathBuf>,
@@ -320,6 +352,7 @@ impl Renderer {
             body_center,
             hits: Vec::new(),
             wic_factory,
+            home_girl: None,
             thumbnails: HashMap::new(),
             thumbnail_order: VecDeque::new(),
             unavailable_thumbnails: HashSet::new(),
@@ -348,9 +381,10 @@ impl Renderer {
         self.unavailable_thumbnails.clear();
     }
 
-    /// Drops the decoded thumbnails while the library is not on screen. They
-    /// cost nothing to rebuild and everything to keep for a hidden window.
+    /// Drops render-target-bound images while the window is hidden or the
+    /// target is being rebuilt. They are decoded again on the next paint.
     pub fn release_cached_images(&mut self) {
+        self.home_girl = None;
         self.thumbnails.clear();
         self.thumbnail_order.clear();
     }
@@ -714,7 +748,7 @@ impl Renderer {
         let left = rail + padding;
         let right = width - padding;
         match model.page {
-            Page::Home => self.render_home(model, left, right, height)?,
+            Page::Home => self.render_home(model, left, right, width, height)?,
             Page::Library => self.render_library(model, left, right, height)?,
             Page::Collections => self.render_collections(model, left, right, height)?,
             Page::Settings => self.render_settings(model, left, right, height)?,
@@ -729,6 +763,7 @@ impl Renderer {
         model: &UiModel,
         left: f32,
         right: f32,
+        width: f32,
         height: f32,
     ) -> Result<(), String> {
         self.text(
@@ -743,8 +778,9 @@ impl Renderer {
             &self.title.clone(),
             PRIMARY,
         )?;
+        let (home_girl, content_right) = home_girl_layout(width, height, left, right);
         let panel_bottom = 542.0_f32.min(height - 42.0);
-        let panel = rect(left, 216.0, right, panel_bottom);
+        let panel = rect(left, 216.0, content_right, panel_bottom);
 
         self.fill(
             rect(
@@ -904,6 +940,7 @@ impl Renderer {
                 PRIMARY,
             )?;
         }
+        self.draw_home_girl(home_girl)?;
         Ok(())
     }
 
@@ -2679,6 +2716,55 @@ impl Renderer {
         Ok(true)
     }
 
+    fn draw_home_girl(&mut self, destination: LogicalRect) -> Result<(), String> {
+        if self.home_girl.is_none() {
+            self.home_girl = Some(self.load_embedded_png(HOME_GIRL_PNG)?);
+        }
+        let bitmap = self.home_girl.as_ref().expect("home girl was loaded");
+        let target = self.target.as_ref().expect("render target exists");
+        unsafe {
+            target.DrawBitmap(
+                bitmap,
+                Some(&destination.d2d()),
+                1.0,
+                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                None,
+            );
+        }
+        Ok(())
+    }
+
+    fn load_embedded_png(&self, bytes: &[u8]) -> Result<ID2D1Bitmap, String> {
+        let stream =
+            unsafe { self.wic_factory.CreateStream() }.map_err(|error| error.to_string())?;
+        unsafe { stream.InitializeFromMemory(bytes) }.map_err(|error| error.to_string())?;
+        let decoder = unsafe {
+            self.wic_factory.CreateDecoderFromStream(
+                &stream,
+                std::ptr::null(),
+                WICDecodeMetadataCacheOnLoad,
+            )
+        }
+        .map_err(|error| error.to_string())?;
+        let frame = unsafe { decoder.GetFrame(0) }.map_err(|error| error.to_string())?;
+        let converter = unsafe { self.wic_factory.CreateFormatConverter() }
+            .map_err(|error| error.to_string())?;
+        unsafe {
+            converter.Initialize(
+                &frame,
+                &GUID_WICPixelFormat32bppPBGRA,
+                WICBitmapDitherTypeNone,
+                None::<&IWICPalette>,
+                0.0,
+                WICBitmapPaletteTypeCustom,
+            )
+        }
+        .map_err(|error| error.to_string())?;
+        let target = self.target.as_ref().expect("render target exists");
+        unsafe { target.CreateBitmapFromWicBitmap(&converter, None) }
+            .map_err(|error| error.to_string())
+    }
+
     fn load_thumbnail(&self, path: &Path) -> Result<ID2D1Bitmap, String> {
         let path = path
             .as_os_str()
@@ -2834,7 +2920,7 @@ fn on_off(value: bool) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_bytes, format_storage_limit};
+    use super::{format_bytes, format_storage_limit, home_girl_layout};
 
     #[test]
     fn storage_sizes_use_only_mb_and_gb_labels() {
@@ -2843,5 +2929,22 @@ mod tests {
         assert_eq!(format_bytes(5 * 1_073_741_824), "5.0 GB");
         assert_eq!(format_storage_limit(512), "512 MB");
         assert_eq!(format_storage_limit(10_240), "10 GB");
+    }
+
+    #[test]
+    fn home_girl_is_flush_with_the_window_and_leaves_room_for_status() {
+        let (girl, content_right) = home_girl_layout(1_424.0, 853.0, 136.0, 1_376.0);
+
+        assert_eq!(girl.right, 1_425.0);
+        assert_eq!(girl.bottom, 924.0);
+        assert!(girl.top > 400.0);
+        assert!(content_right <= girl.left - 18.0);
+        assert!(content_right - 136.0 >= 540.0);
+
+        let (compact_girl, compact_content_right) = home_girl_layout(900.0, 620.0, 100.0, 872.0);
+        assert_eq!(compact_girl.right, 901.0);
+        assert_eq!(compact_girl.bottom, 691.0);
+        assert!(compact_content_right <= compact_girl.left - 18.0);
+        assert!(compact_content_right - 100.0 >= 420.0);
     }
 }

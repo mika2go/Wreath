@@ -500,7 +500,7 @@ impl UiModel {
         let Some(source) = self.active_clip().map(|clip| clip.path.clone()) else {
             return false;
         };
-        if self.page != Page::Player {
+        if !matches!(self.page, Page::Player | Page::Editor) {
             self.previous_page = self.page;
         }
         self.page = Page::Editor;
@@ -749,6 +749,21 @@ mod tests {
         assert_eq!(model.page, Page::Player);
         assert_eq!(model.previous_page, Page::Library);
         assert_eq!(model.active_clip().unwrap().title, "Other");
+    }
+
+    #[test]
+    fn reloading_editor_after_replacing_original_keeps_back_destination() {
+        let mut model = model();
+        model.open_clip(1);
+        assert!(model.edit_active_clip());
+        assert_eq!(model.page, Page::Editor);
+        assert_eq!(model.previous_page, Page::Library);
+
+        assert!(model.edit_active_clip());
+        assert_eq!(model.previous_page, Page::Library);
+
+        model.navigate(model.previous_page);
+        assert_eq!(model.page, Page::Library);
     }
 
     #[test]
