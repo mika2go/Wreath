@@ -197,7 +197,6 @@ impl<'a> DeadlineReader<'a> {
 #[cfg(target_os = "windows")]
 impl io::Read for DeadlineReader<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        use std::io::Read;
         use std::os::windows::io::AsRawHandle;
 
         use windows::Win32::Foundation::HANDLE;
