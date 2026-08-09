@@ -49,7 +49,17 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Wreath contributors"
   Pop $1
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /IM "wreathd.exe"'
   Pop $1
-  Sleep 250
+  ; A tray or UI that was still completing its startup can outlive the first
+  ; process-tree sweep briefly. Run a second synchronous sweep so silent
+  ; upgrades and uninstalls never leave the binaries mapped in memory.
+  Sleep 500
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /IM "wreath-win-ui.exe"'
+  Pop $1
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /IM "wreath-tray.exe"'
+  Pop $1
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /IM "wreathd.exe"'
+  Pop $1
+  Sleep 500
 !macroend
 
 Section "Wreath" MainSection

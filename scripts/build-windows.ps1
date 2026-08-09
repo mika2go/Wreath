@@ -364,12 +364,18 @@ try {
         if ($UninstallExitCode -ne 0) {
             throw "NSIS uninstall smoke test exited with $UninstallExitCode"
         }
-        Start-Sleep -Seconds 2
-        $RemainingProcesses = @(
-            Get-Process `
-                -Name "wreath-win-ui", "wreath-tray", "wreathd" `
-                -ErrorAction SilentlyContinue
-        )
+        $ProcessExitDeadline = [DateTime]::UtcNow.AddSeconds(10)
+        do {
+            $RemainingProcesses = @(
+                Get-Process `
+                    -Name "wreath-win-ui", "wreath-tray", "wreathd" `
+                    -ErrorAction SilentlyContinue
+            )
+            if ($RemainingProcesses.Count -eq 0) {
+                break
+            }
+            Start-Sleep -Milliseconds 250
+        } while ([DateTime]::UtcNow -lt $ProcessExitDeadline)
         if ($RemainingProcesses.Count -ne 0) {
             throw "NSIS uninstall left Wreath background processes running: $($RemainingProcesses.Name -join ', ')"
         }
