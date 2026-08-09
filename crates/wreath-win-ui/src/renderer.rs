@@ -33,26 +33,28 @@ use windows::core::{PCWSTR, w};
 use windows_numerics::Vector2;
 
 use crate::model::{
-    Action, DeleteTarget, Page, SettingsSection, TextInput, UiModel, quality_label,
+    Action, DeleteTarget, Page, SettingsMenuKind, SettingsSection, TextInput, UiModel,
+    quality_label,
 };
 
-// Wreath is a capture instrument, not an RGB dashboard. Cold graphite keeps
-// video and thumbnails neutral; slate identifies controls, while green is
-// reserved for the single semantic promise that the replay buffer is ready.
-const CANVAS: u32 = 0x111419;
-const STAGE: u32 = 0x0d0f13;
-const SURFACE: u32 = 0x181c22;
-const SURFACE_RAISED: u32 = 0x1d2229;
-const SURFACE_HOVER: u32 = 0x222831;
-const BORDER: u32 = 0x303844;
-const PRIMARY: u32 = 0xe8ebef;
-const SECONDARY: u32 = 0x9aa3ad;
-const ACCENT: u32 = 0x5f8297;
-const ACCENT_HOVER: u32 = 0x7195aa;
-const ACCENT_MUTED: u32 = 0x243844;
-const READY: u32 = 0x78a28a;
-const SELECTION: u32 = 0x304a5a;
-const DANGER: u32 = 0xc77b82;
+// Medal-inspired contrast hierarchy: a near-black clip canvas, distinctly
+// raised neutral controls and high-contrast light actions. Color is reserved
+// for capture status, warnings and destructive operations.
+const CANVAS: u32 = 0x09090b;
+const STAGE: u32 = 0x131316;
+const SURFACE: u32 = 0x1c1c20;
+const SURFACE_RAISED: u32 = 0x242429;
+const SURFACE_HOVER: u32 = 0x2d2d33;
+const BORDER: u32 = 0x393940;
+const PRIMARY: u32 = 0xf5f5f7;
+const SECONDARY: u32 = 0xa3a3ad;
+const ACCENT: u32 = 0xedeef2;
+const ACCENT_HOVER: u32 = 0xffffff;
+const ACCENT_MUTED: u32 = 0x35353c;
+const READY: u32 = 0x35d07f;
+const WARNING: u32 = 0xf0b849;
+const SELECTION: u32 = 0x424854;
+const DANGER: u32 = 0xf15b68;
 const SETTINGS_ROW_TOP: f32 = 270.0;
 const SETTINGS_ROW_HEIGHT: f32 = 76.0;
 const SETTINGS_ROW_GAP: f32 = 12.0;
@@ -473,6 +475,9 @@ impl Renderer {
 
     fn render_frame(&mut self, model: &UiModel, width: u32, height: u32) -> Result<(), String> {
         self.render_shell(model, width as f32, height as f32)?;
+        if model.settings_menu.is_some() {
+            self.render_settings_menu(model, width as f32, height as f32)?;
+        }
         if model.context_menu.is_some() {
             self.render_context_menu(model, width as f32, height as f32)?;
         }
@@ -484,6 +489,11 @@ impl Renderer {
         }
         if let Some(notice) = &model.notice {
             let rail = sidebar_width(width as f32, model.sidebar_expanded);
+            let notice_tone = if model.hotkey_capture {
+                WARNING
+            } else {
+                ACCENT
+            };
             let notice_area = rect(
                 rail + 18.0,
                 height as f32 - 62.0,
@@ -491,10 +501,21 @@ impl Renderer {
                 height as f32 - 18.0,
             );
             self.fill(notice_area, SURFACE_HOVER, 10.0)?;
+            self.stroke(notice_area, mix(BORDER, notice_tone, 0.42), 10.0, 1.0)?;
+            self.fill(
+                rect(
+                    notice_area.left + 7.0,
+                    notice_area.top + 12.0,
+                    notice_area.left + 10.0,
+                    notice_area.bottom - 12.0,
+                ),
+                notice_tone,
+                1.5,
+            )?;
             self.text(
                 notice,
                 rect(
-                    notice_area.left + 16.0,
+                    notice_area.left + 20.0,
                     notice_area.top,
                     notice_area.right - 48.0,
                     notice_area.bottom,
@@ -736,9 +757,19 @@ impl Renderer {
             &self.title.clone(),
             PRIMARY,
         )?;
-        let panel = rect(left, 216.0, right, (height - 66.0).clamp(560.0, 620.0));
-        self.fill(panel, SURFACE, 12.0)?;
-        self.stroke(panel, BORDER, 12.0, 1.0)?;
+        let panel_bottom = 542.0_f32.min(height - 42.0);
+        let panel = rect(left, 216.0, right, panel_bottom);
+
+        self.fill(
+            rect(
+                panel.left,
+                panel.top + 24.0,
+                panel.left + 3.0,
+                panel.top + 126.0,
+            ),
+            READY,
+            1.5,
+        )?;
 
         let pulse = rect(
             panel.left + 34.0,
@@ -796,14 +827,38 @@ impl Renderer {
             Some(Action::SaveReplay),
         )?;
 
-        let divider_top = panel.top + 176.0;
+        let signal_left = panel.left + 34.0;
+        let signal_right = panel.right - 34.0;
+        let signal_y = panel.top + 164.0;
         self.fill(
-            rect(
-                panel.left + 34.0,
-                divider_top,
-                panel.right - 34.0,
-                divider_top + 1.0,
-            ),
+            rect(signal_left, signal_y, signal_right, signal_y + 1.0),
+            BORDER,
+            0.0,
+        )?;
+        let signal_width = signal_right - signal_left;
+        for index in 0..28 {
+            let progress = index as f32 / 27.0;
+            let x = signal_left + signal_width * progress;
+            let tick_height = match index % 5 {
+                0 => 8.0,
+                1 | 4 => 4.0,
+                _ => 6.0,
+            };
+            self.fill(
+                rect(
+                    x,
+                    signal_y - tick_height * 0.5,
+                    x + 1.0,
+                    signal_y + tick_height * 0.5,
+                ),
+                if index >= 24 { READY } else { BORDER },
+                0.0,
+            )?;
+        }
+
+        let divider_top = panel.top + 194.0;
+        self.fill(
+            rect(signal_left, divider_top, signal_right, divider_top + 1.0),
             BORDER,
             0.0,
         )?;
@@ -837,13 +892,18 @@ impl Renderer {
                 ),
             ),
         ];
-        let facts_top = divider_top + 30.0;
+        let facts_top = divider_top + 22.0;
         let fact_width = (panel.right - panel.left - 68.0) / facts.len() as f32;
         for (index, (label, value)) in facts.iter().enumerate() {
             let fact_left = panel.left + 34.0 + fact_width * index as f32;
             if index > 0 {
                 self.fill(
-                    rect(fact_left, facts_top, fact_left + 1.0, facts_top + 58.0),
+                    rect(
+                        fact_left,
+                        facts_top - 2.0,
+                        fact_left + 1.0,
+                        facts_top + 52.0,
+                    ),
                     BORDER,
                     0.0,
                 )?;
@@ -1442,7 +1502,7 @@ impl Renderer {
         });
 
         let timeline_top = (stage.bottom + 18.0).min(height - 220.0);
-        let timeline = rect(left, timeline_top, right, timeline_top + 104.0);
+        let timeline = rect(left, timeline_top, right, timeline_top + 128.0);
         self.fill(timeline, SURFACE, 11.0)?;
         self.text(
             "Keep this moment",
@@ -1455,6 +1515,7 @@ impl Renderer {
             &self.small.clone(),
             SECONDARY,
         )?;
+        self.trim_rail(model, timeline_top + 54.0, left + 20.0, right - 20.0)?;
         self.text(
             &format!(
                 "{} — {}  ·  {} kept",
@@ -1463,15 +1524,14 @@ impl Renderer {
                 format_editor_time(model.editor_selected_duration())
             ),
             rect(
-                right - 300.0,
-                timeline_top + 10.0,
-                right - 16.0,
-                timeline_top + 28.0,
+                left + 20.0,
+                timeline_top + 90.0,
+                right - 20.0,
+                timeline_top + 118.0,
             ),
-            &self.small.clone(),
+            &self.body_center.clone(),
             PRIMARY,
         )?;
-        self.trim_rail(model, timeline_top + 54.0, left + 20.0, right - 20.0)?;
 
         let status = if model.editor_working {
             "Cutting on a background worker…"
@@ -1624,7 +1684,8 @@ impl Renderer {
         };
         let gap = 12.0;
         let card_width = (width - gap * (columns - 1) as f32) / columns as f32;
-        let card_height = 146.0;
+        let preview_height = (card_width - 12.0) * 9.0 / 16.0;
+        let card_height = preview_height + 58.0;
         for (position, index) in indices.iter().enumerate() {
             let row = position / columns;
             let column = position % columns;
@@ -1654,24 +1715,35 @@ impl Renderer {
                 10.0,
                 1.0,
             )?;
-            self.fill(
-                rect(x + 6.0, y + 6.0, x + card_width - 6.0, y + 94.0),
-                STAGE,
-                7.0,
-            )?;
+            let preview = rect(
+                x + 6.0,
+                y + 6.0,
+                x + card_width - 6.0,
+                y + 6.0 + preview_height,
+            );
+            self.fill(preview, STAGE, 7.0)?;
             let clip = &model.clips[*index];
-            let preview = rect(x + 6.0, y + 6.0, x + card_width - 6.0, y + 94.0);
             if !self.draw_thumbnail(&clip.path, preview)? {
                 self.text(
                     "▶",
-                    rect(x + 14.0, y + 18.0, x + card_width, y + 44.0),
+                    rect(
+                        x + 14.0,
+                        preview.top + 12.0,
+                        x + card_width,
+                        preview.top + 38.0,
+                    ),
                     &self.section.clone(),
                     SECONDARY,
                 )?;
             }
             self.text(
                 &clip.title,
-                rect(x + 12.0, y + 104.0, x + card_width - 8.0, y + 124.0),
+                rect(
+                    x + 12.0,
+                    y + preview_height + 14.0,
+                    x + card_width - 8.0,
+                    y + preview_height + 34.0,
+                ),
                 &self.body.clone(),
                 PRIMARY,
             )?;
@@ -1681,7 +1753,12 @@ impl Renderer {
                     age(clip.modified),
                     format_bytes(clip.size_bytes)
                 ),
-                rect(x + 12.0, y + 126.0, x + card_width - 8.0, y + 142.0),
+                rect(
+                    x + 12.0,
+                    y + preview_height + 36.0,
+                    x + card_width - 8.0,
+                    y + preview_height + 52.0,
+                ),
                 &self.small.clone(),
                 SECONDARY,
             )?;
@@ -1799,6 +1876,179 @@ impl Renderer {
                     },
                 });
             }
+        }
+        Ok(())
+    }
+
+    fn render_settings_menu(
+        &mut self,
+        model: &UiModel,
+        width: f32,
+        height: f32,
+    ) -> Result<(), String> {
+        let Some(menu_state) = &model.settings_menu else {
+            return Ok(());
+        };
+        if menu_state.items.is_empty() {
+            return Ok(());
+        }
+
+        self.hits.push(HitRegion {
+            rect: rect(0.0, 0.0, width, height),
+            action: Action::DismissSettingsMenu,
+        });
+
+        let rail = sidebar_width(width, model.sidebar_expanded);
+        let padding = if width < 1_080.0 {
+            28.0
+        } else if width < 1_300.0 {
+            36.0
+        } else {
+            48.0
+        };
+        let left = rail + padding;
+        let right = width - padding;
+        let row = match menu_state.kind {
+            SettingsMenuKind::Display | SettingsMenuKind::Duration => 0,
+            SettingsMenuKind::FrameRate
+            | SettingsMenuKind::Codec
+            | SettingsMenuKind::DesktopGain
+            | SettingsMenuKind::StorageLimit => 1,
+            SettingsMenuKind::Quality => 2,
+            SettingsMenuKind::Microphone => 3,
+            SettingsMenuKind::MicrophoneGain => 4,
+        };
+        let available = right - left;
+        let control_width = (available * 0.38).clamp(190.0, 360.0);
+        let row_top = settings_row_top(row);
+        let anchor = rect(
+            right - control_width - 16.0,
+            row_top + 17.0,
+            right - 16.0,
+            row_top + 59.0,
+        );
+        let columns = if menu_state.kind == SettingsMenuKind::DesktopGain {
+            3
+        } else {
+            1
+        };
+        let has_details = menu_state.items.iter().any(|item| item.detail.is_some());
+        let item_height = if has_details { 52.0 } else { 40.0 };
+        let rows = menu_state.items.len().div_ceil(columns);
+        let menu_height = 12.0 + rows as f32 * item_height;
+        let menu_width = control_width.max(if has_details { 310.0 } else { 190.0 });
+        let menu_left = (anchor.right - menu_width).max(left);
+        let below = anchor.bottom + 8.0;
+        let above = anchor.top - menu_height - 8.0;
+        let menu_top = if below + menu_height <= height - 18.0 {
+            below
+        } else {
+            above.max(18.0)
+        };
+        let menu = rect(
+            menu_left,
+            menu_top,
+            menu_left + menu_width,
+            menu_top + menu_height,
+        );
+
+        self.fill_alpha(
+            rect(
+                menu.left + 4.0,
+                menu.top + 6.0,
+                menu.right + 4.0,
+                menu.bottom + 6.0,
+            ),
+            CANVAS,
+            0.48,
+            11.0,
+        )?;
+        self.fill(menu, SURFACE_RAISED, 10.0)?;
+        self.stroke(menu, BORDER, 10.0, 1.0)?;
+        self.stroke(anchor, ACCENT, 9.0, 1.0)?;
+
+        let cell_width = (menu_width - 12.0) / columns as f32;
+        for (index, item) in menu_state.items.iter().enumerate() {
+            let column = index % columns;
+            let row = index / columns;
+            let item_area = rect(
+                menu.left + 6.0 + column as f32 * cell_width,
+                menu.top + 6.0 + row as f32 * item_height,
+                menu.left + 6.0 + (column + 1) as f32 * cell_width,
+                menu.top + 6.0 + (row + 1) as f32 * item_height,
+            );
+            let action = Action::SelectSettingsOption(index);
+            let selected = menu_state.selected == Some(index);
+            let highlighted = menu_state.highlighted == index || self.is_hovered(&action);
+            if selected || highlighted {
+                self.fill(
+                    item_area,
+                    if selected {
+                        ACCENT_MUTED
+                    } else {
+                        mix(SURFACE_HOVER, ACCENT, self.hover_progress * 0.10)
+                    },
+                    7.0,
+                )?;
+            }
+            if selected {
+                if columns > 1 {
+                    self.stroke(item_area, ACCENT, 7.0, 1.0)?;
+                } else {
+                    self.fill(
+                        rect(
+                            item_area.left + 6.0,
+                            item_area.top + 11.0,
+                            item_area.left + 9.0,
+                            item_area.bottom - 11.0,
+                        ),
+                        ACCENT,
+                        1.5,
+                    )?;
+                }
+            }
+            if columns > 1 {
+                self.text(&item.label, item_area, &self.body_center.clone(), PRIMARY)?;
+            } else if let Some(detail) = &item.detail {
+                self.text(
+                    &item.label,
+                    rect(
+                        item_area.left + 20.0,
+                        item_area.top + 5.0,
+                        item_area.right - 12.0,
+                        item_area.top + 28.0,
+                    ),
+                    &self.body.clone(),
+                    PRIMARY,
+                )?;
+                self.text(
+                    detail,
+                    rect(
+                        item_area.left + 20.0,
+                        item_area.top + 27.0,
+                        item_area.right - 12.0,
+                        item_area.bottom - 3.0,
+                    ),
+                    &self.small.clone(),
+                    SECONDARY,
+                )?;
+            } else {
+                self.text(
+                    &item.label,
+                    rect(
+                        item_area.left + 20.0,
+                        item_area.top,
+                        item_area.right - 12.0,
+                        item_area.bottom,
+                    ),
+                    &self.body.clone(),
+                    PRIMARY,
+                )?;
+            }
+            self.hits.push(HitRegion {
+                rect: item_area,
+                action,
+            });
         }
         Ok(())
     }

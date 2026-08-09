@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, GlobalFree, HANDLE, HGLOBAL, HWND, LPARAM,
-    LRESULT, POINT, RECT, WPARAM,
+    LRESULT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT, UpdateWindow};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
@@ -22,22 +22,22 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreatePopupMenu,
-    CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, FindWindowW, GWLP_USERDATA,
-    GetClientRect, GetCursorPos, GetMessageW, GetWindowLongPtrW, IDC_ARROW, LoadCursorW,
-    MF_CHECKED, MF_STRING, MINMAXINFO, MSG, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
+    CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
+    DispatchMessageW, FindWindowW, GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowLongPtrW,
+    IDC_ARROW, LoadCursorW, MINMAXINFO, MSG, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
     SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetTimer,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
-    TranslateMessage, WINDOW_EX_STYLE, WM_CHAR, WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP,
-    WM_SIZE, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSW, WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_CHAR,
+    WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSW,
+    WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::config::Codec;
 use wreath_core::ipc::{Request, Response};
 
 use crate::model::{
-    Action, ClipContextMenu, DeleteTarget, DisplayOption, PromptKind, TextInput, UiModel,
+    Action, ClipContextMenu, DeleteTarget, DisplayOption, PromptKind, SettingsMenu,
+    SettingsMenuItem, SettingsMenuKind, TextInput, UiModel,
 };
 use crate::player::{PLAYER_EVENT, Player};
 use crate::renderer::{
@@ -387,6 +387,16 @@ unsafe extern "system" fn window_proc(
                         state.mouse_tracking = true;
                     }
                 }
+                let menu_highlight_changed = if let Some(Action::SelectSettingsOption(index)) =
+                    state.renderer.hit_test(x, y)
+                    && let Some(menu) = &mut state.model.settings_menu
+                    && menu.highlighted != index
+                {
+                    menu.highlighted = index;
+                    true
+                } else {
+                    false
+                };
                 let hover_changed = state.renderer.update_hover(x, y);
                 if state.editor_drag.is_some() {
                     update_editor_drag(state, x, false);
@@ -394,7 +404,11 @@ unsafe extern "system" fn window_proc(
                 if state.text_drag.is_some() {
                     update_text_drag(state, x, y);
                 }
-                if hover_changed || state.editor_drag.is_some() || state.text_drag.is_some() {
+                if menu_highlight_changed
+                    || hover_changed
+                    || state.editor_drag.is_some()
+                    || state.text_drag.is_some()
+                {
                     redraw(window);
                 }
             }
@@ -442,6 +456,9 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        WM_CHAR if state_mut(window).is_some_and(|state| state.model.settings_menu.is_some()) => {
+            LRESULT(0)
+        }
         WM_CHAR => {
             if let Some(state) = state_mut(window) {
                 if state.model.prompt.is_some() {
@@ -465,6 +482,31 @@ unsafe extern "system" fn window_proc(
                     }
                 } else {
                     handle_character(state, wparam.0 as u32);
+                    redraw(window);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_KEYDOWN
+            if state_mut(window).is_some_and(|state| state.model.settings_menu.is_some()) =>
+        {
+            if let Some(state) = state_mut(window) {
+                let mut select = None;
+                if wparam.0 as u32 == 0x1b {
+                    state.model.settings_menu = None;
+                } else if let Some(menu) = &mut state.model.settings_menu {
+                    match wparam.0 as u32 {
+                        0x26 => menu.move_highlight(-1),
+                        0x28 => menu.move_highlight(1),
+                        0x24 => menu.highlighted = 0,
+                        0x23 => menu.highlighted = menu.items.len().saturating_sub(1),
+                        0x0d | 0x20 => select = Some(menu.highlighted),
+                        _ => {}
+                    }
+                }
+                if let Some(index) = select {
+                    handle_action(window, state, Action::SelectSettingsOption(index));
+                } else {
                     redraw(window);
                 }
             }
@@ -605,7 +647,10 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             }
             update_player_window(state);
         }
-        Action::SettingsSection(section) => state.model.settings_section = section,
+        Action::SettingsSection(section) => {
+            state.model.settings_menu = None;
+            state.model.settings_section = section;
+        }
         Action::OpenClip(index) => {
             state.model.context_menu = None;
             state.model.open_clip(index);
@@ -707,18 +752,20 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         Action::ToggleDesktopAudio => {
             state.model.config.audio.desktop = !state.model.config.audio.desktop
         }
-        Action::ChooseDesktopGain => choose_desktop_gain(window, &mut state.model),
+        Action::ChooseDesktopGain => choose_desktop_gain(&mut state.model),
         Action::ToggleMicrophone => {
             state.model.config.audio.microphone = !state.model.config.audio.microphone
         }
-        Action::ChooseDuration => choose_duration(window, &mut state.model),
-        Action::ChooseFrameRate => choose_frame_rate(window, &mut state.model),
-        Action::ChooseCodec => choose_codec(window, &mut state.model),
-        Action::ChooseQuality => choose_quality(window, &mut state.model),
-        Action::ChooseDisplay => choose_display(window, &mut state.model),
-        Action::ChooseMicrophone => choose_microphone(window, &mut state.model),
-        Action::ChooseMicrophoneGain => choose_microphone_gain(window, &mut state.model),
-        Action::ChooseStorageLimit => choose_storage_limit(window, &mut state.model),
+        Action::ChooseDuration => choose_duration(&mut state.model),
+        Action::ChooseFrameRate => choose_frame_rate(&mut state.model),
+        Action::ChooseCodec => choose_codec(&mut state.model),
+        Action::ChooseQuality => choose_quality(&mut state.model),
+        Action::ChooseDisplay => choose_display(&mut state.model),
+        Action::ChooseMicrophone => choose_microphone(&mut state.model),
+        Action::ChooseMicrophoneGain => choose_microphone_gain(&mut state.model),
+        Action::ChooseStorageLimit => choose_storage_limit(&mut state.model),
+        Action::DismissSettingsMenu => state.model.settings_menu = None,
+        Action::SelectSettingsOption(index) => select_settings_option(&mut state.model, index),
         Action::CaptureHotkey => {
             state.model.hotkey_capture = true;
             state.model.notice =
@@ -1329,7 +1376,7 @@ fn reload_capture() -> Result<Response, String> {
     ))
 }
 
-fn choose_duration(window: HWND, model: &mut UiModel) {
+fn choose_duration(model: &mut UiModel) {
     let values = [15, 30, 45, 60, 90, 120];
     let labels = values
         .iter()
@@ -1338,12 +1385,10 @@ fn choose_duration(window: HWND, model: &mut UiModel) {
     let current = values
         .iter()
         .position(|value| *value == model.config.capture.duration_seconds);
-    if let Some(index) = show_choice_menu(window, &labels, current) {
-        model.config.capture.duration_seconds = values[index];
-    }
+    open_choice_menu(model, SettingsMenuKind::Duration, labels, current);
 }
 
-fn choose_frame_rate(window: HWND, model: &mut UiModel) {
+fn choose_frame_rate(model: &mut UiModel) {
     let values = model.frame_rate_options();
     let labels = values
         .iter()
@@ -1352,12 +1397,10 @@ fn choose_frame_rate(window: HWND, model: &mut UiModel) {
     let current = values
         .iter()
         .position(|value| *value == model.config.capture.frames_per_second);
-    if let Some(index) = show_choice_menu(window, &labels, current) {
-        model.config.capture.frames_per_second = values[index];
-    }
+    open_choice_menu(model, SettingsMenuKind::FrameRate, labels, current);
 }
 
-fn choose_codec(window: HWND, model: &mut UiModel) {
+fn choose_codec(model: &mut UiModel) {
     let values = [Codec::Auto, Codec::H264, Codec::Hevc, Codec::Av1];
     let labels = ["Auto (recommended)", "H.264", "HEVC", "AV1"]
         .into_iter()
@@ -1366,26 +1409,28 @@ fn choose_codec(window: HWND, model: &mut UiModel) {
     let current = values
         .iter()
         .position(|value| *value == model.config.capture.codec);
-    if let Some(index) = show_choice_menu(window, &labels, current) {
-        model.config.capture.codec = values[index];
-    }
+    open_choice_menu(model, SettingsMenuKind::Codec, labels, current);
 }
 
-fn choose_quality(window: HWND, model: &mut UiModel) {
+fn choose_quality(model: &mut UiModel) {
     let options = model.quality_options();
-    let labels = options
+    let items = options
         .iter()
-        .map(|(_, label)| label.clone())
+        .map(|option| SettingsMenuItem {
+            label: option.label.clone(),
+            detail: Some(format!(
+                "≈ {} MB total · {} s",
+                option.megabytes, option.seconds
+            )),
+        })
         .collect::<Vec<_>>();
     let current = options
         .iter()
-        .position(|(value, _)| *value == model.config.capture.quality);
-    if let Some(index) = show_choice_menu(window, &labels, current) {
-        model.config.capture.quality = options[index].0;
-    }
+        .position(|option| option.value == model.config.capture.quality);
+    model.settings_menu = Some(SettingsMenu::new(SettingsMenuKind::Quality, items, current));
 }
 
-fn choose_display(window: HWND, model: &mut UiModel) {
+fn choose_display(model: &mut UiModel) {
     if let Err(error) = load_displays(model) {
         model.notice = Some(error);
         return;
@@ -1401,18 +1446,10 @@ fn choose_display(window: HWND, model: &mut UiModel) {
             .iter()
             .position(|display| display.name.eq_ignore_ascii_case(name))
     });
-    let Some(index) = show_choice_menu(window, &labels, current) else {
-        return;
-    };
-    let display = &model.displays[index];
-    model.config.capture.monitor = Some(display.name.clone());
-    let native_rate =
-        (display.refresh_rate.round() as u16).clamp(15, wreath_core::config::MAX_FRAMES_PER_SECOND);
-    model.config.capture.frames_per_second =
-        model.config.capture.frames_per_second.min(native_rate);
+    open_choice_menu(model, SettingsMenuKind::Display, labels, current);
 }
 
-fn choose_microphone(window: HWND, model: &mut UiModel) {
+fn choose_microphone(model: &mut UiModel) {
     refresh_microphones(model);
     let mut labels = vec!["Windows default".to_string()];
     labels.extend(model.microphone_names.iter().map(|(_, name)| name.clone()));
@@ -1428,15 +1465,10 @@ fn choose_microphone(window: HWND, model: &mut UiModel) {
                 .position(|(device_id, _)| device_id == id)
         })
         .map_or(Some(0), |index| Some(index + 1));
-    if let Some(index) = show_choice_menu(window, &labels, current) {
-        model.config.audio.microphone_device = index
-            .checked_sub(1)
-            .and_then(|index| model.microphone_names.get(index))
-            .map(|(id, _)| id.clone());
-    }
+    open_choice_menu(model, SettingsMenuKind::Microphone, labels, current);
 }
 
-fn choose_microphone_gain(window: HWND, model: &mut UiModel) {
+fn choose_microphone_gain(model: &mut UiModel) {
     let values = [25, 50, 75, 100];
     let labels = values
         .iter()
@@ -1445,12 +1477,10 @@ fn choose_microphone_gain(window: HWND, model: &mut UiModel) {
     let current = values
         .iter()
         .position(|value| *value == model.config.audio.microphone_gain_percent);
-    if let Some(index) = show_choice_menu(window, &labels, current) {
-        model.config.audio.microphone_gain_percent = values[index];
-    }
+    open_choice_menu(model, SettingsMenuKind::MicrophoneGain, labels, current);
 }
 
-fn choose_desktop_gain(window: HWND, model: &mut UiModel) {
+fn choose_desktop_gain(model: &mut UiModel) {
     let values = [0, 25, 50, 75, 100, 125, 150, 175, 200];
     let labels = values
         .iter()
@@ -1459,12 +1489,10 @@ fn choose_desktop_gain(window: HWND, model: &mut UiModel) {
     let current = values
         .iter()
         .position(|value| *value == model.config.audio.desktop_gain_percent);
-    if let Some(index) = show_choice_menu(window, &labels, current) {
-        model.config.audio.desktop_gain_percent = values[index];
-    }
+    open_choice_menu(model, SettingsMenuKind::DesktopGain, labels, current);
 }
 
-fn choose_storage_limit(window: HWND, model: &mut UiModel) {
+fn choose_storage_limit(model: &mut UiModel) {
     let values = [1_024, 5_120, 10_240, 25_600, 51_200, 102_400];
     let labels = ["1 GB", "5 GB", "10 GB", "25 GB", "50 GB", "100 GB"]
         .into_iter()
@@ -1473,46 +1501,86 @@ fn choose_storage_limit(window: HWND, model: &mut UiModel) {
     let current = values
         .iter()
         .position(|value| *value == model.config.storage.max_megabytes);
-    if let Some(index) = show_choice_menu(window, &labels, current) {
-        model.config.storage.max_megabytes = values[index];
-    }
+    open_choice_menu(model, SettingsMenuKind::StorageLimit, labels, current);
 }
 
-fn show_choice_menu(window: HWND, labels: &[String], current: Option<usize>) -> Option<usize> {
-    let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
-        return None;
+fn open_choice_menu(
+    model: &mut UiModel,
+    kind: SettingsMenuKind,
+    labels: Vec<String>,
+    current: Option<usize>,
+) {
+    let items = labels
+        .into_iter()
+        .map(|label| SettingsMenuItem {
+            label,
+            detail: None,
+        })
+        .collect();
+    model.settings_menu = Some(SettingsMenu::new(kind, items, current));
+}
+
+fn select_settings_option(model: &mut UiModel, index: usize) {
+    let Some(menu) = model.settings_menu.as_ref() else {
+        return;
     };
-    for (index, label) in labels.iter().enumerate() {
-        let label = wide(label);
-        let flags = if current == Some(index) {
-            MF_STRING | MF_CHECKED
-        } else {
-            MF_STRING
-        };
-        let _ = unsafe { AppendMenuW(menu, flags, index + 1, PCWSTR(label.as_ptr())) };
+    if index >= menu.items.len() {
+        return;
     }
-    let mut point = POINT::default();
-    let selected = if unsafe { GetCursorPos(&mut point) }.is_ok() {
-        unsafe {
-            let _ = SetForegroundWindow(window);
-            TrackPopupMenu(
-                menu,
-                TPM_RIGHTBUTTON | TPM_RETURNCMD,
-                point.x,
-                point.y,
-                None,
-                window,
-                None,
-            )
-            .0 as usize
+    let kind = menu.kind;
+    match kind {
+        SettingsMenuKind::Duration => {
+            if let Some(value) = [15, 30, 45, 60, 90, 120].get(index) {
+                model.config.capture.duration_seconds = *value;
+            }
         }
-    } else {
-        0
-    };
-    let _ = unsafe { DestroyMenu(menu) };
-    selected
-        .checked_sub(1)
-        .filter(|index| *index < labels.len())
+        SettingsMenuKind::FrameRate => {
+            if let Some(value) = model.frame_rate_options().get(index) {
+                model.config.capture.frames_per_second = *value;
+            }
+        }
+        SettingsMenuKind::Codec => {
+            if let Some(value) = [Codec::Auto, Codec::H264, Codec::Hevc, Codec::Av1].get(index) {
+                model.config.capture.codec = *value;
+            }
+        }
+        SettingsMenuKind::Quality => {
+            if let Some(option) = model.quality_options().get(index) {
+                model.config.capture.quality = option.value;
+            }
+        }
+        SettingsMenuKind::Display => {
+            if let Some(display) = model.displays.get(index) {
+                model.config.capture.monitor = Some(display.name.clone());
+                let native_rate = (display.refresh_rate.round() as u16)
+                    .clamp(15, wreath_core::config::MAX_FRAMES_PER_SECOND);
+                model.config.capture.frames_per_second =
+                    model.config.capture.frames_per_second.min(native_rate);
+            }
+        }
+        SettingsMenuKind::Microphone => {
+            model.config.audio.microphone_device = index
+                .checked_sub(1)
+                .and_then(|index| model.microphone_names.get(index))
+                .map(|(id, _)| id.clone());
+        }
+        SettingsMenuKind::MicrophoneGain => {
+            if let Some(value) = [25, 50, 75, 100].get(index) {
+                model.config.audio.microphone_gain_percent = *value;
+            }
+        }
+        SettingsMenuKind::DesktopGain => {
+            if let Some(value) = [0, 25, 50, 75, 100, 125, 150, 175, 200].get(index) {
+                model.config.audio.desktop_gain_percent = *value;
+            }
+        }
+        SettingsMenuKind::StorageLimit => {
+            if let Some(value) = [1_024, 5_120, 10_240, 25_600, 51_200, 102_400].get(index) {
+                model.config.storage.max_megabytes = *value;
+            }
+        }
+    }
+    model.settings_menu = None;
 }
 
 fn load_displays(model: &mut UiModel) -> Result<(), String> {

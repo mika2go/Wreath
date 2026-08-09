@@ -58,6 +58,8 @@ pub enum Action {
     ChooseMicrophone,
     ChooseMicrophoneGain,
     ChooseStorageLimit,
+    DismissSettingsMenu,
+    SelectSettingsOption(usize),
     CaptureHotkey,
     ClearHotkey,
     ChooseStorage,
@@ -256,6 +258,70 @@ pub fn quality_label(quality: u8) -> String {
         .map_or_else(|| format!("{quality}%"), |(_, name)| (*name).to_owned())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsMenuKind {
+    Display,
+    FrameRate,
+    Duration,
+    Codec,
+    Quality,
+    DesktopGain,
+    Microphone,
+    MicrophoneGain,
+    StorageLimit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsMenuItem {
+    pub label: String,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsMenu {
+    pub kind: SettingsMenuKind,
+    pub items: Vec<SettingsMenuItem>,
+    pub selected: Option<usize>,
+    pub highlighted: usize,
+}
+
+impl SettingsMenu {
+    pub fn new(
+        kind: SettingsMenuKind,
+        items: Vec<SettingsMenuItem>,
+        selected: Option<usize>,
+    ) -> Self {
+        let highlighted = selected.unwrap_or(0).min(items.len().saturating_sub(1));
+        Self {
+            kind,
+            items,
+            selected,
+            highlighted,
+        }
+    }
+
+    pub fn move_highlight(&mut self, direction: i32) {
+        if self.items.is_empty() {
+            return;
+        }
+        self.highlighted = if direction < 0 {
+            self.highlighted
+                .checked_sub(1)
+                .unwrap_or(self.items.len() - 1)
+        } else {
+            (self.highlighted + 1) % self.items.len()
+        };
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QualityOption {
+    pub value: u8,
+    pub label: String,
+    pub megabytes: u64,
+    pub seconds: u16,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompt {
     pub kind: PromptKind,
@@ -309,6 +375,7 @@ pub struct UiModel {
     pub page: Page,
     pub previous_page: Page,
     pub settings_section: SettingsSection,
+    pub settings_menu: Option<SettingsMenu>,
     pub search: TextInput,
     pub search_focused: bool,
     pub context_menu: Option<ClipContextMenu>,
@@ -353,6 +420,7 @@ impl UiModel {
             page: Page::Home,
             previous_page: Page::Library,
             settings_section: SettingsSection::Display,
+            settings_menu: None,
             search: TextInput::new(String::new(), PROMPT_MAX_CHARACTERS),
             search_focused: false,
             context_menu: None,
@@ -397,6 +465,7 @@ impl UiModel {
     pub fn navigate(&mut self, page: Page) {
         self.search_focused = false;
         self.context_menu = None;
+        self.settings_menu = None;
         self.hotkey_capture = false;
         if !matches!(page, Page::Player | Page::Editor) {
             self.active_clip = None;
@@ -525,7 +594,7 @@ impl UiModel {
     /// thing people care about — how large the clip ends up. Each choice now
     /// carries a name and the size a full replay reaches on the selected
     /// monitor, at the configured frame rate, codec and duration.
-    pub fn quality_options(&self) -> Vec<(u8, String)> {
+    pub fn quality_options(&self) -> Vec<QualityOption> {
         let (width, height) = self
             .selected_display()
             .map_or((1920, 1080), |display| (display.width, display.height));
@@ -555,14 +624,23 @@ impl UiModel {
             .map(|quality| {
                 let mut spec = wreath_core::replay::ReplaySpec::from_config(&self.config, &monitor);
                 spec.quality = quality;
-                let megabytes = spec.estimated_buffer_megabytes();
-                (
-                    quality,
-                    format!(
-                        "{} · about {megabytes} MB per {seconds} s",
-                        quality_label(quality)
-                    ),
-                )
+                let video_bytes = spec.estimated_buffer_bytes();
+                let audio_bytes = if spec.desktop_audio || spec.microphone_audio {
+                    24_000_u64.saturating_mul(u64::from(seconds))
+                } else {
+                    0
+                };
+                let encoded_bytes = video_bytes.saturating_add(audio_bytes);
+                let container_allowance = encoded_bytes.div_ceil(50);
+                let megabytes = encoded_bytes
+                    .saturating_add(container_allowance)
+                    .div_ceil(1_048_576);
+                QualityOption {
+                    value: quality,
+                    label: quality_label(quality),
+                    megabytes,
+                    seconds,
+                }
             })
             .collect()
     }
@@ -627,6 +705,7 @@ mod tests {
             page: Page::Library,
             previous_page: Page::Home,
             settings_section: SettingsSection::Display,
+            settings_menu: None,
             search: TextInput::new(String::new(), PROMPT_MAX_CHARACTERS),
             search_focused: false,
             context_menu: None,
@@ -712,20 +791,23 @@ mod tests {
         model.config.capture.quality = 75;
 
         let options = model.quality_options();
-        let (value, label) = options
+        let option = options
             .iter()
-            .find(|(value, _)| *value == 75)
+            .find(|option| option.value == 75)
             .expect("the configured quality is always offered");
 
-        assert_eq!(*value, 75);
-        assert_eq!(label, "High · about 94 MB per 30 s");
+        assert_eq!(option.value, 75);
+        assert_eq!(option.label, "High");
+        assert_eq!(option.megabytes, 98);
+        assert_eq!(option.seconds, 30);
 
         // A lower setting has to read as visibly cheaper.
         let cheaper = options
             .iter()
-            .find(|(value, _)| *value == 50)
+            .find(|option| option.value == 50)
             .expect("50 is offered");
-        assert_eq!(cheaper.1, "Low · about 75 MB per 30 s");
+        assert_eq!(cheaper.label, "Low");
+        assert_eq!(cheaper.megabytes, 79);
     }
 
     /// A quality set from the command line is not one of the steps, so it keeps
@@ -738,12 +820,29 @@ mod tests {
         let options = model.quality_options();
         let labels = options
             .iter()
-            .map(|(_, label)| label.as_str())
+            .map(|option| option.label.as_str())
             .collect::<Vec<_>>();
 
-        assert!(options.iter().any(|(value, _)| *value == 62));
-        assert!(labels.iter().any(|label| label.starts_with("62% · ")));
+        assert!(options.iter().any(|option| option.value == 62));
+        assert!(labels.contains(&"62%"));
         assert_eq!(options.len(), QUALITY_PRESETS.len() + 1);
+    }
+
+    #[test]
+    fn settings_menu_keyboard_navigation_wraps_at_both_ends() {
+        let items = ["Low", "Medium", "High"]
+            .into_iter()
+            .map(|label| SettingsMenuItem {
+                label: label.into(),
+                detail: None,
+            })
+            .collect();
+        let mut menu = SettingsMenu::new(SettingsMenuKind::Quality, items, Some(0));
+
+        menu.move_highlight(-1);
+        assert_eq!(menu.highlighted, 2);
+        menu.move_highlight(1);
+        assert_eq!(menu.highlighted, 0);
     }
 
     #[test]
