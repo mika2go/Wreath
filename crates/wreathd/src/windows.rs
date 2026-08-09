@@ -270,18 +270,6 @@ fn listen(
     Ok((connection_receiver, handled_sender))
 }
 
-/// The Discord tree a capture started right now would leave out. An
-/// unreadable process list is reported as "none": rebuilding the pipeline on a
-/// transient snapshot failure would cost a running recording for nothing.
-fn discord_filter_target() -> Option<u32> {
-    wreath_windows::audio::discord_process_id().unwrap_or_else(|error| {
-        wreath_core::diagnostic!(
-            "Wreath desktop audio: cannot read the Discord process tree: {error}"
-        );
-        None
-    })
-}
-
 fn reload(
     paths: &AppPaths,
     current_config: &mut Config,
@@ -297,22 +285,9 @@ fn reload(
         }
     };
     let config_changed = &new_config != current_config;
-    let status = pipeline.status();
-    let pipeline_state = status.state;
-    // Discord getting started, restarted, or closed changes nothing in the
-    // configuration, yet it invalidates the audio filter built around its
-    // process tree. Without this the tray's refresh landed on a daemon that
-    // saw an unchanged config and kept recording Discord into every clip.
-    let audio_filter_stale = new_config.audio.desktop
-        && new_config.audio.exclude_discord
-        && discord_filter_target() != status.excluded_process_id;
-    if !config_changed && !audio_filter_stale && pipeline_state != PipelineRunState::Error {
+    let pipeline_state = pipeline.status().state;
+    if !config_changed && pipeline_state != PipelineRunState::Error {
         return Response::Ok;
-    }
-    if audio_filter_stale && !config_changed {
-        wreath_core::diagnostic!(
-            "Wreath desktop audio: rebuilding capture for a changed Discord process tree"
-        );
     }
 
     let was_paused = pipeline_state == PipelineRunState::Paused;

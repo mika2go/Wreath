@@ -55,7 +55,6 @@ pub enum Action {
     ToggleAutostart,
     ToggleCursor,
     ToggleDesktopAudio,
-    ToggleDiscordExclusion,
     ChooseDesktopGain,
     ToggleMicrophone,
     ChooseDuration,

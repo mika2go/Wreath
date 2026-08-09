@@ -38,8 +38,6 @@ const COMMAND_EXIT: usize = 109;
 struct AppState {
     paths: AppPaths,
     clips_directory: std::path::PathBuf,
-    discord_exclusion_enabled: bool,
-    excluded_discord_process_id: Option<u32>,
     icon: NOTIFYICONDATAW,
     recovery: crate::recovery::RecoveryThrottle,
 }
@@ -67,17 +65,9 @@ pub fn run() -> Result<(), String> {
     let paths = AppPaths::discover();
     let config = wreath_core::config::Config::load(&paths).map_err(|error| error.to_string())?;
     let clips_directory = config.storage.directory.clone();
-    let discord_exclusion_enabled = config.audio.exclude_discord;
-    let excluded_discord_process_id = if discord_exclusion_enabled {
-        wreath_windows::audio::discord_process_id().ok().flatten()
-    } else {
-        None
-    };
     let state = Box::new(AppState {
         paths,
         clips_directory,
-        discord_exclusion_enabled,
-        excluded_discord_process_id,
         icon: NOTIFYICONDATAW::default(),
         recovery: crate::recovery::RecoveryThrottle::new(Instant::now()),
     });
@@ -165,7 +155,6 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == STATUS_TIMER => {
-            refresh_discord_exclusion(window);
             refresh_status(window);
             LRESULT(0)
         }
@@ -282,48 +271,6 @@ fn refresh_status(window: HWND) {
         copy_wide(&mut state.icon.szTip, &tooltip);
         state.icon.uFlags = NIF_TIP;
         let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &state.icon) };
-    }
-}
-
-fn refresh_discord_exclusion(window: HWND) {
-    let reload = {
-        let Some(state) = state_mut(window) else {
-            return;
-        };
-        let Ok(config) = wreath_core::config::Config::load(&state.paths) else {
-            return;
-        };
-        let enabled = config.audio.exclude_discord;
-        let process_id = if enabled {
-            match wreath_windows::audio::discord_process_id() {
-                Ok(process_id) => process_id,
-                Err(error) => {
-                    wreath_core::diagnostic!(
-                        "Wreath desktop audio: cannot refresh Discord exclusion: {error}"
-                    );
-                    return;
-                }
-            }
-        } else {
-            None
-        };
-        let reload = enabled
-            && state.discord_exclusion_enabled
-            && state.excluded_discord_process_id != process_id;
-        state.discord_exclusion_enabled = enabled;
-        state.excluded_discord_process_id = process_id;
-        reload
-    };
-    if !reload {
-        return;
-    }
-    wreath_core::diagnostic!(
-        "Wreath desktop audio: Discord process tree changed; restarting capture filter"
-    );
-    match send(Request::Reload) {
-        Ok(Response::Ok) => {}
-        Ok(Response::Error { message }) | Err(message) => notify_error(window, &message),
-        Ok(_) => {}
     }
 }
 

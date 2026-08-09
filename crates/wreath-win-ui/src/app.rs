@@ -1106,9 +1106,6 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         Action::ToggleDesktopAudio => {
             state.model.config.audio.desktop = !state.model.config.audio.desktop
         }
-        Action::ToggleDiscordExclusion => {
-            state.model.config.audio.exclude_discord = !state.model.config.audio.exclude_discord
-        }
         Action::ChooseDesktopGain => choose_desktop_gain(&mut state.model),
         Action::ToggleMicrophone => {
             state.model.config.audio.microphone = !state.model.config.audio.microphone

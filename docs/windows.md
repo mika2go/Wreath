@@ -52,12 +52,13 @@ old OS-reserved `Win+Shift+R` default are migrated automatically. Capture
 sessions request borderless presentation before recording starts. Status and
 error notices have a visible close button, and storage is shown only in MB/GB.
 
-Excluding Discord captures the desktop through Windows' process-loopback
-device, which leaves out the Discord process tree instead of the app's own
-mix. The filter is bound to the process tree it was built around, so the
-recorder rebuilds its capture whenever Discord starts, restarts, or closes.
-Where Windows refuses the filtered stream, the recorder falls back to the full
-desktop mix and says so in the log rather than losing game audio altogether.
+Desktop audio is the full mix of the default render endpoint, with the
+microphone as its own track. Wreath briefly offered to filter one application
+out of that mix through Windows' process-loopback device; it is gone. The
+filtered stream depends on a process tree that changes under the recorder, and
+where Windows accepted it at all the desktop side could end up silent, so the
+recording is worth more than the filter. Configurations that still carry the
+old setting load unchanged and ignore it.
 
 The optional CLI can discover the exact Windows device identifiers and update
 the configuration without hand-editing TOML. Changes are validated, written

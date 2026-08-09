@@ -150,9 +150,6 @@ fn integer_to_i16(sample: &[u8]) -> i16 {
 #[cfg(target_os = "windows")]
 pub struct LoopbackCapture {
     stream: CaptureStream,
-    /// The Discord tree this stream was built to leave out, so callers can
-    /// tell whether a restarted Discord has invalidated the filter.
-    excluded_process_id: Option<u32>,
 }
 
 /// Timer-driven WASAPI microphone capture. The endpoint is opened in raw mode
@@ -249,97 +246,6 @@ fn device_id(device: &windows::Win32::Media::Audio::IMMDevice) -> Result<String,
     id
 }
 
-#[cfg(any(target_os = "windows", test))]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ProcessEntry {
-    id: u32,
-    parent_id: u32,
-    executable: String,
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn is_discord_executable(executable: &str) -> bool {
-    let executable = executable.to_ascii_lowercase();
-    executable.starts_with("discord") && executable.ends_with(".exe")
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn discord_root_process_id(entries: &[ProcessEntry]) -> Option<u32> {
-    let discord_ids = entries
-        .iter()
-        .filter(|entry| is_discord_executable(&entry.executable))
-        .map(|entry| entry.id)
-        .collect::<std::collections::HashSet<_>>();
-    let roots = entries
-        .iter()
-        .filter(|entry| discord_ids.contains(&entry.id) && !discord_ids.contains(&entry.parent_id))
-        .collect::<Vec<_>>();
-    roots
-        .into_iter()
-        .max_by_key(|root| {
-            let descendants = entries
-                .iter()
-                .filter(|entry| {
-                    let mut parent = entry.parent_id;
-                    for _ in 0..entries.len() {
-                        if parent == root.id {
-                            return true;
-                        }
-                        let Some(next) = entries.iter().find(|candidate| candidate.id == parent)
-                        else {
-                            break;
-                        };
-                        parent = next.parent_id;
-                    }
-                    false
-                })
-                .count();
-            (descendants, std::cmp::Reverse(root.id))
-        })
-        .map(|entry| entry.id)
-        .or_else(|| discord_ids.into_iter().min())
-}
-
-#[cfg(target_os = "windows")]
-pub fn discord_process_id() -> Result<Option<u32>, AudioError> {
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
-        TH32CS_SNAPPROCESS,
-    };
-
-    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
-        .map_err(|error| AudioError(format!("cannot inspect Discord processes: {error}")))?;
-    let result = (|| -> Result<Option<u32>, AudioError> {
-        let mut native = PROCESSENTRY32W {
-            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-            ..Default::default()
-        };
-        if unsafe { Process32FirstW(snapshot, &mut native) }.is_err() {
-            return Ok(None);
-        }
-        let mut entries = Vec::new();
-        loop {
-            let end = native
-                .szExeFile
-                .iter()
-                .position(|unit| *unit == 0)
-                .unwrap_or(native.szExeFile.len());
-            entries.push(ProcessEntry {
-                id: native.th32ProcessID,
-                parent_id: native.th32ParentProcessID,
-                executable: String::from_utf16_lossy(&native.szExeFile[..end]),
-            });
-            if unsafe { Process32NextW(snapshot, &mut native) }.is_err() {
-                break;
-            }
-        }
-        Ok(discord_root_process_id(&entries))
-    })();
-    let _ = unsafe { CloseHandle(snapshot) };
-    result
-}
-
 #[cfg(target_os = "windows")]
 struct CaptureStream {
     format: AudioFormat,
@@ -350,33 +256,8 @@ struct CaptureStream {
 
 #[cfg(target_os = "windows")]
 impl LoopbackCapture {
-    pub fn spawn(exclude_discord: bool) -> Result<Self, AudioError> {
-        let excluded_process_id = if exclude_discord {
-            let process_id = discord_process_id()?;
-            if let Some(process_id) = process_id {
-                wreath_core::diagnostic!(
-                    "Wreath desktop audio: excluding Discord process tree rooted at PID {process_id}"
-                );
-            } else {
-                wreath_core::diagnostic!(
-                    "Wreath desktop audio: Discord exclusion is enabled, but Discord is not running"
-                );
-            }
-            process_id
-        } else {
-            None
-        };
-        CaptureStream::spawn(CaptureEndpoint::Loopback {
-            excluded_process_id,
-        })
-        .map(|stream| Self {
-            stream,
-            excluded_process_id,
-        })
-    }
-
-    pub fn excluded_process_id(&self) -> Option<u32> {
-        self.excluded_process_id
+    pub fn spawn() -> Result<Self, AudioError> {
+        CaptureStream::spawn(CaptureEndpoint::Loopback).map(|stream| Self { stream })
     }
 
     pub fn format(&self) -> AudioFormat {
@@ -408,7 +289,7 @@ impl MicrophoneCapture {
 
 #[cfg(target_os = "windows")]
 enum CaptureEndpoint {
-    Loopback { excluded_process_id: Option<u32> },
+    Loopback,
     Microphone { endpoint_id: Option<String> },
 }
 
@@ -429,7 +310,7 @@ impl CaptureStream {
         let (chunk_sender, chunk_receiver) = crossbeam_channel::bounded(256);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let thread_name = match endpoint {
-            CaptureEndpoint::Loopback { .. } => "wreath-wasapi-loopback",
+            CaptureEndpoint::Loopback => "wreath-wasapi-loopback",
             CaptureEndpoint::Microphone { .. } => "wreath-wasapi-microphone",
         };
         let thread = match std::thread::Builder::new()
@@ -515,38 +396,16 @@ fn capture_loop(
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
                 .map_err(|error| AudioError(error.to_string()))?;
-        let default_loopback = || {
-            let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
-                .map_err(|error| AudioError(error.to_string()))?;
-            initialize_capture_client(
-                &device,
-                AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                0,
-                false,
-            )
-        };
         let (client, format, device_period_hns, format_mode, timer_driven) = match endpoint {
-            CaptureEndpoint::Loopback {
-                excluded_process_id: Some(process_id),
-            } => match initialize_process_loopback_client(process_id) {
-                Ok((client, format)) => {
-                    (client, format, 0, CaptureFormatMode::ProcessLoopback, false)
-                }
-                // Losing the filter costs the user Discord-free clips. Losing
-                // desktop audio, or the recorder along with it, costs far
-                // more, so the unfiltered mix is the better failure.
-                Err(error) => {
-                    wreath_core::diagnostic!(
-                        "Wreath desktop audio: Discord exclusion unavailable, recording the full desktop mix instead: {error}"
-                    );
-                    let (client, format, period, mode) = default_loopback()?;
-                    (client, format, period, mode, false)
-                }
-            },
-            CaptureEndpoint::Loopback {
-                excluded_process_id: None,
-            } => {
-                let (client, format, period, mode) = default_loopback()?;
+            CaptureEndpoint::Loopback => {
+                let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
+                    .map_err(|error| AudioError(error.to_string()))?;
+                let (client, format, period, mode) = initialize_capture_client(
+                    &device,
+                    AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                    0,
+                    false,
+                )?;
                 (client, format, period, mode, false)
             }
             CaptureEndpoint::Microphone {
@@ -672,174 +531,6 @@ fn capture_loop(
     result
 }
 
-#[cfg(target_os = "windows")]
-#[windows::core::implement(windows::Win32::Media::Audio::IActivateAudioInterfaceCompletionHandler)]
-struct AudioActivationHandler(std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
-
-#[cfg(target_os = "windows")]
-impl windows::Win32::Media::Audio::IActivateAudioInterfaceCompletionHandler_Impl
-    for AudioActivationHandler_Impl
-{
-    fn ActivateCompleted(
-        &self,
-        _operation: windows::core::Ref<
-            windows::Win32::Media::Audio::IActivateAudioInterfaceAsyncOperation,
-        >,
-    ) -> windows::core::Result<()> {
-        let (lock, wake) = &*self.0;
-        let mut completed = lock.lock().map_err(|_| {
-            windows::core::Error::from_hresult(windows::core::HRESULT(0x80004005_u32 as i32))
-        })?;
-        *completed = true;
-        drop(completed);
-        wake.notify_one();
-        Ok(())
-    }
-}
-
-#[cfg(target_os = "windows")]
-const ACTIVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-#[cfg(target_os = "windows")]
-fn initialize_process_loopback_client(
-    process_id: u32,
-) -> Result<(windows::Win32::Media::Audio::IAudioClient, AudioFormat), AudioError> {
-    use std::mem::{ManuallyDrop, size_of};
-    use std::sync::{Arc, Condvar, Mutex};
-
-    use windows::Win32::Media::Audio::{
-        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-        AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
-        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, AUDIOCLIENT_ACTIVATION_PARAMS,
-        AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-        AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync,
-        IActivateAudioInterfaceCompletionHandler, IAudioClient,
-        PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
-        WAVEFORMATEX,
-    };
-    use windows::Win32::System::Com::BLOB;
-    use windows::Win32::System::Com::StructuredStorage::{
-        PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0,
-    };
-    use windows::Win32::System::Variant::VT_BLOB;
-    use windows::core::Interface;
-
-    // Windows reads this blob while it activates the interface, which happens
-    // after the call returns. It is boxed so that a giving-up caller can leave
-    // it behind instead of handing Windows a pointer into a dead stack frame.
-    let parameters = Box::into_raw(Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
-        ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-        Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
-            ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
-                TargetProcessId: process_id,
-                ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
-            },
-        },
-    }));
-    let activation = ManuallyDrop::new(PROPVARIANT {
-        Anonymous: PROPVARIANT_0 {
-            Anonymous: ManuallyDrop::new(PROPVARIANT_0_0 {
-                vt: VT_BLOB,
-                wReserved1: 0,
-                wReserved2: 0,
-                wReserved3: 0,
-                Anonymous: PROPVARIANT_0_0_0 {
-                    blob: BLOB {
-                        cbSize: size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
-                        pBlobData: parameters.cast(),
-                    },
-                },
-            }),
-        },
-    });
-    let completed = Arc::new((Mutex::new(false), Condvar::new()));
-    let callback: IActivateAudioInterfaceCompletionHandler =
-        AudioActivationHandler(Arc::clone(&completed)).into();
-    let operation = unsafe {
-        ActivateAudioInterfaceAsync(
-            VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
-            &IAudioClient::IID,
-            Some(std::ptr::from_ref(&*activation)),
-            &callback,
-        )
-    }
-    .map_err(|error| AudioError(format!("cannot activate Discord audio exclusion: {error}")))?;
-
-    let (lock, wake) = &*completed;
-    let finished = lock
-        .lock()
-        .map_err(|_| AudioError("Discord audio exclusion activation was interrupted".into()))?;
-    // Windows completes this activation on a thread of its own. Waiting on it
-    // without a deadline would put a stalled audio stack between the user and
-    // a working recorder, so the wait gives up and the caller falls back to
-    // the unfiltered desktop mix.
-    let (finished, wait) = wake
-        .wait_timeout_while(finished, ACTIVATION_TIMEOUT, |completed| !*completed)
-        .map_err(|_| AudioError("Discord audio exclusion activation was interrupted".into()))?;
-    if wait.timed_out() {
-        return Err(AudioError(format!(
-            "Windows did not activate the Discord audio filter within {} seconds",
-            ACTIVATION_TIMEOUT.as_secs()
-        )));
-    }
-    drop(finished);
-    // The activation is over, so Windows is done reading the parameters.
-    drop(unsafe { Box::from_raw(parameters) });
-
-    let mut activation_result = windows::core::HRESULT::default();
-    let mut activated = None;
-    unsafe { operation.GetActivateResult(&mut activation_result, &mut activated) }
-        .map_err(|error| AudioError(error.to_string()))?;
-    activation_result
-        .ok()
-        .map_err(|error| AudioError(format!("Discord audio exclusion was refused: {error}")))?;
-    let client: IAudioClient = activated
-        .ok_or_else(|| AudioError("Windows returned no process-loopback client".into()))?
-        .cast()
-        .map_err(|error| AudioError(error.to_string()))?;
-
-    const SAMPLE_RATE: u32 = 48_000;
-    const CHANNELS: u16 = 2;
-    const BYTES_PER_SAMPLE: u16 = 2;
-    let format = AudioFormat {
-        sample_rate: SAMPLE_RATE,
-        channels: CHANNELS,
-        bits_per_sample: BYTES_PER_SAMPLE * 8,
-        block_align: CHANNELS * BYTES_PER_SAMPLE,
-        floating_point: false,
-    };
-    let desired = WAVEFORMATEX {
-        wFormatTag: windows::Win32::Media::Audio::WAVE_FORMAT_PCM as u16,
-        nChannels: format.channels,
-        nSamplesPerSec: format.sample_rate,
-        nAvgBytesPerSec: format.sample_rate * u32::from(format.block_align),
-        nBlockAlign: format.block_align,
-        wBitsPerSample: format.bits_per_sample,
-        cbSize: 0,
-    };
-    unsafe {
-        client.Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            // The process-loopback client taps the render side, so it needs
-            // AUDCLNT_STREAMFLAGS_LOOPBACK exactly like an ordinary loopback
-            // stream. Without it Windows refuses the endpoint, and the refusal
-            // was what made the Discord exclusion never take effect. Buffer
-            // duration and periodicity stay zero, matching the shape Windows
-            // documents for this virtual device.
-            AUDCLNT_STREAMFLAGS_LOOPBACK
-                | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-                | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-                | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-            0,
-            0,
-            &desired,
-            None,
-        )
-    }
-    .map_err(|error| AudioError(format!("cannot start Discord-filtered audio: {error}")))?;
-    Ok((client, format))
-}
-
 /// Opens a capture endpoint, preferring the least processed stream it offers.
 ///
 /// `AudioCategory_Communications` used to be requested here, which put the
@@ -939,7 +630,6 @@ enum CaptureFormatMode {
     ProcessedMono,
     ProcessedNative,
     NativeLoopback,
-    ProcessLoopback,
 }
 
 #[cfg(target_os = "windows")]
@@ -962,7 +652,6 @@ impl fmt::Display for CaptureFormatMode {
             Self::ProcessedMono => "processed PCM16 mono",
             Self::ProcessedNative => "processed native layout",
             Self::NativeLoopback => "native loopback",
-            Self::ProcessLoopback => "process-filtered loopback",
         })
     }
 }
@@ -1495,50 +1184,6 @@ mod tests {
         assert_eq!(preferred_microphone_sample_rate(44_100), 44_100);
         assert_eq!(preferred_microphone_sample_rate(48_000), 48_000);
         assert_eq!(preferred_microphone_sample_rate(96_000), 48_000);
-    }
-
-    #[test]
-    fn discord_exclusion_targets_the_root_of_the_largest_discord_tree() {
-        let entries = [
-            ProcessEntry {
-                id: 10,
-                parent_id: 1,
-                executable: "Discord.exe".into(),
-            },
-            ProcessEntry {
-                id: 11,
-                parent_id: 10,
-                executable: "Discord.exe".into(),
-            },
-            ProcessEntry {
-                id: 12,
-                parent_id: 10,
-                executable: "Discord.exe".into(),
-            },
-            ProcessEntry {
-                id: 20,
-                parent_id: 1,
-                executable: "DiscordCanary.exe".into(),
-            },
-            ProcessEntry {
-                id: 30,
-                parent_id: 1,
-                executable: "game.exe".into(),
-            },
-        ];
-
-        assert_eq!(discord_root_process_id(&entries), Some(10));
-    }
-
-    #[test]
-    fn discord_exclusion_ignores_unrelated_processes() {
-        let entries = [ProcessEntry {
-            id: 30,
-            parent_id: 1,
-            executable: "not-discord.txt".into(),
-        }];
-
-        assert_eq!(discord_root_process_id(&entries), None);
     }
 
     #[cfg(target_os = "windows")]

@@ -1537,16 +1537,6 @@ impl Renderer {
                     SettingControl::Dropdown,
                 )?;
                 self.setting_row(
-                    "Exclude Discord",
-                    on_off(model.config.audio.exclude_discord),
-                    "Remove Discord voices from saved clips.",
-                    left,
-                    game_right,
-                    settings_row_top(2),
-                    Action::ToggleDiscordExclusion,
-                    SettingControl::Toggle,
-                )?;
-                self.setting_row(
                     "Microphone",
                     on_off(model.config.audio.microphone),
                     "Capture your selected input with its own level.",
