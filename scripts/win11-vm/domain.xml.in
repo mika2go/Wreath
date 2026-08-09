@@ -1,0 +1,111 @@
+<domain type='kvm'>
+  <name>Wreath Windows 11</name>
+  <uuid>b6a7f323-f76d-4af8-a5ad-6fd75a88d159</uuid>
+  <title>Wreath Windows 11 Test VM</title>
+  <description>Disposable Windows 11 Enterprise evaluation VM for native Wreath testing.</description>
+  <metadata>
+    <boxes:gnome-boxes xmlns:boxes='https://wiki.gnome.org/Apps/Boxes'>
+      <os-id>http://microsoft.com/win/11</os-id>
+      <media-id>http://microsoft.com/win/11</media-id>
+    </boxes:gnome-boxes>
+  </metadata>
+  <memory unit='MiB'>12288</memory>
+  <currentMemory unit='MiB'>12288</currentMemory>
+  <vcpu placement='static'>8</vcpu>
+  <resource>
+    <partition>/machine</partition>
+  </resource>
+  <os>
+    <type arch='x86_64' machine='pc-q35-7.2'>hvm</type>
+    <loader readonly='yes' secure='no' type='pflash'>/app/share/qemu/edk2-x86_64-code.fd</loader>
+    <nvram template='/app/share/qemu/edk2-i386-vars.fd'>@NVRAM@</nvram>
+    <bootmenu enable='yes' timeout='3000'/>
+  </os>
+  <features>
+    <acpi/>
+    <apic/>
+    <hyperv mode='custom'>
+      <relaxed state='on'/>
+      <vapic state='on'/>
+      <spinlocks state='on' retries='8191'/>
+      <vpindex state='on'/>
+      <runtime state='on'/>
+      <synic state='on'/>
+      <stimer state='on'><direct state='on'/></stimer>
+      <reset state='on'/>
+      <frequencies state='on'/>
+    </hyperv>
+    <vmport state='off'/>
+  </features>
+  <cpu mode='host-passthrough' check='none' migratable='on'/>
+  <clock offset='localtime'>
+    <timer name='rtc' tickpolicy='catchup'/>
+    <timer name='pit' tickpolicy='delay'/>
+    <timer name='hpet' present='no'/>
+    <timer name='hypervclock' present='yes'/>
+  </clock>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>restart</on_crash>
+  <pm>
+    <suspend-to-mem enabled='no'/>
+    <suspend-to-disk enabled='no'/>
+  </pm>
+  <devices>
+    <emulator>/app/bin/qemu-system-x86_64</emulator>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' cache='writeback' discard='unmap'/>
+      <source file='@DISK@'/>
+      <target dev='sda' bus='sata'/>
+      <boot order='2'/>
+    </disk>
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source file='@WINDOWS_ISO@'/>
+      <target dev='sdb' bus='sata'/>
+      <readonly/>
+    </disk>
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source file='@PAYLOAD_ISO@'/>
+      <target dev='sdc' bus='sata'/>
+      <readonly/>
+    </disk>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='raw'/>
+      <source file='@WINDOWS_EFI@'/>
+      <target dev='sdd' bus='usb'/>
+      <readonly/>
+      <boot order='1'/>
+    </disk>
+    <controller type='usb' index='0' model='qemu-xhci' ports='15'/>
+    <controller type='sata' index='0'/>
+    <controller type='pci' index='0' model='pcie-root'/>
+    <interface type='user'>
+      <mac address='52:54:00:57:11:26'/>
+      <model type='e1000e'/>
+    </interface>
+    <serial type='pty'><target type='isa-serial' port='0'/></serial>
+    <console type='pty'><target type='serial' port='0'/></console>
+    <channel type='unix'>
+      <target type='virtio' name='org.qemu.guest_agent.0'/>
+    </channel>
+    <channel type='spicevmc'>
+      <target type='virtio' name='com.redhat.spice.0'/>
+    </channel>
+    <input type='tablet' bus='usb'/>
+    <input type='keyboard' bus='usb'/>
+    <graphics type='spice' autoport='yes'>
+      <listen type='none'/>
+      <image compression='off'/>
+      <gl enable='no'/>
+    </graphics>
+    <sound model='ich9'/>
+    <audio id='1' type='spice'/>
+    <video>
+      <model type='qxl' ram='65536' vram='65536' vgamem='16384' heads='1' primary='yes'/>
+    </video>
+    <memballoon model='virtio'/>
+    <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
+  </devices>
+</domain>

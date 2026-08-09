@@ -11,7 +11,9 @@ use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUn
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreatePopupMenu,
     CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, FindWindowW, GWLP_USERDATA,
@@ -41,6 +43,7 @@ const COMMAND_CLIP_MOVE_LIBRARY: usize = 502;
 const COMMAND_CLIP_EDIT: usize = 503;
 const COMMAND_CLIP_MOVE_COLLECTION_BASE: usize = 600;
 const PLAYER_TIMER: usize = 2;
+const WM_MOUSELEAVE_MESSAGE: u32 = 0x02a3;
 const PREVIEW_SEEK_INTERVAL: Duration = Duration::from_millis(120);
 const PREVIEW_SEEK_SETTLE: Duration = Duration::from_millis(400);
 const PREVIEW_SLACK_SECONDS: f64 = 0.05;
@@ -58,6 +61,7 @@ struct AppState {
     trim_sender: mpsc::Sender<TrimUpdate>,
     editor_drag: Option<EditorDrag>,
     preview_seek: Option<Instant>,
+    mouse_tracking: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -122,8 +126,8 @@ fn run_initialized() -> Result<(), String> {
     let state = Box::new(AppState {
         model,
         renderer: Renderer::new()?,
-        width: 1280,
-        height: 760,
+        width: 1440,
+        height: 900,
         dpi: 96,
         player: None,
         video_window: None,
@@ -132,6 +136,7 @@ fn run_initialized() -> Result<(), String> {
         trim_sender,
         editor_drag: None,
         preview_seek: None,
+        mouse_tracking: false,
     });
     let state = Box::into_raw(state);
     let window = unsafe {
@@ -142,8 +147,8 @@ fn run_initialized() -> Result<(), String> {
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            1280,
-            760,
+            1440,
+            900,
             None,
             None,
             None,
@@ -267,8 +272,8 @@ unsafe extern "system" fn window_proc(
             if !info.is_null() {
                 let scale = state_mut(window).map_or(1.0, |state| state.dpi as f32 / 96.0);
                 unsafe {
-                    (*info).ptMinTrackSize.x = (900.0 * scale).round() as i32;
-                    (*info).ptMinTrackSize.y = (640.0 * scale).round() as i32;
+                    (*info).ptMinTrackSize.x = (980.0 * scale).round() as i32;
+                    (*info).ptMinTrackSize.y = (680.0 * scale).round() as i32;
                 }
             }
             LRESULT(0)
@@ -340,13 +345,37 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
-            if let Some(state) = state_mut(window)
-                && state.editor_drag.is_some()
-            {
+            if let Some(state) = state_mut(window) {
                 let scale = state.dpi as f32 / 96.0;
                 let x = signed_low_word(lparam.0) as f32 / scale;
-                update_editor_drag(state, x, false);
-                redraw(window);
+                let y = signed_high_word(lparam.0) as f32 / scale;
+                if !state.mouse_tracking {
+                    let mut tracking = TRACKMOUSEEVENT {
+                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: window,
+                        ..Default::default()
+                    };
+                    if unsafe { TrackMouseEvent(&mut tracking) }.is_ok() {
+                        state.mouse_tracking = true;
+                    }
+                }
+                let hover_changed = state.renderer.update_hover(x, y);
+                if state.editor_drag.is_some() {
+                    update_editor_drag(state, x, false);
+                }
+                if hover_changed || state.editor_drag.is_some() {
+                    redraw(window);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE_MESSAGE => {
+            if let Some(state) = state_mut(window) {
+                state.mouse_tracking = false;
+                if state.renderer.clear_hover() {
+                    redraw(window);
+                }
             }
             LRESULT(0)
         }
@@ -448,7 +477,11 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_KEYDOWN => {
-            if wparam.0 == 0x20 {
+            if wparam.0 == 0x4b && key_pressed(0x11) {
+                if let Some(state) = state_mut(window) {
+                    handle_action(window, state, Action::Search);
+                }
+            } else if wparam.0 == 0x20 {
                 if let Some(state) = state_mut(window)
                     && state.model.prompt.is_none()
                     && matches!(
@@ -489,7 +522,9 @@ unsafe extern "system" fn window_proc(
         WM_TIMER if wparam.0 == PLAYER_TIMER => {
             if let Some(state) = state_mut(window) {
                 let trim_changed = poll_trim_updates(state);
+                let motion_changed = state.renderer.advance_motion();
                 if trim_changed
+                    || motion_changed
                     || matches!(
                         state.model.page,
                         crate::model::Page::Player | crate::model::Page::Editor
@@ -567,7 +602,14 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             Ok(_) => {}
         },
         Action::OpenClipsFolder => open_path(&state.model.config.storage.directory),
-        Action::Search => state.model.search_focused = true,
+        Action::Search => {
+            if !matches!(state.model.page, crate::model::Page::Library) {
+                stop_player(state);
+                state.model.navigate(crate::model::Page::Library);
+                update_player_window(state);
+            }
+            state.model.search_focused = true;
+        }
         Action::ClearSearch => {
             state.model.query.clear();
             state.model.active_collection = None;

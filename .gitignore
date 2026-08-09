@@ -4,6 +4,8 @@
 *.tmp
 .idea/
 .vscode/
+graphify-out/
+**/__pycache__/
 /packaging/pkg/
 /packaging/src/
 /packaging/*-git/

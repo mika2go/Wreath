@@ -1,0 +1,13 @@
+[Unit]
+Description=Rootless libvirt/QEMU runtime for the Wreath Windows 11 test VM
+After=graphical-session-pre.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/flatpak run --command=virtqemud org.gnome.Boxes --verbose
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target
