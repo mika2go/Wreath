@@ -6,6 +6,11 @@ const MIN_REPLAY_MEMORY_BYTES: u64 = 8 * 1_048_576;
 const PIPELINE_COMMAND_CAPACITY: usize = 4;
 #[cfg(target_os = "windows")]
 const SAVE_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Pausing, resuming, and stopping wait on the same worker a save does. Left
+/// unbounded they held the daemon's control loop, and with it the hotkey, for
+/// as long as the worker stayed busy.
+#[cfg(target_os = "windows")]
+const CONTROL_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 #[cfg(target_os = "windows")]
 /// Frames the encoder may hold at once. Three left hardware encoders without
 /// enough in flight to pipeline properly, and every frame that arrived while
@@ -125,11 +130,13 @@ impl ReplayPipeline {
     }
 
     pub fn pause(&self) -> Result<(), crate::video::VideoError> {
-        self.send_command(PipelineCommandKind::Pause).map(|_| ())
+        self.send_command_with_timeout(PipelineCommandKind::Pause, CONTROL_COMMAND_TIMEOUT)
+            .map(|_| ())
     }
 
     pub fn resume(&self) -> Result<(), crate::video::VideoError> {
-        self.send_command(PipelineCommandKind::Resume).map(|_| ())
+        self.send_command_with_timeout(PipelineCommandKind::Resume, CONTROL_COMMAND_TIMEOUT)
+            .map(|_| ())
     }
 
     pub fn save(&self) -> Result<std::path::PathBuf, crate::video::VideoError> {
@@ -139,23 +146,6 @@ impl ReplayPipeline {
                 "video pipeline returned no saved path".into(),
             )),
         }
-    }
-
-    fn send_command(
-        &self,
-        kind: PipelineCommandKind,
-    ) -> Result<PipelineCommandResult, crate::video::VideoError> {
-        let (reply_sender, reply_receiver) = crossbeam_channel::bounded(1);
-        self.commands
-            .send(PipelineCommand {
-                kind,
-                reply: reply_sender,
-            })
-            .map_err(|error| crate::video::VideoError::Initialization(error.to_string()))?;
-        reply_receiver
-            .recv()
-            .map_err(|error| crate::video::VideoError::Initialization(error.to_string()))?
-            .map_err(crate::video::VideoError::Initialization)
     }
 
     fn send_command_with_timeout(
@@ -176,7 +166,7 @@ impl ReplayPipeline {
             )
             .map_err(|error| match error {
                 SendTimeoutError::Timeout(_) => crate::video::VideoError::Initialization(format!(
-                    "video pipeline did not accept the save request within {} seconds",
+                    "video pipeline did not accept the request within {} seconds",
                     timeout.as_secs()
                 )),
                 SendTimeoutError::Disconnected(_) => {
@@ -187,7 +177,7 @@ impl ReplayPipeline {
             .recv_timeout(timeout)
             .map_err(|error| match error {
                 RecvTimeoutError::Timeout => crate::video::VideoError::Initialization(format!(
-                    "video pipeline did not finish saving within {} seconds",
+                    "video pipeline did not answer within {} seconds",
                     timeout.as_secs()
                 )),
                 RecvTimeoutError::Disconnected => {
@@ -202,11 +192,23 @@ impl ReplayPipeline {
 impl Drop for ReplayPipeline {
     fn drop(&mut self) {
         let (reply_sender, reply_receiver) = crossbeam_channel::bounded(1);
-        let _ = self.commands.send(PipelineCommand {
-            kind: PipelineCommandKind::Stop,
-            reply: reply_sender,
-        });
-        let _ = reply_receiver.recv();
+        let _ = self.commands.send_timeout(
+            PipelineCommand {
+                kind: PipelineCommandKind::Stop,
+                reply: reply_sender,
+            },
+            CONTROL_COMMAND_TIMEOUT,
+        );
+        // A worker that will not stop is already broken; waiting for it here
+        // would freeze the daemon that is replacing it, so it is left to the
+        // process exit instead of joined.
+        if reply_receiver
+            .recv_timeout(CONTROL_COMMAND_TIMEOUT)
+            .is_err()
+        {
+            wreath_core::diagnostic!("Wreath capture: the video pipeline did not stop in time");
+            return;
+        }
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }

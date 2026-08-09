@@ -22,6 +22,39 @@ impl fmt::Display for ControlError {
 
 impl std::error::Error for ControlError {}
 
+/// Holds the daemon role for one Windows session. The control pipe used to be
+/// the only thing keeping two daemons apart, which left the loser running long
+/// enough to start a second capture and to race for the shortcut.
+#[cfg(target_os = "windows")]
+pub struct SingleInstance(windows::Win32::Foundation::HANDLE);
+
+#[cfg(target_os = "windows")]
+impl SingleInstance {
+    /// Returns `None` when another daemon already holds the claim.
+    pub fn claim_daemon() -> Result<Option<Self>, ControlError> {
+        use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
+        use windows::Win32::System::Threading::CreateMutexW;
+        use windows::core::w;
+
+        let handle = unsafe { CreateMutexW(None, false, w!("Local\\WreathDaemon")) }
+            .map_err(|error| ControlError::Io(io::Error::from_raw_os_error(error.code().0)))?;
+        if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+            let _ = unsafe { CloseHandle(handle) };
+            return Ok(None);
+        }
+        Ok(Some(Self(handle)))
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for SingleInstance {
+    fn drop(&mut self) {
+        use windows::Win32::Foundation::CloseHandle;
+
+        let _ = unsafe { CloseHandle(self.0) };
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub struct NamedPipeServer {
     name: Vec<u16>,
@@ -90,6 +123,27 @@ pub fn send_request(
     send_request_with_timeout(pipe_name, request, Duration::from_millis(250))
 }
 
+/// How long a client waits for the answer once the daemon has taken its
+/// request. A named pipe opened as a file has no read timeout of its own, so
+/// without this bound a daemon that stops answering parks every caller
+/// forever: the tray freezes, and the hotkey worker never releases the guard
+/// that keeps a second replay from starting, which leaves the shortcut dead
+/// while the service still looks healthy.
+#[cfg(target_os = "windows")]
+fn response_timeout(request: &wreath_core::ipc::Request) -> Duration {
+    use wreath_core::ipc::Request;
+
+    match request {
+        // The pipeline caps a save at thirty seconds; leave it room to report
+        // that failure itself instead of cutting a legitimate save short.
+        Request::Save => Duration::from_secs(35),
+        // Both rebuild the capture pipeline before they answer.
+        Request::Reload | Request::SetHotkey { .. } => Duration::from_secs(20),
+        Request::Pause | Request::Resume | Request::Shutdown => Duration::from_secs(10),
+        Request::Status => Duration::from_secs(5),
+    }
+}
+
 /// Connects to the daemon without dropping a request just because the single
 /// named-pipe instance is serving the tray or another UI client. Windows
 /// reports that short race as `ERROR_PIPE_BUSY`; waiting and reopening is the
@@ -114,7 +168,67 @@ pub fn send_request_with_timeout(
         }
     };
     wreath_core::ipc::write_request(&mut pipe, request).map_err(ControlError::Protocol)?;
-    wreath_core::ipc::read_response(&mut BufReader::new(pipe)).map_err(ControlError::Protocol)
+    let mut reader = BufReader::new(DeadlineReader::new(&mut pipe, response_timeout(request)));
+    wreath_core::ipc::read_response(&mut reader).map_err(ControlError::Protocol)
+}
+
+/// Reads from a named pipe without ever blocking past a deadline. Windows
+/// offers no read timeout for a pipe opened as a file, so the pending byte
+/// count is polled instead and the blocking read only runs once data is known
+/// to be waiting.
+#[cfg(target_os = "windows")]
+pub struct DeadlineReader<'a> {
+    pipe: &'a mut std::fs::File,
+    deadline: Instant,
+}
+
+#[cfg(target_os = "windows")]
+impl<'a> DeadlineReader<'a> {
+    const POLL_INTERVAL: Duration = Duration::from_millis(2);
+
+    pub fn new(pipe: &'a mut std::fs::File, timeout: Duration) -> Self {
+        Self {
+            pipe,
+            deadline: Instant::now() + timeout,
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl io::Read for DeadlineReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        use std::io::Read;
+        use std::os::windows::io::AsRawHandle;
+
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Pipes::PeekNamedPipe;
+
+        loop {
+            let mut pending = 0_u32;
+            unsafe {
+                PeekNamedPipe(
+                    HANDLE(self.pipe.as_raw_handle()),
+                    None,
+                    0,
+                    None,
+                    Some(&mut pending),
+                    None,
+                )
+            }
+            .map_err(|error| io::Error::from_raw_os_error(error.code().0))?;
+            if pending > 0 {
+                return self.pipe.read(buffer);
+            }
+            let remaining = self.deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the other side of the Wreath control channel stopped answering",
+                ));
+            }
+            std::thread::sleep(Self::POLL_INTERVAL.min(remaining));
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]

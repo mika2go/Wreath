@@ -20,6 +20,15 @@ the buffered video payload or introducing a save-time hole in the next replay.
   leaves the tray and recorder running.
 - `wreathctl.exe` is the optional command-line control client.
 
+Only one daemon runs per session; a second one exits at once instead of
+competing for the pipe, the shortcut, and the capture device. Every wait on the
+control channel is bounded at both ends: the daemon drops a client that stalls
+mid-request instead of blocking the loop the hotkey depends on, and a client
+stops waiting for an answer that is not coming. The hotkey keeps its
+registration for the life of the daemon and is only registered again after a
+failed attempt, so nothing else can claim the combination in between, and a
+replay save that never returns stops blocking the shortcut after a minute.
+
 The tray opens or focuses the full application and its menu saves a replay,
 pauses or resumes capture, opens clips or the configuration file, and enables
 per-user startup. Enabling startup writes only `wreath-tray.exe` to

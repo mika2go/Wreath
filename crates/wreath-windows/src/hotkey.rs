@@ -202,6 +202,50 @@ pub fn migrate_legacy_windows_hotkey(hotkey: &mut HotkeyConfig) -> bool {
     }
 }
 
+/// Keeps two hotkey presses from starting two replay saves at once.
+///
+/// The guard expires on its own. It used to be a plain flag that only the save
+/// worker cleared, so a worker that never came back left every later press
+/// logged as "a save is already running" - the shortcut was dead for good
+/// while the daemon kept running and looked healthy.
+#[derive(Debug)]
+pub struct SaveGuard {
+    started: std::sync::Mutex<Option<std::time::Instant>>,
+    stale_after: std::time::Duration,
+}
+
+impl SaveGuard {
+    pub fn new(stale_after: std::time::Duration) -> Self {
+        Self {
+            started: std::sync::Mutex::new(None),
+            stale_after,
+        }
+    }
+
+    /// Grants the guard when no save is running, or when the running one has
+    /// outlived every timeout the save path can hit.
+    pub fn acquire(&self, now: std::time::Instant) -> bool {
+        let mut started = self.locked();
+        match *started {
+            Some(at) if now.duration_since(at) < self.stale_after => false,
+            _ => {
+                *started = Some(now);
+                true
+            }
+        }
+    }
+
+    pub fn release(&self) {
+        *self.locked() = None;
+    }
+
+    fn locked(&self) -> std::sync::MutexGuard<'_, Option<std::time::Instant>> {
+        self.started
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeHotkey {
     pub modifiers: u32,
@@ -330,7 +374,7 @@ struct HotkeyRebind {
 #[cfg(target_os = "windows")]
 const REBIND_MESSAGE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
 #[cfg(target_os = "windows")]
-const HOTKEY_WATCHDOG_INTERVAL_MS: u32 = 30_000;
+const HOTKEY_WATCHDOG_INTERVAL_MS: u32 = 5_000;
 
 #[cfg(target_os = "windows")]
 impl HotkeyListener {
@@ -356,6 +400,19 @@ impl HotkeyListener {
                 let mut current_hotkey = hotkey;
                 let mut registration = match register_optional(id, &current_hotkey) {
                     Ok(registration) => registration,
+                    // A shortcut Windows refuses right now - usually because
+                    // another application holds it - must not take the capture
+                    // service down with it. Start without it and let the
+                    // watchdog claim it as soon as it is free again. A
+                    // shortcut that can never be translated stays fatal: the
+                    // configuration itself is broken and no retry fixes it.
+                    Err(error @ HotkeyError::Registration(_)) => {
+                        wreath_core::diagnostic!(
+                            "Wreath hotkey: {current_hotkey} is unavailable, watchdog will retry every {} seconds: {error}",
+                            HOTKEY_WATCHDOG_INTERVAL_MS / 1_000
+                        );
+                        None
+                    }
                     Err(error) => {
                         let _ = ready_sender.send(Err(error));
                         return;
@@ -481,15 +538,26 @@ impl HotkeyListener {
     }
 }
 
+/// Reclaims the shortcut after a failed registration, and only then. Windows
+/// hands a hotkey to exactly one thread and holds it there until that thread
+/// releases it, so a registration we still own cannot go stale - while giving
+/// it up first, as this watchdog used to do on every tick, both dropped the
+/// presses that landed in the gap and let any other application claim the
+/// combination for good.
 #[cfg(target_os = "windows")]
 fn refresh_registration(
     id: i32,
     hotkey: &HotkeyConfig,
     registration: &mut Option<HotkeyRegistration>,
 ) {
-    drop(registration.take());
+    if registration.is_some() || !hotkey.is_bound() {
+        return;
+    }
     match register_optional(id, hotkey) {
-        Ok(new_registration) => *registration = new_registration,
+        Ok(new_registration) => {
+            *registration = new_registration;
+            wreath_core::diagnostic!("Wreath hotkey: shortcut {hotkey} registered again");
+        }
         Err(error) => wreath_core::diagnostic!(
             "Wreath hotkey: automatic registration repair failed; retrying in {} seconds: {error}",
             HOTKEY_WATCHDOG_INTERVAL_MS / 1_000
@@ -696,16 +764,46 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn watchdog_refresh_restores_the_registered_hotkey() {
+    fn watchdog_reclaims_a_lost_shortcut_without_surrendering_a_working_one() {
         let hotkey = HotkeyConfig {
             modifiers: vec!["CTRL".into(), "ALT".into(), "SHIFT".into()],
             key: "F21".into(),
         };
-        let mut registration = register_optional(44, &hotkey).unwrap();
+        let mut registration = None;
 
         refresh_registration(44, &hotkey, &mut registration);
-
         assert!(registration.is_some());
         assert!(HotkeyRegistration::register(99, &hotkey).is_err());
+
+        // A tick over a healthy registration has to leave it registered, with
+        // no window in between for another application to take it.
+        refresh_registration(44, &hotkey, &mut registration);
+        assert!(registration.is_some());
+        assert!(HotkeyRegistration::register(99, &hotkey).is_err());
+    }
+
+    #[test]
+    fn one_save_runs_at_a_time() {
+        use std::time::{Duration, Instant};
+
+        let guard = SaveGuard::new(Duration::from_secs(60));
+        let press = Instant::now();
+
+        assert!(guard.acquire(press));
+        assert!(!guard.acquire(press + Duration::from_secs(1)));
+        guard.release();
+        assert!(guard.acquire(press + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_save_that_never_finishes_stops_blocking_the_shortcut() {
+        use std::time::{Duration, Instant};
+
+        let guard = SaveGuard::new(Duration::from_secs(60));
+        let press = Instant::now();
+        assert!(guard.acquire(press));
+
+        assert!(!guard.acquire(press + Duration::from_secs(59)));
+        assert!(guard.acquire(press + Duration::from_secs(60)));
     }
 }
