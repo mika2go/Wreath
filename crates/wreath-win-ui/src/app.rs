@@ -54,6 +54,7 @@ const WINDOW_CLASS: windows::core::PCWSTR = w!("WreathApplicationWindow");
 const CF_UNICODETEXT_FORMAT: u32 = 13;
 const PLAYER_TIMER: usize = 2;
 const WM_MOUSELEAVE_MESSAGE: u32 = 0x02a3;
+const PLAYER_SEEK_INTERVAL: Duration = Duration::from_millis(50);
 const PREVIEW_SEEK_INTERVAL: Duration = Duration::from_millis(33);
 const PREVIEW_SEEK_SETTLE: Duration = Duration::from_millis(160);
 const PREVIEW_SLACK_SECONDS: f64 = 0.05;
@@ -74,6 +75,7 @@ struct AppState {
     hotkey_sender: mpsc::Sender<HotkeyUpdate>,
     editor_drag: Option<EditorDrag>,
     slider_drag: Option<SliderDrag>,
+    player_seek: Option<Instant>,
     preview_seek: Option<Instant>,
     mouse_tracking: bool,
     fullscreen: Option<FullscreenState>,
@@ -185,6 +187,7 @@ fn run_initialized() -> Result<(), String> {
         hotkey_sender,
         editor_drag: None,
         slider_drag: None,
+        player_seek: None,
         preview_seek: None,
         mouse_tracking: false,
         fullscreen: None,
@@ -1392,6 +1395,7 @@ fn stop_player(state: &mut AppState) {
     if let Some(player) = &mut state.player {
         player.close();
     }
+    state.player_seek = None;
     state.preview_seek = None;
     sync_player_state(state);
 }
@@ -1432,10 +1436,18 @@ fn update_slider_drag(state: &mut AppState, x: f32, y: f32, settle: bool) {
         SliderDrag::PlayerSeek => {
             let rail = player_timeline_rail(width, height, state.model.sidebar_expanded);
             let fraction = ((x - rail.left) / (rail.right - rail.left).max(1.0)).clamp(0.0, 1.0);
-            if let Some(player) = &state.player {
-                let _ = player.seek_fraction(f64::from(fraction));
+            let fraction = f64::from(fraction);
+            state.model.player_position_seconds = state.model.player_duration_seconds * fraction;
+            let should_seek = settle
+                || state
+                    .player_seek
+                    .is_none_or(|issued| issued.elapsed() >= PLAYER_SEEK_INTERVAL);
+            if should_seek {
+                if let Some(player) = &state.player {
+                    let _ = player.seek_fraction(fraction);
+                }
+                state.player_seek = Some(Instant::now());
             }
-            sync_player_state(state);
         }
         SliderDrag::PlayerVolume => {
             let rail = player_volume_rail(
@@ -1489,6 +1501,7 @@ fn seek_editor_preview(state: &mut AppState, position: Duration, settle: bool) {
     if !state.model.player_ready {
         return;
     }
+    state.model.player_position_seconds = position.as_secs_f64();
     if !settle
         && state
             .preview_seek
@@ -1672,7 +1685,14 @@ fn sync_player_state(state: &mut AppState) {
     let snapshot = player.snapshot();
     state.model.player_ready = snapshot.ready;
     state.model.player_playing = snapshot.playing;
-    state.model.player_position_seconds = snapshot.position_seconds;
+    let dragging_playhead = state.editor_drag.is_some()
+        || matches!(
+            state.slider_drag,
+            Some(SliderDrag::PlayerSeek | SliderDrag::EditorPlayhead)
+        );
+    if !dragging_playhead {
+        state.model.player_position_seconds = snapshot.position_seconds;
+    }
     state.model.player_duration_seconds = snapshot.duration_seconds;
     state.model.player_aspect_ratio = snapshot.aspect_ratio;
 }

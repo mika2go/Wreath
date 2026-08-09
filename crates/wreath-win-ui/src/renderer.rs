@@ -91,6 +91,13 @@ enum TextInputTarget {
     Prompt,
 }
 
+#[derive(Clone, Copy)]
+enum FloatingIconSize {
+    Media,
+    Navigation,
+    Fullscreen,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct LogicalRect {
     pub left: f32,
@@ -295,6 +302,9 @@ pub struct Renderer {
     body: IDWriteTextFormat,
     small: IDWriteTextFormat,
     body_center: IDWriteTextFormat,
+    media_icon: IDWriteTextFormat,
+    navigation_icon: IDWriteTextFormat,
+    fullscreen_icon: IDWriteTextFormat,
     hits: Vec<HitRegion>,
     wic_factory: IWICImagingFactory,
     home_girl: Option<ID2D1Bitmap>,
@@ -366,6 +376,27 @@ impl Renderer {
             false,
             true,
         )?;
+        let navigation_icon = text_format(
+            &write_factory,
+            w!("Segoe UI Variable Display"),
+            25.0,
+            true,
+            true,
+        )?;
+        let media_icon = text_format(
+            &write_factory,
+            w!("Segoe UI Variable Display"),
+            18.0,
+            true,
+            true,
+        )?;
+        let fullscreen_icon = text_format(
+            &write_factory,
+            w!("Segoe UI Variable Display"),
+            20.0,
+            true,
+            true,
+        )?;
         let wic_factory =
             unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
                 .map_err(|error| error.to_string())?;
@@ -389,6 +420,9 @@ impl Renderer {
             body,
             small,
             body_center,
+            media_icon,
+            navigation_icon,
+            fullscreen_icon,
             hits: Vec::new(),
             wic_factory,
             home_girl: None,
@@ -823,6 +857,8 @@ impl Renderer {
         width: f32,
         height: f32,
     ) -> Result<(), String> {
+        let hotkey_ready = model.config.hotkey.is_bound();
+        let status_color = if hotkey_ready { READY } else { DANGER };
         self.text(
             "Replay buffer",
             rect(left, 116.0, right, 138.0),
@@ -830,7 +866,11 @@ impl Renderer {
             SECONDARY,
         )?;
         self.text(
-            "Replay ready",
+            if hotkey_ready {
+                "Replay ready"
+            } else {
+                "Shortcut required"
+            },
             rect(left, 143.0, right, 198.0),
             &self.title.clone(),
             PRIMARY,
@@ -846,7 +886,7 @@ impl Renderer {
                 panel.left + 3.0,
                 panel.top + 126.0,
             ),
-            READY,
+            status_color,
             1.5,
         )?;
 
@@ -856,9 +896,13 @@ impl Renderer {
             panel.left + 44.0,
             panel.top + 50.0,
         );
-        self.fill(pulse, READY, 5.0)?;
+        self.fill(pulse, status_color, 5.0)?;
         self.text(
-            "CAPTURE READY",
+            if hotkey_ready {
+                "CAPTURE READY"
+            } else {
+                "HOTKEY NOT SET"
+            },
             rect(
                 panel.left + 58.0,
                 panel.top + 34.0,
@@ -866,13 +910,17 @@ impl Renderer {
                 panel.top + 56.0,
             ),
             &self.small.clone(),
-            READY,
+            status_color,
         )?;
         self.text(
-            &format!(
-                "Your last {} seconds are ready.",
-                model.config.capture.duration_seconds
-            ),
+            &if hotkey_ready {
+                format!(
+                    "Your last {} seconds are ready.",
+                    model.config.capture.duration_seconds
+                )
+            } else {
+                "Set a shortcut before you start clipping.".to_owned()
+            },
             rect(
                 panel.left + 34.0,
                 panel.top + 60.0,
@@ -883,7 +931,11 @@ impl Renderer {
             PRIMARY,
         )?;
         self.text(
-            "Save a replay without leaving what you are doing.",
+            if hotkey_ready {
+                "Save a replay without leaving what you are doing."
+            } else {
+                "Wreath cannot save a replay until a hotkey is configured in Settings → Controls."
+            },
             rect(
                 panel.left + 34.0,
                 panel.top + 108.0,
@@ -917,7 +969,7 @@ impl Renderer {
                     x + 1.0,
                     signal_y + tick_height * 0.5,
                 ),
-                if index >= 24 { READY } else { BORDER },
+                if index >= 24 { status_color } else { BORDER },
                 0.0,
             )?;
         }
@@ -1464,14 +1516,13 @@ impl Renderer {
             action: Action::PlayPause,
         });
         let switch_top = (stage.top + stage.bottom) / 2.0 - 22.0;
-        self.pill(
+        self.floating_icon(
             rect(
                 stage.left - 56.0,
                 switch_top,
                 stage.left - 12.0,
                 switch_top + 44.0,
             ),
-            SURFACE,
             "‹",
             if model.adjacent_clip(-1).is_some() {
                 PRIMARY
@@ -1479,15 +1530,15 @@ impl Renderer {
                 SECONDARY
             },
             model.adjacent_clip(-1).map(|_| Action::PreviousClip),
+            FloatingIconSize::Navigation,
         )?;
-        self.pill(
+        self.floating_icon(
             rect(
                 stage.right + 12.0,
                 switch_top,
                 stage.right + 56.0,
                 switch_top + 44.0,
             ),
-            SURFACE,
             "›",
             if model.adjacent_clip(1).is_some() {
                 PRIMARY
@@ -1495,6 +1546,7 @@ impl Renderer {
                 SECONDARY
             },
             model.adjacent_clip(1).map(|_| Action::NextClip),
+            FloatingIconSize::Navigation,
         )?;
         let volume_x = stage.right + 78.0;
         let volume_top = switch_top - 76.0;
@@ -1549,14 +1601,13 @@ impl Renderer {
             ),
             action: Action::DragPlayerVolume,
         });
-        self.pill(
+        self.floating_icon(
             rect(
                 volume_x - 19.0,
                 volume_rail.bottom + 12.0,
                 volume_x + 19.0,
                 volume_rail.bottom + 50.0,
             ),
-            SURFACE,
             if model.player_volume_percent == 0 {
                 "🔇"
             } else {
@@ -1568,14 +1619,15 @@ impl Renderer {
                 SECONDARY
             },
             Some(Action::ToggleMute),
+            FloatingIconSize::Media,
         )?;
         let controls_top = height - 88.0;
-        self.pill(
+        self.floating_icon(
             rect(left, controls_top, left + 42.0, controls_top + 38.0),
-            SURFACE,
             if model.player_playing { "Ⅱ" } else { "▶" },
             PRIMARY,
             Some(Action::PlayPause),
+            FloatingIconSize::Media,
         )?;
         let rail = rect(
             left + 58.0,
@@ -1614,17 +1666,17 @@ impl Renderer {
             rect: rect(rail.left, controls_top, rail.right, controls_top + 38.0),
             action: Action::DragPlayerSeek,
         });
-        self.pill(
+        self.floating_icon(
             rect(
                 right - 146.0,
                 controls_top,
                 right - 108.0,
                 controls_top + 38.0,
             ),
-            SURFACE,
             "⛶",
             PRIMARY,
             Some(Action::ToggleFullscreen),
+            FloatingIconSize::Fullscreen,
         )?;
         self.text(
             &format!(
@@ -2674,6 +2726,36 @@ impl Renderer {
             self.stroke(area, BORDER, 8.0, 1.0)?;
         }
         self.text(label, area, &self.body_center.clone(), foreground)?;
+        if let Some(action) = action {
+            self.hits.push(HitRegion { rect: area, action });
+        }
+        Ok(())
+    }
+
+    /// A frameless media control with a small hover lift. The hit target stays
+    /// at its full size while only the glyph moves, so the controls feel light
+    /// without becoming harder to click.
+    fn floating_icon(
+        &mut self,
+        area: LogicalRect,
+        label: &str,
+        foreground: u32,
+        action: Option<Action>,
+        size: FloatingIconSize,
+    ) -> Result<(), String> {
+        let hovered = action
+            .as_ref()
+            .is_some_and(|candidate| self.is_hovered(candidate));
+        let progress = if hovered { self.hover_progress } else { 0.0 };
+        let lift = progress * 2.5;
+        let label_area = rect(area.left, area.top - lift, area.right, area.bottom - lift);
+        let color = mix(foreground, PRIMARY, progress * 0.72);
+        let format = match size {
+            FloatingIconSize::Media => self.media_icon.clone(),
+            FloatingIconSize::Navigation => self.navigation_icon.clone(),
+            FloatingIconSize::Fullscreen => self.fullscreen_icon.clone(),
+        };
+        self.text(label, label_area, &format, color)?;
         if let Some(action) = action {
             self.hits.push(HitRegion { rect: area, action });
         }
