@@ -7,7 +7,10 @@ use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, GlobalFree, HANDLE, HGLOBAL, HWND, LPARAM,
     LRESULT, RECT, WPARAM,
 };
-use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT, UpdateWindow};
+use windows::Win32::Graphics::Gdi::{
+    BeginPaint, EndPaint, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MonitorFromWindow, PAINTSTRUCT, UpdateWindow,
+};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
@@ -23,34 +26,38 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
-    DispatchMessageW, FindWindowW, GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowLongPtrW,
-    IDC_ARROW, LoadCursorW, MINMAXINFO, MSG, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
-    SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetTimer,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_CHAR,
-    WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_CHILD, WS_DISABLED, WS_OVERLAPPEDWINDOW,
+    DispatchMessageW, FindWindowW, GWL_STYLE, GWLP_USERDATA, GetClientRect, GetMessageW,
+    GetWindowLongPtrW, GetWindowPlacement, IDC_ARROW, LoadCursorW, MINMAXINFO, MSG,
+    PostQuitMessage, RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow,
+    SetTimer, SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow, TranslateMessage,
+    WINDOW_EX_STYLE, WINDOWPLACEMENT, WM_CHAR, WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO,
+    WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE,
+    WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_CHILD,
+    WS_DISABLED, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::config::Codec;
 use wreath_core::ipc::{Request, Response};
 
 use crate::model::{
-    Action, ClipContextMenu, DeleteTarget, DisplayOption, PromptKind, SettingsMenu,
+    Action, ClipContextMenu, DeleteTarget, DisplayOption, NoticeExpiry, PromptKind, SettingsMenu,
     SettingsMenuItem, SettingsMenuKind, TextInput, UiModel,
 };
 use crate::player::{PLAYER_EVENT, Player};
 use crate::renderer::{
     Renderer, editor_player_bounds, editor_timeline_fraction, editor_timeline_rail, player_bounds,
+    player_timeline_rail, player_volume_rail,
 };
 
 const WINDOW_CLASS: windows::core::PCWSTR = w!("WreathApplicationWindow");
 const CF_UNICODETEXT_FORMAT: u32 = 13;
 const PLAYER_TIMER: usize = 2;
 const WM_MOUSELEAVE_MESSAGE: u32 = 0x02a3;
-const PREVIEW_SEEK_INTERVAL: Duration = Duration::from_millis(120);
-const PREVIEW_SEEK_SETTLE: Duration = Duration::from_millis(400);
+const PREVIEW_SEEK_INTERVAL: Duration = Duration::from_millis(33);
+const PREVIEW_SEEK_SETTLE: Duration = Duration::from_millis(160);
 const PREVIEW_SLACK_SECONDS: f64 = 0.05;
+const NOTICE_LIFETIME: Duration = Duration::from_secs(3);
 
 struct AppState {
     model: UiModel,
@@ -66,14 +73,29 @@ struct AppState {
     hotkey_updates: mpsc::Receiver<HotkeyUpdate>,
     hotkey_sender: mpsc::Sender<HotkeyUpdate>,
     editor_drag: Option<EditorDrag>,
+    slider_drag: Option<SliderDrag>,
     preview_seek: Option<Instant>,
     mouse_tracking: bool,
+    fullscreen: Option<FullscreenState>,
+    notice_expiry: NoticeExpiry,
+}
+
+struct FullscreenState {
+    style: isize,
+    placement: WINDOWPLACEMENT,
 }
 
 #[derive(Clone, Copy)]
 enum EditorDrag {
     Start,
     End,
+}
+
+#[derive(Clone, Copy)]
+enum SliderDrag {
+    PlayerSeek,
+    PlayerVolume,
+    EditorPlayhead,
 }
 
 #[derive(Clone, Copy)]
@@ -162,8 +184,11 @@ fn run_initialized() -> Result<(), String> {
         hotkey_updates,
         hotkey_sender,
         editor_drag: None,
+        slider_drag: None,
         preview_seek: None,
         mouse_tracking: false,
+        fullscreen: None,
+        notice_expiry: NoticeExpiry::default(),
     });
     let state = Box::into_raw(state);
     let window = unsafe {
@@ -365,6 +390,12 @@ unsafe extern "system" fn window_proc(
                     Some(Action::DragEditorEnd) => Some(EditorDrag::End),
                     _ => None,
                 };
+                state.slider_drag = match hit.as_ref() {
+                    Some(Action::DragPlayerSeek) => Some(SliderDrag::PlayerSeek),
+                    Some(Action::DragPlayerVolume) => Some(SliderDrag::PlayerVolume),
+                    Some(Action::DragEditorPlayhead) => Some(SliderDrag::EditorPlayhead),
+                    _ => None,
+                };
                 state.text_drag = match hit.as_ref() {
                     Some(Action::PlaceSearchCaret(position)) => {
                         state.model.search_focused = true;
@@ -379,10 +410,16 @@ unsafe extern "system" fn window_proc(
                     }
                     _ => None,
                 };
-                if state.editor_drag.is_some() || state.text_drag.is_some() {
+                if state.editor_drag.is_some()
+                    || state.slider_drag.is_some()
+                    || state.text_drag.is_some()
+                {
                     unsafe { SetCapture(window) };
                     if state.editor_drag.is_some() {
                         update_editor_drag(state, x, true);
+                    }
+                    if state.slider_drag.is_some() {
+                        update_slider_drag(state, x, y, true);
                     }
                     redraw(window);
                 }
@@ -419,12 +456,16 @@ unsafe extern "system" fn window_proc(
                 if state.editor_drag.is_some() {
                     update_editor_drag(state, x, false);
                 }
+                if state.slider_drag.is_some() {
+                    update_slider_drag(state, x, y, false);
+                }
                 if state.text_drag.is_some() {
                     update_text_drag(state, x, y);
                 }
                 if menu_highlight_changed
                     || hover_changed
                     || state.editor_drag.is_some()
+                    || state.slider_drag.is_some()
                     || state.text_drag.is_some()
                 {
                     redraw(window);
@@ -449,6 +490,11 @@ unsafe extern "system" fn window_proc(
                 if state.editor_drag.is_some() {
                     update_editor_drag(state, x, true);
                     state.editor_drag = None;
+                    let _ = unsafe { ReleaseCapture() };
+                    redraw(window);
+                } else if state.slider_drag.is_some() {
+                    update_slider_drag(state, x, y, true);
+                    state.slider_drag = None;
                     let _ = unsafe { ReleaseCapture() };
                     redraw(window);
                 } else if state.text_drag.is_some() {
@@ -606,8 +652,20 @@ unsafe extern "system" fn window_proc(
                     state.model.notice = Some(error);
                 }
                 redraw(window);
+            } else if wparam.0 == 0x7a {
+                if let Some(state) = state_mut(window)
+                    && state.model.page == crate::model::Page::Player
+                {
+                    toggle_player_fullscreen(window, state);
+                }
+                redraw(window);
             } else if wparam.0 == 0x1b {
                 if let Some(state) = state_mut(window) {
+                    if state.fullscreen.is_some() {
+                        exit_player_fullscreen(window, state);
+                        redraw(window);
+                        return LRESULT(0);
+                    }
                     state.model.search_focused = false;
                     state.model.hotkey_capture = false;
                     state.model.notice = None;
@@ -635,9 +693,11 @@ unsafe extern "system" fn window_proc(
             if let Some(state) = state_mut(window) {
                 let trim_changed = poll_trim_updates(state);
                 let hotkey_changed = poll_hotkey_updates(state);
+                let notice_changed = expire_notice(state);
                 let motion_changed = state.renderer.advance_motion();
                 if trim_changed
                     || hotkey_changed
+                    || notice_changed
                     || motion_changed
                     || matches!(
                         state.model.page,
@@ -670,6 +730,7 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
                 page,
                 crate::model::Page::Player | crate::model::Page::Editor
             ) {
+                exit_player_fullscreen(window, state);
                 stop_player(state);
             }
             if page == crate::model::Page::Settings {
@@ -737,6 +798,7 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         }
         Action::DismissContextMenu => state.model.context_menu = None,
         Action::Back => {
+            exit_player_fullscreen(window, state);
             stop_player(state);
             state.model.navigate(state.model.previous_page);
             state.renderer.retry_unavailable_thumbnails();
@@ -765,6 +827,7 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         Action::OpenClipsFolder => open_path(&state.model.config.storage.directory),
         Action::Search => {
             if !matches!(state.model.page, crate::model::Page::Library) {
+                exit_player_fullscreen(window, state);
                 stop_player(state);
                 state.model.navigate(crate::model::Page::Library);
                 update_player_window(state);
@@ -845,19 +908,16 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
                 .and_then(|index| state.model.collections.get(index))
                 .map(|collection| collection.path.clone());
         }
+        Action::PreviousClip => switch_clip(state, -1),
+        Action::NextClip => switch_clip(state, 1),
         Action::PlayPause => match state.player.as_ref().map(Player::toggle) {
             Some(Err(error)) => state.model.notice = Some(error),
             None => state.model.notice = Some("No clip is loaded".into()),
             Some(Ok(())) => {}
         },
-        Action::SeekPercent(percent) => {
-            if let Some(player) = &state.player
-                && let Err(error) = player.seek_fraction(f64::from(percent) / 100.0)
-            {
-                state.model.notice = Some(error);
-            }
-            sync_player_state(state);
-        }
+        Action::DragPlayerSeek | Action::DragPlayerVolume | Action::DragEditorPlayhead => {}
+        Action::ToggleMute => toggle_player_mute(state),
+        Action::ToggleFullscreen => toggle_player_fullscreen(window, state),
         Action::EditActiveClip => begin_editor(state),
         Action::DragEditorStart | Action::DragEditorEnd => {}
         Action::SaveCut => save_cut(state, wreath_core::trim::TrimOutput::NewClip(None)),
@@ -1282,14 +1342,49 @@ fn confirm_delete(model: &mut UiModel) {
 }
 
 fn open_current_clip(state: &mut AppState) {
+    // Never display a position or duration that belongs to the media item we
+    // just left. The new values arrive from Media Foundation after it has
+    // resolved the current (possibly replaced) file.
+    state.model.reset_player_state();
     update_player_window(state);
     let Some(path) = state.model.active_clip().map(|clip| clip.path.clone()) else {
         return;
     };
-    if let Some(player) = &mut state.player
-        && let Err(error) = player.open(&path)
+    if let Some(player) = &mut state.player {
+        if let Err(error) = player.open(&path) {
+            state.model.notice = Some(error);
+        }
+    }
+}
+
+fn switch_clip(state: &mut AppState, offset: isize) {
+    if state.model.page != crate::model::Page::Player || !state.model.select_adjacent_clip(offset) {
+        return;
+    }
+    open_current_clip(state);
+}
+
+fn set_player_volume(state: &mut AppState, percent: u8) {
+    if state.model.page != crate::model::Page::Player {
+        return;
+    }
+    state.model.set_player_volume(percent);
+    if let Some(player) = &state.player
+        && let Err(error) = player.set_volume(state.model.player_volume_percent)
     {
-        state.model.notice = Some(error);
+        state.model.notice = Some(format!("Cannot set playback volume: {error}"));
+    }
+}
+
+fn toggle_player_mute(state: &mut AppState) {
+    if state.model.page != crate::model::Page::Player {
+        return;
+    }
+    state.model.toggle_player_mute();
+    if let Some(player) = &state.player
+        && let Err(error) = player.set_volume(state.model.player_volume_percent)
+    {
+        state.model.notice = Some(format!("Cannot change playback mute: {error}"));
     }
 }
 
@@ -1324,6 +1419,53 @@ fn update_editor_drag(state: &mut AppState, x: f32, settle: bool) {
         EditorDrag::End => state.model.editor_end,
     };
     seek_editor_preview(state, position, settle);
+}
+
+fn update_slider_drag(state: &mut AppState, x: f32, y: f32, settle: bool) {
+    let Some(drag) = state.slider_drag else {
+        return;
+    };
+    let scale = state.dpi as f32 / 96.0;
+    let width = ((state.width as f32 / scale).round() as u32).max(1);
+    let height = ((state.height as f32 / scale).round() as u32).max(1);
+    match drag {
+        SliderDrag::PlayerSeek => {
+            let rail = player_timeline_rail(width, height, state.model.sidebar_expanded);
+            let fraction = ((x - rail.left) / (rail.right - rail.left).max(1.0)).clamp(0.0, 1.0);
+            if let Some(player) = &state.player {
+                let _ = player.seek_fraction(f64::from(fraction));
+            }
+            sync_player_state(state);
+        }
+        SliderDrag::PlayerVolume => {
+            let rail = player_volume_rail(
+                width,
+                height,
+                state.model.player_aspect_ratio,
+                state.model.sidebar_expanded,
+            );
+            let fraction =
+                (1.0 - (y - rail.top) / (rail.bottom - rail.top).max(1.0)).clamp(0.0, 1.0);
+            set_player_volume(state, (fraction * 100.0).round() as u8);
+        }
+        SliderDrag::EditorPlayhead => {
+            let Some(timing) = &state.model.editor_timing else {
+                return;
+            };
+            let rail = editor_timeline_rail(
+                width,
+                height,
+                state.model.player_aspect_ratio,
+                state.model.sidebar_expanded,
+            );
+            let thousandths = editor_timeline_fraction(rail, x);
+            let requested = timing.duration.mul_f64(f64::from(thousandths) / 1_000.0);
+            let position = requested
+                .max(state.model.editor_start)
+                .min(state.model.editor_end);
+            seek_editor_preview(state, position, settle);
+        }
+    }
 }
 
 fn update_text_drag(state: &mut AppState, x: f32, y: f32) {
@@ -1412,7 +1554,14 @@ fn update_player_window(state: &mut AppState) {
     let scale = state.dpi as f32 / 96.0;
     let logical_width = (state.width as f32 / scale).round() as u32;
     let logical_height = (state.height as f32 / scale).round() as u32;
-    let bounds = if state.model.page == crate::model::Page::Editor {
+    let bounds = if state.fullscreen.is_some() && state.model.page == crate::model::Page::Player {
+        crate::renderer::LogicalRect {
+            left: 0.0,
+            top: 0.0,
+            right: logical_width as f32,
+            bottom: logical_height as f32,
+        }
+    } else if state.model.page == crate::model::Page::Editor {
         editor_player_bounds(
             logical_width,
             logical_height,
@@ -1444,6 +1593,76 @@ fn update_player_window(state: &mut AppState) {
     if let Some(player) = &state.player {
         player.update_video();
     }
+}
+
+fn toggle_player_fullscreen(window: HWND, state: &mut AppState) {
+    if state.fullscreen.is_some() {
+        exit_player_fullscreen(window, state);
+        return;
+    }
+    if state.model.page != crate::model::Page::Player {
+        return;
+    }
+    let mut placement = WINDOWPLACEMENT {
+        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    if let Err(error) = unsafe { GetWindowPlacement(window, &mut placement) } {
+        state.model.notice = Some(format!("Cannot enter fullscreen: {error}"));
+        return;
+    }
+    let monitor = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
+    let mut monitor_info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(monitor, &mut monitor_info) }.as_bool() {
+        state.model.notice = Some("Cannot find the display for fullscreen".into());
+        return;
+    }
+    let style = unsafe { GetWindowLongPtrW(window, GWL_STYLE) };
+    state.fullscreen = Some(FullscreenState { style, placement });
+    let fullscreen_style = (style as u32 & !WS_OVERLAPPEDWINDOW.0) | WS_POPUP.0 | WS_VISIBLE.0;
+    unsafe {
+        SetWindowLongPtrW(window, GWL_STYLE, fullscreen_style as isize);
+        let monitor = monitor_info.rcMonitor;
+        let _ = SetWindowPos(
+            window,
+            None,
+            monitor.left,
+            monitor.top,
+            monitor.right - monitor.left,
+            monitor.bottom - monitor.top,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+    update_player_window(state);
+}
+
+fn exit_player_fullscreen(window: HWND, state: &mut AppState) {
+    let Some(fullscreen) = state.fullscreen.take() else {
+        return;
+    };
+    unsafe {
+        SetWindowLongPtrW(window, GWL_STYLE, fullscreen.style);
+        let _ = SetWindowPlacement(window, &fullscreen.placement);
+        let _ = SetWindowPos(
+            window,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+    update_player_window(state);
+}
+
+fn expire_notice(state: &mut AppState) -> bool {
+    state
+        .notice_expiry
+        .tick(&mut state.model.notice, Instant::now(), NOTICE_LIFETIME)
 }
 
 fn sync_player_state(state: &mut AppState) {

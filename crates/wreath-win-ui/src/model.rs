@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use wreath_core::clips::{self, Clip, Collection};
 use wreath_core::config::Config;
@@ -71,11 +71,17 @@ pub enum Action {
     CancelDelete,
     ConfirmDelete,
     SelectCollection(Option<usize>),
+    PreviousClip,
+    NextClip,
     PlayPause,
-    SeekPercent(u8),
+    DragPlayerSeek,
+    DragPlayerVolume,
+    ToggleMute,
+    ToggleFullscreen,
     EditActiveClip,
     DragEditorStart,
     DragEditorEnd,
+    DragEditorPlayhead,
     SaveCut,
     ReplaceCut,
 }
@@ -93,6 +99,29 @@ pub enum PromptKind {
 }
 
 pub const PROMPT_MAX_CHARACTERS: usize = 80;
+
+#[derive(Debug, Default)]
+pub struct NoticeExpiry {
+    last: Option<String>,
+    deadline: Option<Instant>,
+}
+
+impl NoticeExpiry {
+    pub fn tick(&mut self, notice: &mut Option<String>, now: Instant, lifetime: Duration) -> bool {
+        if *notice != self.last {
+            self.last = notice.clone();
+            self.deadline = notice.as_ref().map(|_| now + lifetime);
+            return true;
+        }
+        if self.deadline.is_some_and(|deadline| now >= deadline) {
+            *notice = None;
+            self.last = None;
+            self.deadline = None;
+            return true;
+        }
+        false
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextInput {
@@ -398,6 +427,8 @@ pub struct UiModel {
     pub player_position_seconds: f64,
     pub player_duration_seconds: f64,
     pub player_aspect_ratio: f32,
+    pub player_volume_percent: u8,
+    pub player_last_audible_percent: u8,
     pub pending_delete: Option<DeleteTarget>,
     pub prompt: Option<Prompt>,
     pub sidebar_expanded: bool,
@@ -448,6 +479,8 @@ impl UiModel {
             player_position_seconds: 0.0,
             player_duration_seconds: 0.0,
             player_aspect_ratio: 16.0 / 9.0,
+            player_volume_percent: 100,
+            player_last_audible_percent: 100,
             pending_delete: None,
             prompt: None,
             sidebar_expanded: true,
@@ -493,6 +526,49 @@ impl UiModel {
             self.previous_page = self.page;
             self.active_clip = Some(index);
             self.page = Page::Player;
+        }
+    }
+
+    pub fn adjacent_clip(&self, offset: isize) -> Option<usize> {
+        let active = self.active_clip?;
+        let visible = self.visible_clip_indices(usize::MAX);
+        let position = visible.iter().position(|index| *index == active)?;
+        position
+            .checked_add_signed(offset)
+            .and_then(|position| visible.get(position))
+            .copied()
+    }
+
+    pub fn select_adjacent_clip(&mut self, offset: isize) -> bool {
+        let Some(index) = self.adjacent_clip(offset) else {
+            return false;
+        };
+        self.active_clip = Some(index);
+        self.page = Page::Player;
+        true
+    }
+
+    pub fn reset_player_state(&mut self) {
+        self.player_ready = false;
+        self.player_playing = false;
+        self.player_position_seconds = 0.0;
+        self.player_duration_seconds = 0.0;
+        self.player_aspect_ratio = 16.0 / 9.0;
+    }
+
+    pub fn set_player_volume(&mut self, percent: u8) {
+        self.player_volume_percent = percent.min(100);
+        if self.player_volume_percent > 0 {
+            self.player_last_audible_percent = self.player_volume_percent;
+        }
+    }
+
+    pub fn toggle_player_mute(&mut self) {
+        if self.player_volume_percent == 0 {
+            self.player_volume_percent = self.player_last_audible_percent.max(1);
+        } else {
+            self.player_last_audible_percent = self.player_volume_percent;
+            self.player_volume_percent = 0;
         }
     }
 
@@ -740,6 +816,8 @@ mod tests {
             player_position_seconds: 0.0,
             player_duration_seconds: 0.0,
             player_aspect_ratio: 16.0 / 9.0,
+            player_volume_percent: 100,
+            player_last_audible_percent: 100,
             pending_delete: None,
             prompt: None,
             sidebar_expanded: true,
@@ -768,6 +846,84 @@ mod tests {
         assert_eq!(model.page, Page::Player);
         assert_eq!(model.previous_page, Page::Library);
         assert_eq!(model.active_clip().unwrap().title, "Other");
+    }
+
+    #[test]
+    fn player_moves_through_the_visible_library_order_without_wrapping() {
+        let mut model = model();
+        model.open_clip(0);
+
+        assert_eq!(model.adjacent_clip(-1), None);
+        assert_eq!(model.adjacent_clip(1), Some(1));
+        assert!(model.select_adjacent_clip(1));
+        assert_eq!(model.active_clip().unwrap().title, "Other");
+        assert!(!model.select_adjacent_clip(1));
+    }
+
+    #[test]
+    fn player_navigation_respects_the_current_search() {
+        let mut model = model();
+        model.search.value = "ranked".into();
+        model.open_clip(0);
+
+        assert_eq!(model.adjacent_clip(-1), None);
+        assert_eq!(model.adjacent_clip(1), None);
+    }
+
+    #[test]
+    fn reopening_a_clip_clears_stale_timeline_state() {
+        let mut model = model();
+        model.player_ready = true;
+        model.player_playing = true;
+        model.player_position_seconds = 12.0;
+        model.player_duration_seconds = 30.0;
+
+        model.reset_player_state();
+
+        assert!(!model.player_ready);
+        assert!(!model.player_playing);
+        assert_eq!(model.player_position_seconds, 0.0);
+        assert_eq!(model.player_duration_seconds, 0.0);
+    }
+
+    #[test]
+    fn playback_volume_accepts_a_vertical_slider_percentage() {
+        let mut model = model();
+        model.set_player_volume(60);
+        assert_eq!(model.player_volume_percent, 60);
+        model.set_player_volume(200);
+        assert_eq!(model.player_volume_percent, 100);
+    }
+
+    #[test]
+    fn mute_restores_the_last_audible_playback_level() {
+        let mut model = model();
+        model.set_player_volume(64);
+        model.toggle_player_mute();
+        assert_eq!(model.player_volume_percent, 0);
+        model.toggle_player_mute();
+        assert_eq!(model.player_volume_percent, 64);
+    }
+
+    #[test]
+    fn notices_expire_exactly_after_their_lifetime() {
+        let mut expiry = NoticeExpiry::default();
+        let now = Instant::now();
+        let mut notice = Some("Clip saved".to_owned());
+
+        assert!(expiry.tick(&mut notice, now, Duration::from_secs(3)));
+        assert!(!expiry.tick(
+            &mut notice,
+            now + Duration::from_millis(2_999),
+            Duration::from_secs(3)
+        ));
+        assert!(notice.is_some());
+        assert!(expiry.tick(
+            &mut notice,
+            now + Duration::from_secs(3),
+            Duration::from_secs(3)
+        ));
+        assert!(notice.is_none());
     }
 
     #[test]

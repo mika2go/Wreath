@@ -52,6 +52,7 @@ pub struct Player {
     load_error: Option<String>,
     ready: bool,
     should_play: Cell<bool>,
+    volume: Cell<f32>,
 }
 
 impl Player {
@@ -84,6 +85,7 @@ impl Player {
             load_error: None,
             ready: false,
             should_play: Cell::new(false),
+            volume: Cell::new(1.0),
         })
     }
 
@@ -98,7 +100,10 @@ impl Player {
             .chain(Some(0))
             .collect::<Vec<_>>();
         let result = (|| {
-            let _ = unsafe { self.media.Stop() };
+            // Replacing a clip keeps the same path. Explicitly release the old
+            // media item before resolving that URL again, otherwise Media
+            // Foundation can keep reporting the pre-cut duration.
+            let _ = unsafe { self.media.ClearMediaItem() };
             let mut item = None;
             unsafe {
                 self.media
@@ -135,6 +140,11 @@ impl Player {
                 self.should_play.set(false);
                 self.media.Pause()
             } else {
+                let position = time_value(self.media.GetPosition(&MFP_POSITIONTYPE_100NS));
+                let duration = time_value(self.media.GetDuration(&MFP_POSITIONTYPE_100NS));
+                if duration > 0.0 && position + 0.05 >= duration {
+                    self.seek_fraction(0.0)?;
+                }
                 self.should_play.set(true);
                 self.media.Play()
             }
@@ -171,7 +181,6 @@ impl Player {
         if !self.loaded {
             return;
         }
-        let _ = unsafe { self.media.Stop() };
         let _ = unsafe { self.media.ClearMediaItem() };
         self.loaded = false;
         self.ready = false;
@@ -188,12 +197,17 @@ impl Player {
         }
         if event_type == MFP_EVENT_TYPE_MEDIAITEM_SET.0 {
             self.ready = true;
+            unsafe { self.media.SetVolume(self.volume.get()) }
+                .map_err(|error| error.to_string())?;
             if self.should_play.get() {
                 unsafe { self.media.Play() }.map_err(|error| error.to_string())?;
             }
-        } else if event_type == MFP_EVENT_TYPE_PLAYBACK_ENDED.0 && self.should_play.get() {
-            self.seek_fraction(0.0)?;
-            unsafe { self.media.Play() }.map_err(|error| error.to_string())?;
+        } else if event_type == MFP_EVENT_TYPE_PLAYBACK_ENDED.0 {
+            // Media Foundation's ended state cannot be stopped. Automatic
+            // looping used to seek immediately here, which made the session
+            // emit an invalid-state error after an otherwise healthy clip.
+            // Leave the final frame in place; the next explicit Play restarts.
+            self.should_play.set(false);
         }
         Ok(())
     }
@@ -253,6 +267,15 @@ impl Player {
         let value = windows::Win32::System::Com::StructuredStorage::PROPVARIANT::from(position);
         unsafe { self.media.SetPosition(&MFP_POSITIONTYPE_100NS, &value) }
             .map_err(|error| error.to_string())
+    }
+
+    pub fn set_volume(&self, percent: u8) -> Result<(), String> {
+        let volume = f32::from(percent.min(100)) / 100.0;
+        self.volume.set(volume);
+        if !self.loaded || !self.ready {
+            return Ok(());
+        }
+        unsafe { self.media.SetVolume(volume) }.map_err(|error| error.to_string())
     }
 
     pub fn update_video(&self) {

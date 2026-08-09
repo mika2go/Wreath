@@ -131,9 +131,9 @@ pub fn player_bounds(
     };
     fit_aspect(
         rect(
-            rail + padding,
+            rail + padding + 96.0,
             184.0,
-            width - padding,
+            width - padding - 96.0,
             (height as f32 - 112.0).max(330.0),
         ),
         aspect_ratio,
@@ -194,6 +194,45 @@ pub fn editor_timeline_rail(
 
 pub fn editor_timeline_fraction(rail: LogicalRect, x: f32) -> u16 {
     (((x - rail.left) / (rail.right - rail.left).max(1.0)).clamp(0.0, 1.0) * 1000.0).round() as u16
+}
+
+pub fn player_timeline_rail(width: u32, height: u32, sidebar_expanded: bool) -> LogicalRect {
+    let width = width as f32;
+    let rail = sidebar_width(width, sidebar_expanded);
+    let padding = if width < 1_080.0 {
+        28.0
+    } else if width < 1_300.0 {
+        36.0
+    } else {
+        48.0
+    };
+    let left = rail + padding;
+    let right = width - padding;
+    let controls_top = height as f32 - 88.0;
+    rect(
+        left + 58.0,
+        controls_top + 16.0,
+        right - 160.0,
+        controls_top + 22.0,
+    )
+}
+
+pub fn player_volume_rail(
+    width: u32,
+    height: u32,
+    aspect_ratio: f32,
+    sidebar_expanded: bool,
+) -> LogicalRect {
+    let stage = player_bounds(width, height, aspect_ratio, sidebar_expanded);
+    let switch_top = (stage.top + stage.bottom) / 2.0 - 22.0;
+    let volume_x = stage.right + 78.0;
+    let volume_top = switch_top - 76.0;
+    rect(
+        volume_x - 2.5,
+        volume_top + 38.0,
+        volume_x + 2.5,
+        switch_top + 120.0,
+    )
 }
 
 fn fit_aspect(area: LogicalRect, aspect_ratio: f32) -> LogicalRect {
@@ -604,34 +643,24 @@ impl Renderer {
         let rail = sidebar_width(width, model.sidebar_expanded);
         self.fill(rect(0.0, 0.0, rail, height), STAGE, 0.0)?;
         self.fill(rect(rail - 1.0, 0.0, rail, height), BORDER, 0.0)?;
-        self.fill(rect(rail, 83.0, width, 84.0), BORDER, 0.0)?;
 
-        self.text(
-            "Local capture",
-            rect(rail + 48.0, 20.0, rail + 290.0, 40.0),
-            &self.small.clone(),
-            SECONDARY,
-        )?;
-        self.text(
-            "WREATH",
-            rect(rail + 48.0, 39.0, rail + 240.0, 70.0),
-            &self.section.clone(),
-            PRIMARY,
-        )?;
-
-        let search_width = if width < 1_100.0 { 172.0 } else { 204.0 };
-        let search = rect(width - search_width - 36.0, 22.0, width - 36.0, 62.0);
+        let search_width = if width < 1_100.0 { 208.0 } else { 244.0 };
+        let search = rect(width - search_width - 36.0, 20.0, width - 36.0, 58.0);
         let search_action = Action::Search;
         let search_fill = if self.is_hovered(&search_action) {
-            mix(SURFACE, ACCENT, self.hover_progress * 0.10)
+            mix(SURFACE, ACCENT, self.hover_progress * 0.07)
         } else {
             SURFACE
         };
-        self.fill(search, search_fill, 10.0)?;
+        self.fill(search, search_fill, 8.0)?;
         self.stroke(
             search,
-            if model.search_focused { ACCENT } else { BORDER },
-            10.0,
+            if model.search_focused {
+                ACCENT
+            } else {
+                mix(BORDER, SURFACE, 0.38)
+            },
+            8.0,
             1.0,
         )?;
         self.hits.push(HitRegion {
@@ -641,26 +670,38 @@ impl Renderer {
         self.render_text_input(
             &model.search,
             rect(
-                search.left + 13.0,
+                search.left + 36.0,
                 search.top,
-                search.right - 42.0,
+                search.right - 64.0,
                 search.bottom,
             ),
-            "⌕  Search clips",
+            "Search your clips",
             model.search_focused,
             TextInputTarget::Search,
         )?;
         self.text(
-            "Ctrl K",
+            "⌕",
             rect(
-                search.right - 40.0,
+                search.left + 10.0,
                 search.top,
-                search.right - 10.0,
+                search.left + 32.0,
                 search.bottom,
             ),
-            &self.small.clone(),
-            SECONDARY,
+            &self.body_center.clone(),
+            if model.search_focused {
+                PRIMARY
+            } else {
+                SECONDARY
+            },
         )?;
+        let shortcut = rect(
+            search.right - 55.0,
+            search.top + 8.0,
+            search.right - 8.0,
+            search.bottom - 8.0,
+        );
+        self.fill(shortcut, ACCENT_MUTED, 5.0)?;
+        self.text("Ctrl K", shortcut, &self.small.clone(), SECONDARY)?;
 
         let nav = [
             (Page::Home, Glyph::Home, "Home"),
@@ -952,32 +993,8 @@ impl Renderer {
         height: f32,
     ) -> Result<(), String> {
         self.page_heading("Library", "Local replays", left, right)?;
-        let search = rect(left, 205.0, (right - 150.0).max(left + 160.0), 249.0);
-        self.fill(search, SURFACE, 10.0)?;
-        self.stroke(
-            search,
-            if model.search_focused { ACCENT } else { BORDER },
-            10.0,
-            1.0,
-        )?;
-        self.hits.push(HitRegion {
-            rect: search,
-            action: Action::Search,
-        });
-        self.render_text_input(
-            &model.search,
-            rect(
-                search.left + 14.0,
-                search.top,
-                search.right - 12.0,
-                search.bottom,
-            ),
-            "Search clips",
-            model.search_focused,
-            TextInputTarget::Search,
-        )?;
         self.pill(
-            rect(right - 136.0, 205.0, right, 249.0),
+            rect(right - 112.0, 141.0, right, 181.0),
             SURFACE,
             "Refresh",
             PRIMARY,
@@ -989,7 +1006,7 @@ impl Renderer {
                 model.clips.len(),
                 format_bytes(model.total_size_bytes())
             ),
-            rect(left, 260.0, right, 282.0),
+            rect(left, 205.0, right, 229.0),
             &self.small.clone(),
             SECONDARY,
         )?;
@@ -1003,11 +1020,11 @@ impl Renderer {
                 },
                 left,
                 right,
-                340.0,
+                286.0,
             )?;
             return Ok(());
         }
-        self.clip_grid(model, &indices, left, right, 294.0, height - 24.0)
+        self.clip_grid(model, &indices, left, right, 240.0, height - 24.0)
     }
 
     fn render_collections(
@@ -1416,7 +1433,12 @@ impl Renderer {
             Some(Action::OpenClipsFolder),
         )?;
         let stage = fit_aspect(
-            rect(left, 184.0, right, (height - 112.0).max(330.0)),
+            rect(
+                left + 96.0,
+                184.0,
+                right - 96.0,
+                (height - 112.0).max(330.0),
+            ),
             model.player_aspect_ratio,
         );
         self.fill(stage, STAGE, 12.0)?;
@@ -1425,6 +1447,112 @@ impl Renderer {
             rect: stage,
             action: Action::PlayPause,
         });
+        let switch_top = (stage.top + stage.bottom) / 2.0 - 22.0;
+        self.pill(
+            rect(
+                stage.left - 56.0,
+                switch_top,
+                stage.left - 12.0,
+                switch_top + 44.0,
+            ),
+            SURFACE,
+            "‹",
+            if model.adjacent_clip(-1).is_some() {
+                PRIMARY
+            } else {
+                SECONDARY
+            },
+            model.adjacent_clip(-1).map(|_| Action::PreviousClip),
+        )?;
+        self.pill(
+            rect(
+                stage.right + 12.0,
+                switch_top,
+                stage.right + 56.0,
+                switch_top + 44.0,
+            ),
+            SURFACE,
+            "›",
+            if model.adjacent_clip(1).is_some() {
+                PRIMARY
+            } else {
+                SECONDARY
+            },
+            model.adjacent_clip(1).map(|_| Action::NextClip),
+        )?;
+        let volume_x = stage.right + 78.0;
+        let volume_top = switch_top - 76.0;
+        let volume_bottom = switch_top + 120.0;
+        self.text(
+            &format!("{}%", model.player_volume_percent),
+            rect(
+                volume_x - 20.0,
+                volume_top,
+                volume_x + 20.0,
+                volume_top + 28.0,
+            ),
+            &self.body_center.clone(),
+            SECONDARY,
+        )?;
+        let volume_rail = rect(
+            volume_x - 2.5,
+            volume_top + 38.0,
+            volume_x + 2.5,
+            volume_bottom,
+        );
+        self.fill(volume_rail, SURFACE_HOVER, 2.5)?;
+        let volume_fraction = f32::from(model.player_volume_percent) / 100.0;
+        let volume_knob =
+            volume_rail.bottom - (volume_rail.bottom - volume_rail.top) * volume_fraction;
+        self.fill(
+            rect(
+                volume_rail.left,
+                volume_knob,
+                volume_rail.right,
+                volume_rail.bottom,
+            ),
+            ACCENT,
+            2.5,
+        )?;
+        self.fill(
+            rect(
+                volume_x - 6.0,
+                volume_knob - 6.0,
+                volume_x + 6.0,
+                volume_knob + 6.0,
+            ),
+            PRIMARY,
+            6.0,
+        )?;
+        self.hits.push(HitRegion {
+            rect: rect(
+                volume_x - 18.0,
+                volume_rail.top - 8.0,
+                volume_x + 18.0,
+                volume_rail.bottom + 8.0,
+            ),
+            action: Action::DragPlayerVolume,
+        });
+        self.pill(
+            rect(
+                volume_x - 19.0,
+                volume_rail.bottom + 12.0,
+                volume_x + 19.0,
+                volume_rail.bottom + 50.0,
+            ),
+            SURFACE,
+            if model.player_volume_percent == 0 {
+                "🔇"
+            } else {
+                "🔊"
+            },
+            if model.player_volume_percent == 0 {
+                PRIMARY
+            } else {
+                SECONDARY
+            },
+            Some(Action::ToggleMute),
+        )?;
         let controls_top = height - 88.0;
         self.pill(
             rect(left, controls_top, left + 42.0, controls_top + 38.0),
@@ -1436,7 +1564,7 @@ impl Renderer {
         let rail = rect(
             left + 58.0,
             controls_top + 16.0,
-            right - 112.0,
+            right - 160.0,
             controls_top + 22.0,
         );
         self.fill(rail, SURFACE_HOVER, 3.0)?;
@@ -1473,18 +1601,22 @@ impl Renderer {
                 1.5,
             )?;
         }
-        for percent in 0..100_u8 {
-            let segment = (rail.right - rail.left) / 100.0;
-            self.hits.push(HitRegion {
-                rect: rect(
-                    rail.left + segment * f32::from(percent),
-                    controls_top,
-                    rail.left + segment * f32::from(percent + 1),
-                    controls_top + 38.0,
-                ),
-                action: Action::SeekPercent(percent.saturating_add(1)),
-            });
-        }
+        self.hits.push(HitRegion {
+            rect: rect(rail.left, controls_top, rail.right, controls_top + 38.0),
+            action: Action::DragPlayerSeek,
+        });
+        self.pill(
+            rect(
+                right - 146.0,
+                controls_top,
+                right - 108.0,
+                controls_top + 38.0,
+            ),
+            SURFACE,
+            "⛶",
+            PRIMARY,
+            Some(Action::ToggleFullscreen),
+        )?;
         self.text(
             &format!(
                 "{} / {}",
@@ -1629,6 +1761,10 @@ impl Renderer {
             .map_or(0.0, |timing| timing.duration.as_secs_f64());
         let rail = rect(left, top + 6.0, right, top + 18.0);
         self.fill(rail, SURFACE_HOVER, 6.0)?;
+        self.hits.push(HitRegion {
+            rect: rect(rail.left, top - 10.0, rail.right, top + 34.0),
+            action: Action::DragEditorPlayhead,
+        });
         if duration > 0.0 {
             if let Some(timing) = &model.editor_timing {
                 let stride = timing.keyframes.len().div_ceil(80).max(1);
