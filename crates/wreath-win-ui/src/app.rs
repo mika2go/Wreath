@@ -204,6 +204,7 @@ fn run_initialized() -> Result<(), String> {
     model.autostart_enabled = crate::autostart::is_enabled();
     refresh_displays(&mut model);
     refresh_microphones(&mut model);
+    refresh_outputs(&mut model);
     let (trim_sender, trim_updates) = mpsc::channel();
     let (hotkey_sender, hotkey_updates) = mpsc::channel();
     let state = Box::new(AppState {
@@ -1106,6 +1107,7 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         Action::ToggleDesktopAudio => {
             state.model.config.audio.desktop = !state.model.config.audio.desktop
         }
+        Action::ChooseDesktopDevice => choose_desktop_device(&mut state.model),
         Action::ChooseDesktopGain => choose_desktop_gain(&mut state.model),
         Action::ToggleMicrophone => {
             state.model.config.audio.microphone = !state.model.config.audio.microphone
@@ -2482,6 +2484,28 @@ fn choose_microphone_gain(model: &mut UiModel) {
     open_choice_menu(model, SettingsMenuKind::MicrophoneGain, labels, current);
 }
 
+/// Lets the recording follow the Windows default output or stay pinned to one
+/// device. Pinning is what keeps game sound in the clips when Windows switches
+/// its default to a headset after the recorder has already started.
+fn choose_desktop_device(model: &mut UiModel) {
+    refresh_outputs(model);
+    let mut labels = vec!["Windows default".to_string()];
+    labels.extend(model.output_names.iter().map(|(_, name)| name.clone()));
+    let current = model
+        .config
+        .audio
+        .desktop_device
+        .as_deref()
+        .and_then(|id| {
+            model
+                .output_names
+                .iter()
+                .position(|(device_id, _)| device_id == id)
+        })
+        .map_or(Some(0), |index| Some(index + 1));
+    open_choice_menu(model, SettingsMenuKind::DesktopDevice, labels, current);
+}
+
 fn choose_desktop_gain(model: &mut UiModel) {
     let values = [0, 25, 50, 75, 100, 125, 150, 175, 200];
     let labels = values
@@ -2571,6 +2595,12 @@ fn select_settings_option(model: &mut UiModel, index: usize) {
                 model.config.audio.microphone_gain_percent = *value;
             }
         }
+        SettingsMenuKind::DesktopDevice => {
+            model.config.audio.desktop_device = index
+                .checked_sub(1)
+                .and_then(|index| model.output_names.get(index))
+                .map(|(id, _)| id.clone());
+        }
         SettingsMenuKind::DesktopGain => {
             if let Some(value) = [0, 25, 50, 75, 100, 125, 150, 175, 200].get(index) {
                 model.config.audio.desktop_gain_percent = *value;
@@ -2617,6 +2647,15 @@ fn refresh_displays(model: &mut UiModel) {
 fn refresh_microphones(model: &mut UiModel) {
     if let Ok(devices) = wreath_windows::audio::microphones() {
         model.microphone_names = devices
+            .into_iter()
+            .map(|device| (device.id, device.name))
+            .collect();
+    }
+}
+
+fn refresh_outputs(model: &mut UiModel) {
+    if let Ok(devices) = wreath_windows::audio::outputs() {
+        model.output_names = devices
             .into_iter()
             .map(|device| (device.id, device.name))
             .collect();

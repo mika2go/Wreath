@@ -283,7 +283,7 @@ impl PipelineAudio {
         config: &wreath_core::config::AudioConfig,
     ) -> Result<Option<Self>, crate::audio::AudioError> {
         let (master, auxiliary_microphone) = if config.desktop {
-            let desktop = crate::audio::LoopbackCapture::spawn()?;
+            let desktop = crate::audio::LoopbackCapture::spawn(config.desktop_device.as_deref())?;
             let microphone = config
                 .microphone
                 .then(|| {

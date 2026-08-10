@@ -1516,6 +1516,18 @@ impl Renderer {
                             .find(|(device_id, _)| device_id == id)
                     })
                     .map_or("Windows default", |(_, name)| name.as_str());
+                let output_name = model
+                    .config
+                    .audio
+                    .desktop_device
+                    .as_ref()
+                    .and_then(|id| {
+                        model
+                            .output_names
+                            .iter()
+                            .find(|(device_id, _)| device_id == id)
+                    })
+                    .map_or("Windows default", |(_, name)| name.as_str());
                 self.setting_row(
                     "Game audio",
                     on_off(model.config.audio.desktop),
@@ -1534,6 +1546,16 @@ impl Renderer {
                     game_right,
                     settings_row_top(1),
                     Action::ChooseDesktopGain,
+                    SettingControl::Dropdown,
+                )?;
+                self.setting_row(
+                    "Output device",
+                    output_name,
+                    "Capture this output instead of following the Windows default.",
+                    left,
+                    game_right,
+                    settings_row_top(2),
+                    Action::ChooseDesktopDevice,
                     SettingControl::Dropdown,
                 )?;
                 self.setting_row(
@@ -2495,6 +2517,7 @@ impl Renderer {
         let column_middle = (left + right) / 2.0;
         let (anchor_left, anchor_right, row) = match menu_state.kind {
             SettingsMenuKind::DesktopGain => (left, column_middle - 6.0, 1),
+            SettingsMenuKind::DesktopDevice => (left, column_middle - 6.0, 2),
             SettingsMenuKind::Microphone => (column_middle + 6.0, right, 1),
             SettingsMenuKind::MicrophoneGain => (column_middle + 6.0, right, 2),
             SettingsMenuKind::Display | SettingsMenuKind::Duration => (left, right, 0),

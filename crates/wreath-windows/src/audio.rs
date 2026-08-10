@@ -163,7 +163,7 @@ pub struct MicrophoneCapture {
 
 #[cfg(target_os = "windows")]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MicrophoneTarget {
+pub struct AudioEndpointTarget {
     pub id: String,
     pub name: String,
     pub default: bool,
@@ -172,10 +172,29 @@ pub struct MicrophoneTarget {
 /// Lists active WASAPI capture endpoints. This performs COM discovery only
 /// for the duration of the call and does not start an audio stream.
 #[cfg(target_os = "windows")]
-pub fn microphones() -> Result<Vec<MicrophoneTarget>, AudioError> {
+pub fn microphones() -> Result<Vec<AudioEndpointTarget>, AudioError> {
+    use windows::Win32::Media::Audio::eCapture;
+
+    endpoints(eCapture, "Windows audio input")
+}
+
+/// Lists active WASAPI playback endpoints, which is what desktop audio is
+/// captured from in loopback mode.
+#[cfg(target_os = "windows")]
+pub fn outputs() -> Result<Vec<AudioEndpointTarget>, AudioError> {
+    use windows::Win32::Media::Audio::eRender;
+
+    endpoints(eRender, "Windows audio output")
+}
+
+#[cfg(target_os = "windows")]
+fn endpoints(
+    direction: windows::Win32::Media::Audio::EDataFlow,
+    unnamed: &str,
+) -> Result<Vec<AudioEndpointTarget>, AudioError> {
     use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
     use windows::Win32::Media::Audio::{
-        DEVICE_STATE_ACTIVE, IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eConsole,
+        DEVICE_STATE_ACTIVE, IMMDeviceEnumerator, MMDeviceEnumerator, eConsole,
     };
     use windows::Win32::System::Com::{
         CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
@@ -186,14 +205,14 @@ pub fn microphones() -> Result<Vec<MicrophoneTarget>, AudioError> {
         Err(error) if error.code() == RPC_E_CHANGED_MODE => false,
         Err(error) => return Err(AudioError(error.to_string())),
     };
-    let result = (|| -> Result<Vec<MicrophoneTarget>, AudioError> {
+    let result = (|| -> Result<Vec<AudioEndpointTarget>, AudioError> {
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
                 .map_err(|error| AudioError(error.to_string()))?;
-        let default_id = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }
+        let default_id = unsafe { enumerator.GetDefaultAudioEndpoint(direction, eConsole) }
             .ok()
             .and_then(|device| device_id(&device).ok());
-        let collection = unsafe { enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE) }
+        let collection = unsafe { enumerator.EnumAudioEndpoints(direction, DEVICE_STATE_ACTIVE) }
             .map_err(|error| AudioError(error.to_string()))?;
         let count =
             unsafe { collection.GetCount() }.map_err(|error| AudioError(error.to_string()))?;
@@ -202,9 +221,9 @@ pub fn microphones() -> Result<Vec<MicrophoneTarget>, AudioError> {
             let device =
                 unsafe { collection.Item(index) }.map_err(|error| AudioError(error.to_string()))?;
             let id = device_id(&device)?;
-            targets.push(MicrophoneTarget {
+            targets.push(AudioEndpointTarget {
                 default: default_id.as_deref() == Some(id.as_str()),
-                name: device_name(&device).unwrap_or_else(|_| "Windows audio input".into()),
+                name: device_name(&device).unwrap_or_else(|_| unnamed.to_owned()),
                 id,
             });
         }
@@ -256,8 +275,11 @@ struct CaptureStream {
 
 #[cfg(target_os = "windows")]
 impl LoopbackCapture {
-    pub fn spawn() -> Result<Self, AudioError> {
-        CaptureStream::spawn(CaptureEndpoint::Loopback).map(|stream| Self { stream })
+    pub fn spawn(endpoint_id: Option<&str>) -> Result<Self, AudioError> {
+        CaptureStream::spawn(CaptureEndpoint::Loopback {
+            endpoint_id: endpoint_id.map(str::to_owned),
+        })
+        .map(|stream| Self { stream })
     }
 
     pub fn format(&self) -> AudioFormat {
@@ -289,7 +311,7 @@ impl MicrophoneCapture {
 
 #[cfg(target_os = "windows")]
 enum CaptureEndpoint {
-    Loopback,
+    Loopback { endpoint_id: Option<String> },
     Microphone { endpoint_id: Option<String> },
 }
 
@@ -310,7 +332,7 @@ impl CaptureStream {
         let (chunk_sender, chunk_receiver) = crossbeam_channel::bounded(256);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let thread_name = match endpoint {
-            CaptureEndpoint::Loopback => "wreath-wasapi-loopback",
+            CaptureEndpoint::Loopback { .. } => "wreath-wasapi-loopback",
             CaptureEndpoint::Microphone { .. } => "wreath-wasapi-microphone",
         };
         let thread = match std::thread::Builder::new()
@@ -371,8 +393,7 @@ fn capture_loop(
 ) -> Result<(), AudioError> {
     use windows::Win32::Foundation::{CloseHandle, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
     use windows::Win32::Media::Audio::{
-        AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, IAudioCaptureClient,
-        IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eConsole, eRender,
+        IAudioCaptureClient, IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eConsole,
     };
     use windows::Win32::System::Com::{
         CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
@@ -398,21 +419,13 @@ fn capture_loop(
                 .map_err(|error| AudioError(error.to_string()))?;
         let mut device_label = String::from("unknown device");
         let (client, format, device_period_hns, format_mode, timer_driven) = match endpoint {
-            CaptureEndpoint::Loopback => {
-                let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
-                    .map_err(|error| AudioError(error.to_string()))?;
-                // Loopback follows the default playback endpoint. Naming it is
-                // the difference between "no game sound in my clips" and
-                // "Windows is playing that sound somewhere else".
-                if let Ok(name) = device_name(&device) {
-                    device_label = name;
-                }
-                let (client, format, period, mode) = initialize_capture_client(
-                    &device,
-                    AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                    0,
-                    false,
-                )?;
+            CaptureEndpoint::Loopback { endpoint_id } => {
+                let (name, client, format, period, mode) =
+                    open_loopback_endpoint(&enumerator, endpoint_id.as_deref())?;
+                // Naming the endpoint is the difference between "no game sound
+                // in my clips" and "Windows is playing that sound somewhere
+                // else".
+                device_label = name;
                 (client, format, period, mode, false)
             }
             CaptureEndpoint::Microphone {
@@ -542,6 +555,71 @@ fn capture_loop(
     }
     unsafe { CoUninitialize() };
     result
+}
+
+/// A ready loopback stream: the endpoint's friendly name, its client, the
+/// negotiated format, the device period, and which format rung it landed on.
+#[cfg(target_os = "windows")]
+type OpenedLoopback = (
+    String,
+    windows::Win32::Media::Audio::IAudioClient,
+    AudioFormat,
+    i64,
+    CaptureFormatMode,
+);
+
+/// Opens the playback endpoint the desktop mix is captured from.
+///
+/// Following the Windows default endpoint is convenient right up to the moment
+/// it changes: the recorder binds the default it saw at startup and keeps
+/// capturing that device for the life of the pipeline, so a headset connecting
+/// afterwards leaves the clips with a full-length, perfectly silent audio
+/// track and no error anywhere. A configured endpoint ID is immune to that.
+///
+/// The default remains the fallback rather than a hard failure. A pinned device
+/// that is asleep, disabled or gone should cost the exact output choice, not
+/// the desktop audio - but it says so in the log, because silently recording a
+/// different device is how this class of bug hides in the first place.
+#[cfg(target_os = "windows")]
+fn open_loopback_endpoint(
+    enumerator: &windows::Win32::Media::Audio::IMMDeviceEnumerator,
+    endpoint_id: Option<&str>,
+) -> Result<OpenedLoopback, AudioError> {
+    use windows::Win32::Media::Audio::{
+        AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, eConsole, eRender,
+    };
+
+    const FLAGS: u32 = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+
+    let open =
+        |device: &windows::Win32::Media::Audio::IMMDevice| -> Result<OpenedLoopback, AudioError> {
+            let name = device_name(device).unwrap_or_else(|_| "unknown device".into());
+            let (client, format, period, mode) =
+                initialize_capture_client(device, FLAGS, 0, false)?;
+            Ok((name, client, format, period, mode))
+        };
+
+    if let Some(endpoint_id) = endpoint_id {
+        let pinned = (|| -> Result<OpenedLoopback, AudioError> {
+            let wide_id = endpoint_id
+                .encode_utf16()
+                .chain(Some(0))
+                .collect::<Vec<_>>();
+            let device = unsafe { enumerator.GetDevice(windows::core::PCWSTR(wide_id.as_ptr())) }
+                .map_err(|error| AudioError(error.to_string()))?;
+            open(&device)
+        })();
+        match pinned {
+            Ok(opened) => return Ok(opened),
+            Err(error) => wreath_core::diagnostic!(
+                "Wreath desktop audio: the configured output `{endpoint_id}` is unavailable, recording the Windows default instead: {}",
+                error.0
+            ),
+        }
+    }
+    let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
+        .map_err(|error| AudioError(error.to_string()))?;
+    open(&device)
 }
 
 /// Opens a capture endpoint, preferring the least processed stream it offers.

@@ -54,6 +54,10 @@ pub struct HotkeyConfig {
 #[serde(default)]
 pub struct AudioConfig {
     pub desktop: bool,
+    /// Playback endpoint the desktop mix is captured from. `None` follows
+    /// whatever Windows currently calls the default output; a stored ID pins
+    /// the capture to that device even when the default changes underneath.
+    pub desktop_device: Option<String>,
     pub desktop_gain_percent: u16,
     pub microphone: bool,
     pub microphone_device: Option<String>,
@@ -199,6 +203,7 @@ impl Default for AudioConfig {
     fn default() -> Self {
         Self {
             desktop: true,
+            desktop_device: None,
             desktop_gain_percent: 100,
             microphone: false,
             microphone_device: None,
@@ -349,6 +354,14 @@ mod tests {
     fn older_audio_config_gets_a_unity_desktop_level() {
         let config: Config = toml::from_str("[audio]\ndesktop = true\n").unwrap();
         assert_eq!(config.audio.desktop_gain_percent, 100);
+    }
+
+    /// A configuration that never named an output keeps following the Windows
+    /// default, which is what every existing installation expects.
+    #[test]
+    fn an_unnamed_output_follows_the_system_default() {
+        let config: Config = toml::from_str("[audio]\ndesktop = true\n").unwrap();
+        assert_eq!(config.audio.desktop_device, None);
     }
 
     /// Configurations written while Wreath still offered to filter Discord out

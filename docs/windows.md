@@ -52,8 +52,17 @@ old OS-reserved `Win+Shift+R` default are migrated automatically. Capture
 sessions request borderless presentation before recording starts. Status and
 error notices have a visible close button, and storage is shown only in MB/GB.
 
-Desktop audio is the full mix of the default render endpoint, with the
-microphone as its own track. Wreath briefly offered to filter one application
+Desktop audio is the full mix of one playback endpoint, with the microphone as
+its own track. `Output device` decides which endpoint that is. It defaults to
+the Windows default output, which is convenient right up to the moment that
+default changes: the recorder binds the endpoint it saw when capture started and
+keeps that device for the life of the pipeline, so a headset connecting
+afterwards leaves clips with a full-length, perfectly silent audio track and no
+error anywhere. Picking the device explicitly is immune to that. A pinned device
+that is asleep, disabled or gone falls back to the Windows default rather than
+failing the recording, and says so in the log.
+
+Wreath briefly offered to filter one application
 out of that mix through Windows' process-loopback device; it is gone. The
 filtered stream depends on a process tree that changes under the recorder, and
 where Windows accepted it at all the desktop side could end up silent, so the
@@ -68,10 +77,13 @@ change, the previous configuration is restored:
 ```powershell
 wreathctl monitors
 wreathctl microphones
+wreathctl outputs
 wreathctl codecs
 wreathctl config monitor \\.\DISPLAY1
 wreathctl config microphone default
 wreathctl config microphone off
+wreathctl config desktop-device {0.0.0.00000000}.{...}
+wreathctl config desktop-device default
 wreathctl config duration 30
 wreathctl config fps 60
 wreathctl config codec h264
@@ -133,8 +145,10 @@ which of those it got. If you play desktop audio over speakers, expect some of
 it to reach the microphone; there is no echo cancellation in this path.
 
 Wreath appends capture diagnostics to `%LOCALAPPDATA%\Wreath\wreath.log`: the
-endpoint format each stream negotiated, which Windows audio effects the driver
-still applies, the encoder's input and output format, and a periodic health
+name and format of the endpoint each stream negotiated — compare the desktop one
+against the device Windows is actually playing through when a clip comes out
+silent — which Windows audio effects the driver still applies, the encoder's
+input and output format, and a periodic health
 line with the endpoint's clock offset plus discontinuity, timestamp-error,
 queue-drop and resynchronization counters. The tray and player are linked for
 the GUI subsystem and have no console, so this file is the only place those

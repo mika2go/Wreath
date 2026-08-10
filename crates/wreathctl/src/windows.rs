@@ -10,6 +10,7 @@ pub fn run() -> Result<(), String> {
     match command {
         "monitors" => return print_monitors(),
         "microphones" => return print_microphones(),
+        "outputs" => return print_outputs(),
         "codecs" => return print_hardware_codecs(),
         "config" => return configure(&arguments[1..]),
         "cut" => return crate::cut::run(&arguments[1..]),
@@ -65,12 +66,22 @@ fn print_monitors() -> Result<(), String> {
 }
 
 fn print_microphones() -> Result<(), String> {
-    for microphone in wreath_windows::audio::microphones().map_err(|error| error.to_string())? {
+    print_endpoints(wreath_windows::audio::microphones().map_err(|error| error.to_string())?)
+}
+
+fn print_outputs() -> Result<(), String> {
+    print_endpoints(wreath_windows::audio::outputs().map_err(|error| error.to_string())?)
+}
+
+fn print_endpoints(
+    endpoints: Vec<wreath_windows::audio::AudioEndpointTarget>,
+) -> Result<(), String> {
+    for endpoint in endpoints {
         println!(
             "{}  {}{}",
-            microphone.name,
-            microphone.id,
-            if microphone.default { " [default]" } else { "" }
+            endpoint.name,
+            endpoint.id,
+            if endpoint.default { " [default]" } else { "" }
         );
     }
     Ok(())
@@ -149,6 +160,18 @@ fn apply_setting(config: &mut Config, setting: &str, value: &str) -> Result<(), 
             config.audio.microphone_device = Some(microphone.id.clone());
         }
         "desktop-audio" => config.audio.desktop = parse_switch(value, setting)?,
+        "desktop-device" if value.eq_ignore_ascii_case("default") => {
+            config.audio.desktop_device = None;
+        }
+        "desktop-device" => {
+            let outputs = wreath_windows::audio::outputs().map_err(|error| error.to_string())?;
+            let output = outputs
+                .iter()
+                .find(|output| output.id == value)
+                .ok_or_else(|| "unknown output endpoint; run `wreathctl outputs`".to_owned())?;
+            config.audio.desktop = true;
+            config.audio.desktop_device = Some(output.id.clone());
+        }
         "desktop-gain" => config.audio.desktop_gain_percent = parse_number(value, setting)?,
         "microphone-gain" => config.audio.microphone_gain_percent = parse_number(value, setting)?,
         "hotkey" => {
@@ -173,7 +196,7 @@ fn apply_setting(config: &mut Config, setting: &str, value: &str) -> Result<(), 
         "output" => config.storage.directory = value.into(),
         _ => {
             return Err(format!(
-                "unknown setting `{setting}`; use monitor, microphone, desktop-audio, desktop-gain, microphone-gain, hotkey, duration, fps, quality, codec, cursor, or output"
+                "unknown setting `{setting}`; use monitor, microphone, desktop-audio, desktop-device, desktop-gain, microphone-gain, hotkey, duration, fps, quality, codec, cursor, or output"
             ));
         }
     }
@@ -239,6 +262,7 @@ fn print_help() {
     println!(
         "wreathctl <command>\n\n\
          commands:\n  monitors     list active displays\n  microphones  list active microphone endpoint IDs\n  \
+         outputs      list active playback endpoint IDs\n  \
          codecs       list available hardware video encoders\n  config       show or change local settings\n  \
          cut          cut a saved clip down to one span\n  \
          status       show daemon state\n  save         save the replay buffer\n  \
@@ -246,6 +270,7 @@ fn print_help() {
          shutdown  stop the daemon\n\n\
          examples:\n  wreathctl config monitor \\\\.\\DISPLAY1\n  \
          wreathctl config microphone default\n  wreathctl config microphone off\n  \
+         wreathctl config desktop-device default\n  \
          wreathctl config duration 30\n  wreathctl config fps 60\n  \
          wreathctl config codec h264\n  \
          wreathctl cut C:\\Videos\\Wreath\\clip.mp4 8 20 --name \"Best bit\""

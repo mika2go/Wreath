@@ -301,8 +301,12 @@ impl GpuScreenRecorder {
             recorder_spec.microphone_device = Some(source.name.clone());
         }
         let desktop_gain_source = if spec.desktop_audio && spec.desktop_gain_percent != 100 {
+            let master = match spec.desktop_device.as_deref() {
+                Some(device) => device.to_owned(),
+                None => default_desktop_monitor()?,
+            };
             Some(RecordingGainSource::create(
-                &default_desktop_monitor()?,
+                &master,
                 spec.desktop_gain_percent,
                 "Desktop",
             )?)
@@ -315,7 +319,10 @@ impl GpuScreenRecorder {
                 portal_session_token_file.as_deref(),
                 desktop_gain_source
                     .as_ref()
-                    .map(|source| source.name.as_str()),
+                    .map(|source| source.name.as_str())
+                    // A configured monitor source is recorded directly when it
+                    // needs no level change of its own.
+                    .or(spec.desktop_device.as_deref()),
             ))
             .process_group(0)
             .stdin(Stdio::null())
@@ -504,6 +511,7 @@ mod tests {
             quality: 75,
             cursor: true,
             desktop_audio: true,
+            desktop_device: None,
             desktop_gain_percent: 100,
             microphone_audio: false,
             microphone_device: None,
@@ -554,6 +562,23 @@ mod tests {
                 .filter(|argument| argument.as_str() == "-a")
                 .count(),
             1
+        );
+    }
+
+    /// A configured output is recorded instead of whatever PipeWire currently
+    /// calls the default sink.
+    #[test]
+    fn command_records_a_configured_output_directly() {
+        let mut replay = spec();
+        replay.desktop_device = Some("alsa_output.hdmi-stereo.monitor".into());
+        let arguments = recorder_arguments(&replay, None, replay.desktop_device.as_deref())
+            .into_iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["-a", "alsa_output.hdmi-stereo.monitor"])
         );
     }
 
