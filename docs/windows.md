@@ -52,8 +52,14 @@ old OS-reserved `Win+Shift+R` default are migrated automatically. Capture
 sessions request borderless presentation before recording starts. Status and
 error notices have a visible close button, and storage is shown only in MB/GB.
 
-Desktop audio is the full mix of one playback endpoint, with the microphone as
-its own track. `Output device` decides which endpoint that is. It defaults to
+Desktop audio is the full mix of one playback endpoint, mixed together with the
+microphone into a single audio track. Desktop and microphone were muxed as extra
+tracks of their own for a while, so a clip could be re-balanced afterwards. That
+is gone: a file with three audio tracks plays as one arbitrary track in whatever
+the viewer happens to use, and the clips people got had no sound at all. One
+track that always plays beats three tracks that sometimes do.
+
+`Output device` decides which endpoint the desktop side comes from. It defaults to
 the Windows default output, which is convenient right up to the moment that
 default changes: the recorder binds the endpoint it saw when capture started and
 keeps that device for the life of the pipeline, so a headset connecting

@@ -55,14 +55,6 @@ pub fn write_mp4<'a>(
         && packets
             .iter()
             .any(|packet| packet.track == TrackKind::Audio);
-    let has_desktop_audio = audio_media_type.is_some()
-        && packets
-            .iter()
-            .any(|packet| packet.track == TrackKind::DesktopAudio);
-    let has_microphone_audio = audio_media_type.is_some()
-        && packets
-            .iter()
-            .any(|packet| packet.track == TrackKind::MicrophoneAudio);
     let mut attributes = None;
     unsafe { MFCreateAttributes(&mut attributes, 1) }.map_err(initialization_error)?;
     let attributes = attributes.ok_or_else(|| {
@@ -96,24 +88,6 @@ pub fn write_mp4<'a>(
     } else {
         None
     };
-    let desktop_audio_stream = if has_desktop_audio {
-        let media_type = audio_media_type.expect("audio media type checked");
-        let stream = unsafe { writer.AddStream(media_type) }.map_err(initialization_error)?;
-        unsafe { writer.SetInputMediaType(stream, media_type, None::<&IMFAttributes>) }
-            .map_err(initialization_error)?;
-        Some(stream)
-    } else {
-        None
-    };
-    let microphone_audio_stream = if has_microphone_audio {
-        let media_type = audio_media_type.expect("audio media type checked");
-        let stream = unsafe { writer.AddStream(media_type) }.map_err(initialization_error)?;
-        unsafe { writer.SetInputMediaType(stream, media_type, None::<&IMFAttributes>) }
-            .map_err(initialization_error)?;
-        Some(stream)
-    } else {
-        None
-    };
     unsafe { writer.BeginWriting() }.map_err(initialization_error)?;
 
     let durations = presented_durations(&packets);
@@ -122,18 +96,6 @@ pub fn write_mp4<'a>(
             TrackKind::Video => video_stream,
             TrackKind::Audio => {
                 let Some(stream) = audio_stream else {
-                    continue;
-                };
-                stream
-            }
-            TrackKind::DesktopAudio => {
-                let Some(stream) = desktop_audio_stream else {
-                    continue;
-                };
-                stream
-            }
-            TrackKind::MicrophoneAudio => {
-                let Some(stream) = microphone_audio_stream else {
                     continue;
                 };
                 stream
@@ -184,14 +146,10 @@ fn presented_durations(packets: &[&EncodedPacket]) -> Vec<std::time::Duration> {
     let mut durations = vec![std::time::Duration::ZERO; packets.len()];
     let mut next_video: Option<std::time::Duration> = None;
     let mut next_audio: Option<std::time::Duration> = None;
-    let mut next_desktop_audio: Option<std::time::Duration> = None;
-    let mut next_microphone_audio: Option<std::time::Duration> = None;
     for (index, packet) in packets.iter().enumerate().rev() {
         let next = match packet.track {
             TrackKind::Video => next_video,
             TrackKind::Audio => next_audio,
-            TrackKind::DesktopAudio => next_desktop_audio,
-            TrackKind::MicrophoneAudio => next_microphone_audio,
         };
         durations[index] = next
             .and_then(|next| next.checked_sub(packet.timestamp))
@@ -200,8 +158,6 @@ fn presented_durations(packets: &[&EncodedPacket]) -> Vec<std::time::Duration> {
         match packet.track {
             TrackKind::Video => next_video = Some(packet.timestamp),
             TrackKind::Audio => next_audio = Some(packet.timestamp),
-            TrackKind::DesktopAudio => next_desktop_audio = Some(packet.timestamp),
-            TrackKind::MicrophoneAudio => next_microphone_audio = Some(packet.timestamp),
         }
     }
     durations
@@ -212,8 +168,6 @@ fn track_order(track: TrackKind) -> u8 {
     match track {
         TrackKind::Video => 0,
         TrackKind::Audio => 1,
-        TrackKind::DesktopAudio => 2,
-        TrackKind::MicrophoneAudio => 3,
     }
 }
 
@@ -359,45 +313,29 @@ mod tests {
         }
     }
 
+    /// A clip carries exactly one audio track. Extra stems made ordinary
+    /// players pick an arbitrary one, which is how clips ended up silent.
     #[test]
-    fn separate_audio_tracks_keep_independent_timelines_and_stable_order() {
+    fn a_clip_carries_a_single_audio_track() {
         let packets = [
-            packet(TrackKind::MicrophoneAudio, 100),
-            packet(TrackKind::DesktopAudio, 0),
             packet(TrackKind::Audio, 100),
             packet(TrackKind::Video, 100),
-            packet(TrackKind::MicrophoneAudio, 0),
-            packet(TrackKind::DesktopAudio, 100),
             packet(TrackKind::Audio, 0),
             packet(TrackKind::Video, 0),
         ];
         let ordered = ordered_packets(packets.iter());
-        let durations = presented_durations(&ordered);
 
         assert_eq!(
             ordered
                 .iter()
-                .take(4)
                 .map(|packet| packet.track)
                 .collect::<Vec<_>>(),
             vec![
                 TrackKind::Video,
                 TrackKind::Audio,
-                TrackKind::DesktopAudio,
-                TrackKind::MicrophoneAudio,
+                TrackKind::Video,
+                TrackKind::Audio,
             ]
-        );
-        assert!(
-            durations
-                .iter()
-                .take(4)
-                .all(|duration| *duration == std::time::Duration::from_millis(100))
-        );
-        assert!(
-            durations
-                .iter()
-                .skip(4)
-                .all(|duration| *duration == std::time::Duration::from_millis(10))
         );
     }
 

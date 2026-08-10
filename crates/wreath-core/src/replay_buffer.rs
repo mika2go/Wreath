@@ -4,10 +4,15 @@ use std::time::Duration;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackKind {
     Video,
-    /// Compatibility mix played by ordinary media players.
+    /// The single mix of everything Wreath records.
+    ///
+    /// Desktop and microphone used to be muxed as their own extra tracks
+    /// alongside this one, on the theory that separate stems are worth having.
+    /// In practice a clip with three audio tracks plays as one arbitrary track
+    /// in whatever the viewer happens to use, so people ended up with clips
+    /// that had no sound at all - the failure the extra tracks caused was far
+    /// worse than the editing convenience they offered.
     Audio,
-    DesktopAudio,
-    MicrophoneAudio,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

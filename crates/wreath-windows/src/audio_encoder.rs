@@ -217,20 +217,12 @@ fn fade_in(data: &mut [u8], frames: u32, channels: u16, sample_rate: u32) {
 pub struct AacEncoder {
     transform: windows::Win32::Media::MediaFoundation::IMFTransform,
     settings: AudioEncoderSettings,
-    track: wreath_core::replay_buffer::TrackKind,
     timeline: EncoderTimeline,
 }
 
 #[cfg(target_os = "windows")]
 impl AacEncoder {
     pub fn initialize(settings: AudioEncoderSettings) -> Result<Self, AudioError> {
-        Self::initialize_for_track(settings, wreath_core::replay_buffer::TrackKind::Audio)
-    }
-
-    pub fn initialize_for_track(
-        settings: AudioEncoderSettings,
-        track: wreath_core::replay_buffer::TrackKind,
-    ) -> Result<Self, AudioError> {
         use windows::Win32::Media::MediaFoundation::{
             AACMFTEncoder, IMFTransform, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
             MFT_MESSAGE_NOTIFY_START_OF_STREAM,
@@ -252,7 +244,6 @@ impl AacEncoder {
         Ok(Self {
             transform,
             settings,
-            track,
             timeline: EncoderTimeline::default(),
         })
     }
@@ -450,7 +441,7 @@ impl AacEncoder {
             .unwrap_or(default_duration)
             .max(0) as u64;
         Ok(Some(wreath_core::replay_buffer::EncodedPacket {
-            track: self.track,
+            track: wreath_core::replay_buffer::TrackKind::Audio,
             timestamp: Duration::from_nanos(timestamp_hns.saturating_mul(100)),
             duration: Duration::from_nanos(duration_hns.saturating_mul(100)),
             keyframe: false,
