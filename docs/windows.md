@@ -62,6 +62,14 @@ error anywhere. Picking the device explicitly is immune to that. A pinned device
 that is asleep, disabled or gone falls back to the Windows default rather than
 failing the recording, and says so in the log.
 
+Both capture streams poll their endpoint rather than waiting on WASAPI's
+event callback. Loopback capture used to be event driven, which is where desktop
+audio went missing entirely: Microsoft documents that for a loopback stream
+`Initialize` and `SetEventHandle` succeed but the event is raised only for
+streams Windows considers active — and never at all before Windows 10 — so the
+capture thread waited forever and the clip got no audio track, with no failure
+reported anywhere.
+
 Wreath briefly offered to filter one application
 out of that mix through Windows' process-loopback device; it is gone. The
 filtered stream depends on a process tree that changes under the recorder, and
@@ -148,9 +156,12 @@ Wreath appends capture diagnostics to `%LOCALAPPDATA%\Wreath\wreath.log`: the
 name and format of the endpoint each stream negotiated — compare the desktop one
 against the device Windows is actually playing through when a clip comes out
 silent — which Windows audio effects the driver still applies, the encoder's
-input and output format, and a periodic health
-line with the endpoint's clock offset plus discontinuity, timestamp-error,
-queue-drop and resynchronization counters. The tray and player are linked for
+input and output format, and a ten-second health line with the packet count, how
+many of those carried silence, the endpoint's clock offset, and discontinuity,
+timestamp-error, queue-drop and resynchronization counters. That line is written
+on a timer rather than per packet, so `packets=0` stays visible: an endpoint that
+hands over nothing at all is a different fault from one that hands over silence.
+The tray and player are linked for
 the GUI subsystem and have no console, so this file is the only place those
 numbers appear. Attach it when reporting an audio problem. It is restarted once
 it passes 1 MB.

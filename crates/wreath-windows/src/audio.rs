@@ -145,8 +145,18 @@ fn integer_to_i16(sample: &[u8]) -> i16 {
     }
 }
 
-/// Event-driven WASAPI loopback capture. Its queue is intentionally bounded;
-/// lagging consumers lose old capture callbacks instead of growing memory.
+/// Timer-driven WASAPI loopback capture. Its queue is intentionally bounded;
+/// lagging consumers lose old capture packets instead of growing memory.
+///
+/// This used to be event driven, which is where desktop audio went missing.
+/// Microsoft documents the caveat plainly: for a loopback stream initialized
+/// with `AUDCLNT_STREAMFLAGS_EVENTCALLBACK`, `Initialize` and `SetEventHandle`
+/// both succeed, but before Windows 10 the event is never raised at all, and
+/// from Windows 10 on it is raised only for "loopback-enabled streams that are
+/// active". A stream that never gets its event never reads a packet, so the
+/// clip ends up with no desktop audio and nothing anywhere reports a failure.
+/// Polling the endpoint is what the microphone already does, and it cannot be
+/// starved by whether Windows considers the render endpoint active.
 #[cfg(target_os = "windows")]
 pub struct LoopbackCapture {
     stream: CaptureStream,
@@ -391,7 +401,7 @@ fn capture_loop(
     sender: crossbeam_channel::Sender<PcmChunk>,
     ready: &std::sync::mpsc::SyncSender<Result<AudioFormat, AudioError>>,
 ) -> Result<(), AudioError> {
-    use windows::Win32::Foundation::{CloseHandle, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
     use windows::Win32::Media::Audio::{
         IAudioCaptureClient, IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eConsole,
     };
@@ -399,8 +409,7 @@ fn capture_loop(
         CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
     };
     use windows::Win32::System::Threading::{
-        AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, CreateEventW, INFINITE,
-        WaitForMultipleObjects, WaitForSingleObject,
+        AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, WaitForSingleObject,
     };
 
     const MICROPHONE_BUFFER_DURATION_HNS: i64 = 2_000_000;
@@ -418,7 +427,9 @@ fn capture_loop(
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
                 .map_err(|error| AudioError(error.to_string()))?;
         let mut device_label = String::from("unknown device");
-        let (client, format, device_period_hns, format_mode, timer_driven) = match endpoint {
+        let microphone = matches!(endpoint, CaptureEndpoint::Microphone { .. });
+        let endpoint_name = if microphone { "microphone" } else { "desktop" };
+        let (client, format, device_period_hns, format_mode) = match endpoint {
             CaptureEndpoint::Loopback { endpoint_id } => {
                 let (name, client, format, period, mode) =
                     open_loopback_endpoint(&enumerator, endpoint_id.as_deref())?;
@@ -426,7 +437,7 @@ fn capture_loop(
                 // in my clips" and "Windows is playing that sound somewhere
                 // else".
                 device_label = name;
-                (client, format, period, mode, false)
+                (client, format, period, mode)
             }
             CaptureEndpoint::Microphone {
                 endpoint_id: Some(endpoint_id),
@@ -448,7 +459,7 @@ fn capture_loop(
                 }
                 let (client, format, period, mode) =
                     initialize_capture_client(&device, 0, MICROPHONE_BUFFER_DURATION_HNS, true)?;
-                (client, format, period, mode, true)
+                (client, format, period, mode)
             }
             CaptureEndpoint::Microphone { endpoint_id: None } => {
                 let device = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }
@@ -458,13 +469,8 @@ fn capture_loop(
                 }
                 let (client, format, period, mode) =
                     initialize_capture_client(&device, 0, MICROPHONE_BUFFER_DURATION_HNS, true)?;
-                (client, format, period, mode, true)
+                (client, format, period, mode)
             }
-        };
-        let endpoint_name = if timer_driven {
-            "microphone"
-        } else {
-            "desktop"
         };
         let endpoint_buffer_frames = unsafe { client.GetBufferSize() }.unwrap_or_default();
         wreath_core::diagnostic!(
@@ -474,66 +480,31 @@ fn capture_loop(
             format.bits_per_sample,
             endpoint_buffer_frames
         );
-        if timer_driven {
+        if microphone {
             log_audio_effects(&client);
         }
-        let audio_event = if timer_driven {
-            None
-        } else {
-            let event = unsafe { CreateEventW(None, false, false, None) }
-                .map_err(|error| AudioError(error.to_string()))?;
-            unsafe { client.SetEventHandle(event) }
-                .map_err(|error| AudioError(error.to_string()))?;
-            Some(event)
-        };
         let capture: IAudioCaptureClient =
             unsafe { client.GetService() }.map_err(|error| AudioError(error.to_string()))?;
         unsafe { client.Start() }.map_err(|error| AudioError(error.to_string()))?;
         if ready.send(Ok(format)).is_err() {
             let _ = unsafe { client.Stop() };
-            if let Some(audio_event) = audio_event {
-                let _ = unsafe { CloseHandle(audio_event) };
-            }
             return Ok(());
         }
 
         let mut clock = CapturePacketClock::default();
         let mut dropped_packet = false;
         let mut diagnostics = CaptureDiagnostics::new(endpoint_name, device_label);
-        if timer_driven {
-            let poll_interval_ms = capture_poll_interval_ms(device_period_hns);
-            loop {
-                let wait = unsafe { WaitForSingleObject(stop_event, poll_interval_ms) };
-                if wait == WAIT_FAILED {
-                    let _ = unsafe { client.Stop() };
-                    return Err(AudioError(std::io::Error::last_os_error().to_string()));
-                }
-                if wait == WAIT_OBJECT_0 {
-                    break;
-                }
-                if wait == WAIT_TIMEOUT {
-                    read_available_packets(
-                        &capture,
-                        format,
-                        &sender,
-                        &mut clock,
-                        &mut dropped_packet,
-                        &mut diagnostics,
-                    )?;
-                }
+        let poll_interval_ms = capture_poll_interval_ms(device_period_hns);
+        loop {
+            let wait = unsafe { WaitForSingleObject(stop_event, poll_interval_ms) };
+            if wait == WAIT_FAILED {
+                let _ = unsafe { client.Stop() };
+                return Err(AudioError(std::io::Error::last_os_error().to_string()));
             }
-        } else if let Some(audio_event) = audio_event {
-            let handles = [audio_event, stop_event];
-            loop {
-                let wait = unsafe { WaitForMultipleObjects(&handles, false, INFINITE) };
-                if wait == WAIT_FAILED {
-                    let _ = unsafe { client.Stop() };
-                    let _ = unsafe { CloseHandle(audio_event) };
-                    return Err(AudioError(std::io::Error::last_os_error().to_string()));
-                }
-                if wait.0 == WAIT_OBJECT_0.0 + 1 {
-                    break;
-                }
+            if wait == WAIT_OBJECT_0 {
+                break;
+            }
+            if wait == WAIT_TIMEOUT {
                 read_available_packets(
                     &capture,
                     format,
@@ -542,12 +513,10 @@ fn capture_loop(
                     &mut dropped_packet,
                     &mut diagnostics,
                 )?;
+                diagnostics.heartbeat();
             }
         }
         let _ = unsafe { client.Stop() };
-        if let Some(audio_event) = audio_event {
-            let _ = unsafe { CloseHandle(audio_event) };
-        }
         Ok(())
     })();
     if let Some(mmcss) = mmcss {
@@ -556,6 +525,14 @@ fn capture_loop(
     unsafe { CoUninitialize() };
     result
 }
+
+/// Endpoint buffer the loopback stream asks for.
+///
+/// Loopback capture is polled rather than event driven, so the buffer has to
+/// cover more than one poll interval. The same 200 ms the microphone asks for
+/// leaves room for a scheduler hiccup without holding meaningful memory.
+#[cfg(target_os = "windows")]
+const LOOPBACK_BUFFER_DURATION_HNS: i64 = 2_000_000;
 
 /// A ready loopback stream: the endpoint's friendly name, its client, the
 /// negotiated format, the device period, and which format rung it landed on.
@@ -585,17 +562,17 @@ fn open_loopback_endpoint(
     enumerator: &windows::Win32::Media::Audio::IMMDeviceEnumerator,
     endpoint_id: Option<&str>,
 ) -> Result<OpenedLoopback, AudioError> {
-    use windows::Win32::Media::Audio::{
-        AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, eConsole, eRender,
-    };
-
-    const FLAGS: u32 = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+    use windows::Win32::Media::Audio::{AUDCLNT_STREAMFLAGS_LOOPBACK, eConsole, eRender};
 
     let open =
         |device: &windows::Win32::Media::Audio::IMMDevice| -> Result<OpenedLoopback, AudioError> {
             let name = device_name(device).unwrap_or_else(|_| "unknown device".into());
-            let (client, format, period, mode) =
-                initialize_capture_client(device, FLAGS, 0, false)?;
+            let (client, format, period, mode) = initialize_capture_client(
+                device,
+                AUDCLNT_STREAMFLAGS_LOOPBACK,
+                LOOPBACK_BUFFER_DURATION_HNS,
+                false,
+            )?;
             Ok((name, client, format, period, mode))
         };
 
@@ -1007,13 +984,24 @@ struct CaptureDiagnostics {
     resynchronizations: u64,
     packets: u64,
     silent_packets: u64,
+    consecutive_silent: u64,
     reported_silence: bool,
+    last_sample_clock: std::time::Duration,
+    last_wall_clock: std::time::Duration,
+    last_heartbeat: std::time::Instant,
 }
 
 #[cfg(target_os = "windows")]
 impl CaptureDiagnostics {
     /// Roughly ten seconds of packets at a typical endpoint period.
     const HEARTBEAT_PACKETS: u64 = 1_024;
+    /// How often the health line is written.
+    ///
+    /// This used to count packets instead of seconds, which meant the line
+    /// disappeared in exactly the situation worth reporting: an endpoint that
+    /// delivers nothing at all never reaches a packet count, so the log went
+    /// quiet rather than saying `packets=0`.
+    const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
     fn new(endpoint: &'static str, device: String) -> Self {
         Self {
@@ -1025,7 +1013,11 @@ impl CaptureDiagnostics {
             resynchronizations: 0,
             packets: 0,
             silent_packets: 0,
+            consecutive_silent: 0,
             reported_silence: false,
+            last_sample_clock: std::time::Duration::ZERO,
+            last_wall_clock: std::time::Duration::ZERO,
+            last_heartbeat: std::time::Instant::now(),
         }
     }
 
@@ -1057,9 +1049,6 @@ impl CaptureDiagnostics {
         );
     }
 
-    /// Periodic proof of how far the endpoint's own frame count has walked
-    /// away from the wall clock. A healthy endpoint stays within a few
-    /// milliseconds; anything larger points at dropped or duplicated packets.
     fn packet(
         &mut self,
         sample_clock: std::time::Duration,
@@ -1067,40 +1056,62 @@ impl CaptureDiagnostics {
         silent: bool,
     ) {
         self.packets = self.packets.saturating_add(1);
+        self.last_sample_clock = sample_clock;
+        self.last_wall_clock = wall_clock;
         if silent {
             self.silent_packets = self.silent_packets.saturating_add(1);
+            self.consecutive_silent = self.consecutive_silent.saturating_add(1);
+        } else {
+            self.consecutive_silent = 0;
+            // Audio came back, so a later silence is worth reporting again.
+            self.reported_silence = false;
         }
         // An endpoint that is running but carries nothing looks exactly like a
-        // healthy one in a packet count. Windows flags those buffers, so say
-        // it plainly instead: a recording with no game sound is almost always
-        // sound playing through a different device than this one.
-        if !self.reported_silence
-            && self.packets >= Self::HEARTBEAT_PACKETS
-            && self.silent_packets == self.packets
-        {
+        // healthy one in a packet count. Windows flags those buffers, so say it
+        // plainly instead: a recording with no game sound is almost always
+        // sound playing through a different device than this one. The run has
+        // to be long, because a quiet moment is not a fault.
+        if !self.reported_silence && self.consecutive_silent >= Self::HEARTBEAT_PACKETS {
             self.reported_silence = true;
             wreath_core::diagnostic!(
-                "Wreath {} capture: {} has delivered only silence so far; check that Windows plays sound through this device",
+                "Wreath {} capture: {} has delivered nothing but silence for the last {} packets; check that Windows plays sound through this device",
                 self.endpoint,
-                self.device
+                self.device,
+                self.consecutive_silent
             );
         }
-        if self.packets % Self::HEARTBEAT_PACKETS == 0 {
-            let endpoint = self.endpoint;
-            let packets = self.packets;
-            let behind = wall_clock.saturating_sub(sample_clock).as_micros();
-            let ahead = sample_clock.saturating_sub(wall_clock).as_micros();
-            wreath_core::diagnostic!(
-                "Wreath {endpoint} capture health: packets={packets} ({} silent), sample clock {}{} us from the wall clock, discontinuities={}, timestamp errors={}, queue drops={}, resyncs={}",
-                self.silent_packets,
-                if ahead > 0 { "+" } else { "-" },
-                if ahead > 0 { ahead } else { behind },
-                self.discontinuities,
-                self.timestamp_errors,
-                self.queue_drops,
-                self.resynchronizations
-            );
+    }
+
+    /// Periodic proof that the endpoint is delivering, and of how far its own
+    /// frame count has walked away from the wall clock. A healthy endpoint
+    /// stays within a few milliseconds; anything larger points at dropped or
+    /// duplicated packets. `packets=0` here means the endpoint handed over
+    /// nothing at all, which is a different fault from silence.
+    fn heartbeat(&mut self) {
+        if self.last_heartbeat.elapsed() < Self::HEARTBEAT_INTERVAL {
+            return;
         }
+        self.last_heartbeat = std::time::Instant::now();
+        let endpoint = self.endpoint;
+        let packets = self.packets;
+        let behind = self
+            .last_wall_clock
+            .saturating_sub(self.last_sample_clock)
+            .as_micros();
+        let ahead = self
+            .last_sample_clock
+            .saturating_sub(self.last_wall_clock)
+            .as_micros();
+        wreath_core::diagnostic!(
+            "Wreath {endpoint} capture health: packets={packets} ({} silent), sample clock {}{} us from the wall clock, discontinuities={}, timestamp errors={}, queue drops={}, resyncs={}",
+            self.silent_packets,
+            if ahead > 0 { "+" } else { "-" },
+            if ahead > 0 { ahead } else { behind },
+            self.discontinuities,
+            self.timestamp_errors,
+            self.queue_drops,
+            self.resynchronizations
+        );
     }
 
     fn record(endpoint: &str, label: &str, counter: &mut u64) {
