@@ -63,6 +63,8 @@ const SETTINGS_ROW_GAP: f32 = 12.0;
 const HOME_GIRL_ASPECT_RATIO: f32 = 1206.0 / 1693.0;
 const HOME_GIRL_BOTTOM_OVERFLOW: f32 = 70.0;
 const HOME_GIRL_PNG: &[u8] = include_bytes!("../../../assets/wreath-home-girl.png");
+const SETTINGS_STICKER_ASPECT_RATIO: f32 = 577.0 / 433.0;
+const SETTINGS_STICKER_PNG: &[u8] = include_bytes!("../../../assets/wreath-settings-67.png");
 
 fn settings_row_top(index: usize) -> f32 {
     SETTINGS_ROW_TOP + index as f32 * (SETTINGS_ROW_HEIGHT + SETTINGS_ROW_GAP)
@@ -303,6 +305,35 @@ fn home_girl_layout(
     (destination, text_right)
 }
 
+/// Places the settings sticker in the bottom-right corner of the page.
+///
+/// It lives entirely below the last settings row and inside the content
+/// margins, and it is dropped rather than shrunk to nothing when a short window
+/// leaves no room, so it can never crowd a control.
+fn settings_sticker_layout(left: f32, right: f32, height: f32) -> Option<LogicalRect> {
+    const MINIMUM_HEIGHT: f32 = 96.0;
+    const MAXIMUM_HEIGHT: f32 = 190.0;
+    const BOTTOM_MARGIN: f32 = 16.0;
+
+    let top_limit = settings_row_top(2) + SETTINGS_ROW_HEIGHT + 20.0;
+    let available_height = height - BOTTOM_MARGIN - top_limit;
+    let available_width = (right - left) * 0.42;
+    let sticker_height = available_height
+        .min(MAXIMUM_HEIGHT)
+        .min(available_width / SETTINGS_STICKER_ASPECT_RATIO);
+    if sticker_height < MINIMUM_HEIGHT {
+        return None;
+    }
+    let sticker_width = sticker_height * SETTINGS_STICKER_ASPECT_RATIO;
+    let bottom = height - BOTTOM_MARGIN;
+    Some(rect(
+        right - sticker_width,
+        bottom - sticker_height,
+        right,
+        bottom,
+    ))
+}
+
 #[derive(Clone)]
 struct HitRegion {
     rect: LogicalRect,
@@ -325,6 +356,7 @@ pub struct Renderer {
     hits: Vec<HitRegion>,
     wic_factory: IWICImagingFactory,
     home_girl: Option<ID2D1Bitmap>,
+    settings_sticker: Option<ID2D1Bitmap>,
     thumbnails: HashMap<PathBuf, ID2D1Bitmap>,
     /// Least recently drawn first, so the cache can be bounded.
     thumbnail_order: VecDeque<PathBuf>,
@@ -443,6 +475,7 @@ impl Renderer {
             hits: Vec::new(),
             wic_factory,
             home_girl: None,
+            settings_sticker: None,
             thumbnails: HashMap::new(),
             thumbnail_order: VecDeque::new(),
             unavailable_thumbnails: HashSet::new(),
@@ -475,6 +508,7 @@ impl Renderer {
     /// target is being rebuilt. They are decoded again on the next paint.
     pub fn release_cached_images(&mut self) {
         self.home_girl = None;
+        self.settings_sticker = None;
         self.thumbnails.clear();
         self.thumbnail_order.clear();
     }
@@ -1375,7 +1409,7 @@ impl Renderer {
         model: &UiModel,
         left: f32,
         right: f32,
-        _height: f32,
+        height: f32,
     ) -> Result<(), String> {
         self.page_heading(
             "Settings",
@@ -1661,6 +1695,9 @@ impl Renderer {
                     SettingControl::Dropdown,
                 )?;
             }
+        }
+        if let Some(sticker) = settings_sticker_layout(left, right, height) {
+            self.draw_settings_sticker(sticker)?;
         }
         self.pill(
             rect(right - 160.0, 205.0, right, 249.0),
@@ -3369,6 +3406,27 @@ impl Renderer {
         Ok(())
     }
 
+    fn draw_settings_sticker(&mut self, destination: LogicalRect) -> Result<(), String> {
+        if self.settings_sticker.is_none() {
+            self.settings_sticker = Some(self.load_embedded_png(SETTINGS_STICKER_PNG)?);
+        }
+        let bitmap = self
+            .settings_sticker
+            .as_ref()
+            .expect("settings sticker was loaded");
+        let target = self.target.as_ref().expect("render target exists");
+        unsafe {
+            target.DrawBitmap(
+                bitmap,
+                Some(&destination.d2d()),
+                1.0,
+                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                None,
+            );
+        }
+        Ok(())
+    }
+
     fn load_embedded_png(&self, bytes: &[u8]) -> Result<ID2D1Bitmap, String> {
         let stream =
             unsafe { self.wic_factory.CreateStream() }.map_err(|error| error.to_string())?;
@@ -3573,7 +3631,10 @@ fn hotkey_capture_label(modifiers: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_bytes, format_storage_limit, home_girl_layout};
+    use super::{
+        SETTINGS_ROW_HEIGHT, format_bytes, format_storage_limit, home_girl_layout,
+        settings_row_top, settings_sticker_layout,
+    };
 
     #[test]
     fn storage_sizes_use_only_mb_and_gb_labels() {
@@ -3599,5 +3660,21 @@ mod tests {
         assert_eq!(compact_girl.bottom, 691.0);
         assert!(compact_content_right <= compact_girl.left - 18.0);
         assert!(compact_content_right - 100.0 >= 420.0);
+    }
+
+    /// The sticker is decoration, so it stays below the last settings row and
+    /// inside the content margins, and it disappears rather than overlap a
+    /// control when the window is short.
+    #[test]
+    fn the_settings_sticker_never_reaches_the_controls() {
+        let rows_bottom = settings_row_top(2) + SETTINGS_ROW_HEIGHT;
+
+        let sticker = settings_sticker_layout(136.0, 1_376.0, 853.0).expect("room at this size");
+        assert!(sticker.top > rows_bottom);
+        assert_eq!(sticker.right, 1_376.0);
+        assert!(sticker.bottom < 853.0);
+        assert!(sticker.left > 136.0);
+
+        assert!(settings_sticker_layout(136.0, 1_376.0, 620.0).is_none());
     }
 }
