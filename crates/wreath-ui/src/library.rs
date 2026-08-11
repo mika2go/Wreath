@@ -75,8 +75,7 @@ impl ClipViews {
     }
 
     pub fn refresh(&self) {
-        // The directory monitor handles normal updates; navigation also calls this
-        // so changes inside nested collection directories appear immediately.
+        // Navigation also calls this, so nested collection changes appear at once.
         self.refresh.emit_clicked();
     }
 }

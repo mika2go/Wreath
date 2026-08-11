@@ -4,14 +4,8 @@ use std::time::Duration;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackKind {
     Video,
-    /// The single mix of everything Wreath records.
-    ///
-    /// Desktop and microphone used to be muxed as their own extra tracks
-    /// alongside this one, on the theory that separate stems are worth having.
-    /// In practice a clip with three audio tracks plays as one arbitrary track
-    /// in whatever the viewer happens to use, so people ended up with clips
-    /// that had no sound at all - the failure the extra tracks caused was far
-    /// worse than the editing convenience they offered.
+    /// The single mix of everything Wreath records. Separate stems made viewers
+    /// pick one arbitrary track, which is how clips ended up silent.
     Audio,
 }
 
@@ -34,12 +28,9 @@ impl EncodedPacket {
     }
 }
 
-/// Keeps encoded media in memory without ever exceeding its payload budget.
-///
-/// The front of a non-empty buffer is always a video keyframe. Duration
-/// trimming advances by whole groups of pictures, so a saved clip never starts
-/// with undecodable delta frames. A single long GOP may temporarily exceed the
-/// duration target, but never the byte budget.
+/// The front of a non-empty buffer is always a video keyframe, so trimming
+/// advances by whole groups of pictures. A long GOP may exceed the duration
+/// target, never the byte budget.
 #[derive(Debug)]
 pub struct EncodedReplayBuffer {
     packets: VecDeque<EncodedPacket>,
@@ -88,8 +79,7 @@ impl EncodedReplayBuffer {
         self.packets.iter()
     }
 
-    /// Takes a cheap immutable view for asynchronous muxing. Encoded payloads
-    /// are reference-counted, so saving does not copy the replay's video data.
+    /// Payloads are reference-counted, so saving does not copy the video data.
     pub fn snapshot(&self) -> Vec<EncodedPacket> {
         self.packets.iter().cloned().collect()
     }
@@ -98,16 +88,9 @@ impl EncodedReplayBuffer {
         self.payload_bytes
     }
 
-    /// Span of video the buffer holds, which is what decides how long a saved
-    /// clip is.
-    ///
-    /// This used to take the first and last packet in push order regardless of
-    /// track. Audio reaches the buffer well behind video - the AAC encoder
-    /// buffers, and desktop packets wait for the microphone to catch up - so
-    /// the last packet pushed is usually audio lagging the newest frame, and
-    /// the span came out short. Trimming then kept more than it should, the
-    /// byte budget became the binding constraint instead of the duration, and
-    /// clips ended up shorter than they were configured to be.
+    /// Video only, because it decides the saved clip length. Audio reaches the
+    /// buffer behind video, so measuring across both tracks made the span look
+    /// short and let the byte budget decide the length instead.
     pub fn duration(&self) -> Duration {
         let first = self
             .packets
@@ -128,8 +111,7 @@ impl EncodedReplayBuffer {
         self.packets.is_empty()
     }
 
-    /// Starts a new capture epoch without changing the configured limits.
-    /// This is used after timestamp discontinuities such as pause/resume.
+    /// Used after timestamp discontinuities such as pause/resume.
     pub fn reset(&mut self) {
         self.clear();
     }
@@ -146,8 +128,7 @@ impl EncodedReplayBuffer {
             }
         }
         if trimmed {
-            // This shortens the saved clip below its configured duration, so
-            // it must not happen quietly.
+            // This shortens the clip below its configured duration, so say it.
             self.byte_trims = self.byte_trims.saturating_add(1);
             if self.byte_trims.is_power_of_two() {
                 let seconds = self.duration().as_secs();
@@ -160,11 +141,8 @@ impl EncodedReplayBuffer {
         }
     }
 
-    /// Trimming advances by whole groups of pictures, and dropping one could
-    /// take the buffer well under the requested duration - a 30 second replay
-    /// came out at 24 because the encoder's real group length is several
-    /// seconds. A group is only dropped while what remains still covers the
-    /// target, so a saved clip is never shorter than it was configured to be.
+    /// A group is dropped only while what remains still covers the target;
+    /// dropping one unconditionally took a 30 second replay down to 24.
     fn trim_to_duration(&mut self) {
         while self.duration() > self.target_duration {
             match self.duration_without_leading_group() {
@@ -278,13 +256,8 @@ mod tests {
         assert_eq!(buffer.duration(), Duration::from_secs(2));
     }
 
-    /// A saved clip has to be at least as long as it was configured to be. The
-    /// trimmer used to drop a whole group of pictures whenever the buffer sat
-    /// over the target, which took a 30 second replay down to 24.
-    /// Audio reaches the buffer behind video, so the last packet pushed is
-    /// usually audio lagging the newest frame. Measuring the span across both
-    /// tracks made the buffer look shorter than it was, which under-trimmed it
-    /// and let the byte budget decide the clip length instead.
+    /// Measuring the span across both tracks made the buffer look shorter than it
+    /// was, which under-trimmed it and let the byte budget decide the length.
     #[test]
     fn the_span_follows_video_even_when_audio_lags_behind() {
         let mut buffer = EncodedReplayBuffer::new(Duration::from_secs(30), 1_000_000).unwrap();
@@ -307,8 +280,7 @@ mod tests {
         buffer.push(video(2, true, 10));
         buffer.push(video(3, false, 10));
 
-        // Advancing to the keyframe at two seconds would leave only two, so the
-        // buffer keeps the longer span instead.
+        // Advancing to the keyframe at two seconds would leave only two.
         assert_eq!(buffer.packets().next().unwrap().timestamp, Duration::ZERO);
         assert!(buffer.duration() >= Duration::from_secs(3));
     }

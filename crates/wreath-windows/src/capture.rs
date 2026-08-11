@@ -32,10 +32,8 @@ pub struct CaptureInfo {
     pub height: u32,
 }
 
-/// A Windows Graphics Capture session with a two-frame handoff queue.
-///
-/// When the encoder is busy, new frames are dropped instead of growing a queue
-/// and consuming progressively more GPU memory.
+/// Two-frame handoff queue: when the encoder is busy, frames are dropped rather
+/// than queued into growing GPU memory.
 #[cfg(target_os = "windows")]
 pub struct MonitorCapture {
     frame_pool: Direct3D11CaptureFramePool,
@@ -92,9 +90,8 @@ impl MonitorCapture {
         let session = frame_pool
             .CreateCaptureSession(&item)
             .map_err(initialization_error)?;
-        // Windows Graphics Capture draws a colored monitor outline by default.
-        // Disable it before the session starts; older Windows builds that do not
-        // expose IGraphicsCaptureSession2 keep working with their default.
+        // Drop the colored monitor outline. Builds without IGraphicsCaptureSession2
+        // keep their default.
         let _ = session.SetIsBorderRequired(false);
         session
             .SetIsCursorCaptureEnabled(capture_cursor)

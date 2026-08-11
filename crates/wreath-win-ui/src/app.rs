@@ -305,8 +305,7 @@ fn run_initialized() -> Result<(), String> {
             }
         }
         (*state).dpi = GetDpiForWindow(window).max(96);
-        // Keep the native playhead visually continuous without tying playback
-        // timing to paint events. Media Foundation remains the source of truth.
+        // Visual continuity only; Media Foundation stays the source of truth.
         let _ = SetTimer(Some(window), PLAYER_TIMER, 33, None);
     }
     unsafe {
@@ -369,8 +368,7 @@ unsafe extern "system" fn window_proc(
         WM_SIZE => {
             if let Some(state) = state_mut(window) {
                 if wparam.0 as u32 == SIZE_MINIMIZED {
-                    // Nothing is on screen, so the decoded thumbnails are pure
-                    // footprint until the window comes back.
+                    // Decoded thumbnails are pure footprint while nothing is shown.
                     state.renderer.release_cached_images();
                     return LRESULT(0);
                 }
@@ -1591,9 +1589,7 @@ fn confirm_delete(model: &mut UiModel) {
 }
 
 fn open_current_clip(state: &mut AppState) {
-    // Never display a position or duration that belongs to the media item we
-    // just left. The new values arrive from Media Foundation after it has
-    // resolved the current (possibly replaced) file.
+    // Never show a position or duration belonging to the media item just left.
     state.model.reset_player_state();
     update_player_window(state);
     let Some(path) = state.model.active_clip().map(|clip| clip.path.clone()) else {
@@ -2084,9 +2080,8 @@ fn track_fullscreen_cursor(state: &mut AppState) {
         state.fullscreen_primary_button_down = false;
         return;
     }
-    // Media Foundation renders into its own child window, which can consume a
-    // click before either Wreath window receives WM_LBUTTONDOWN. Polling the
-    // physical button edge keeps the controls responsive over the video too.
+    // Media Foundation's child window can swallow WM_LBUTTONDOWN, so the physical
+    // button edge is polled to keep the controls responsive over the video.
     let button_state = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) };
     let primary_down = button_state < 0;
     let clicked_since_last_poll = (button_state as u16 & 0x0001) != 0;
@@ -2484,9 +2479,8 @@ fn choose_microphone_gain(model: &mut UiModel) {
     open_choice_menu(model, SettingsMenuKind::MicrophoneGain, labels, current);
 }
 
-/// Lets the recording follow the Windows default output or stay pinned to one
-/// device. Pinning is what keeps game sound in the clips when Windows switches
-/// its default to a headset after the recorder has already started.
+/// Pinning keeps game sound in the clips when Windows switches its default to a
+/// headset after the recorder has started.
 fn choose_desktop_device(model: &mut UiModel) {
     refresh_outputs(model);
     let mut labels = vec!["Windows default".to_string()];

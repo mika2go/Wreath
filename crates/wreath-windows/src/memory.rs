@@ -1,11 +1,4 @@
-//! Process memory reporting.
-//!
-//! Wreath keeps a replay resident, so its footprint is a feature people judge
-//! it on. Reporting it is the only way to tell the part that is inherent - the
-//! encoded buffer itself - from the part that is waste.
-
-/// Private bytes this process has committed, which is the number Task Manager
-/// shows under Memory.
+/// Private bytes committed, which is what Task Manager shows under Memory.
 #[cfg(target_os = "windows")]
 pub fn private_bytes() -> Option<u64> {
     use windows::Win32::System::ProcessStatus::{

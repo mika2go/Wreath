@@ -286,9 +286,8 @@ pub const QUALITY_PRESETS: [(u8, &str); 5] = [
     (100, "Insane"),
 ];
 
-/// How a quality value reads. A value set outside the application, through
-/// `wreathctl config quality`, keeps its percentage rather than borrowing a
-/// name it does not match.
+/// A value set through `wreathctl config quality` keeps its percentage rather
+/// than borrowing a name it does not match.
 pub fn quality_label(quality: u8) -> String {
     QUALITY_PRESETS
         .iter()
@@ -762,12 +761,8 @@ impl UiModel {
             .or_else(|| self.displays.first())
     }
 
-    /// Quality choices labelled with what they actually cost.
-    ///
-    /// The menu used to list bare percentages, which say nothing about the
-    /// thing people care about — how large the clip ends up. Each choice now
-    /// carries a name and the size a full replay reaches on the selected
-    /// monitor, at the configured frame rate, codec and duration.
+    /// Each choice carries a name and the size a full replay reaches on the
+    /// selected monitor, at the configured frame rate, codec and duration.
     pub fn quality_options(&self) -> Vec<QualityOption> {
         let (width, height) = self
             .selected_display()
@@ -1072,13 +1067,11 @@ mod tests {
         model.config.capture.monitor = Some("DISPLAY1".into());
         model.config.capture.frames_per_second = 50;
 
-        // A 144 Hz monitor no longer offers 144: hardware encoders could not
-        // sustain it, so the choice only ever produced dropped frames.
+        // Hardware encoders could not sustain 144, so it only dropped frames.
         assert_eq!(model.frame_rate_options(), vec![30, 48, 50, 60]);
     }
 
-    /// A bare percentage says nothing about what a setting costs, which is the
-    /// one thing people want to know before changing it.
+    /// A bare percentage says nothing about what a setting costs.
     #[test]
     fn quality_choices_are_named_and_carry_their_clip_size() {
         let mut model = model();
@@ -1114,8 +1107,7 @@ mod tests {
         assert_eq!(cheaper.megabytes, 79);
     }
 
-    /// A quality set from the command line is not one of the steps, so it keeps
-    /// its percentage instead of being labelled as a step it is not.
+    /// A quality set from the command line is not one of the steps.
     #[test]
     fn a_quality_outside_the_steps_keeps_its_percentage() {
         let mut model = model();

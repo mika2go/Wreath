@@ -11,9 +11,8 @@ const MOD_NOREPEAT_VALUE: u32 = 0x4000;
 const VK_F1: u32 = 0x70;
 const VK_F24: u32 = 0x87;
 
-/// Turns the virtual-key value delivered by Windows into the stable value kept
-/// in Wreath's config. OEM keys intentionally retain their virtual-key number:
-/// their printed label depends on the user's active keyboard layout.
+/// OEM keys keep their virtual-key number: the printed label depends on the
+/// active keyboard layout.
 pub fn key_name_from_virtual_key(virtual_key: u32) -> Option<String> {
     let name = match virtual_key {
         0x08 => "BACKSPACE",
@@ -189,8 +188,7 @@ pub fn default_windows_hotkey() -> HotkeyConfig {
     }
 }
 
-/// Migrates the original Windows default, which used the OS-reserved Windows
-/// key and therefore was not a dependable global shortcut.
+/// The original default used the OS-reserved Windows key.
 pub fn migrate_legacy_windows_hotkey(hotkey: &mut HotkeyConfig) -> bool {
     if (hotkey.modifiers == ["SUPER", "SHIFT"] || hotkey.modifiers == ["CTRL", "ALT"])
         && hotkey.key == "R"
@@ -202,12 +200,8 @@ pub fn migrate_legacy_windows_hotkey(hotkey: &mut HotkeyConfig) -> bool {
     }
 }
 
-/// Keeps two hotkey presses from starting two replay saves at once.
-///
-/// The guard expires on its own. It used to be a plain flag that only the save
-/// worker cleared, so a worker that never came back left every later press
-/// logged as "a save is already running" - the shortcut was dead for good
-/// while the daemon kept running and looked healthy.
+/// Keeps two presses from starting two saves. It expires on its own, because a
+/// flag only the worker cleared left the shortcut dead once one never returned.
 #[derive(Debug)]
 pub struct SaveGuard {
     started: std::sync::Mutex<Option<std::time::Instant>>,
@@ -222,8 +216,7 @@ impl SaveGuard {
         }
     }
 
-    /// Grants the guard when no save is running, or when the running one has
-    /// outlived every timeout the save path can hit.
+    /// Also grants it when the running save outlived every timeout it can hit.
     pub fn acquire(&self, now: std::time::Instant) -> bool {
         let mut started = self.locked();
         match *started {
@@ -279,10 +272,8 @@ impl fmt::Display for HotkeyError {
 
 impl std::error::Error for HotkeyError {}
 
-/// Refuses ordinary typing and multi-modifier chords. A newly selected shortcut
-/// is either Ctrl/Shift plus exactly one key, or a standalone function/Print
-/// Screen key. Existing config files remain loadable; this rule is applied only
-/// when choosing a new key.
+/// Ctrl/Shift plus one key, or a standalone function/Print Screen key. Applied
+/// only when choosing a new key, so existing configs stay loadable.
 pub fn validate_hotkey_choice(hotkey: &HotkeyConfig) -> Result<(), HotkeyError> {
     if !hotkey.is_bound() {
         return Ok(());
@@ -400,12 +391,9 @@ impl HotkeyListener {
                 let mut current_hotkey = hotkey;
                 let mut registration = match register_optional(id, &current_hotkey) {
                     Ok(registration) => registration,
-                    // A shortcut Windows refuses right now - usually because
-                    // another application holds it - must not take the capture
-                    // service down with it. Start without it and let the
-                    // watchdog claim it as soon as it is free again. A
-                    // shortcut that can never be translated stays fatal: the
-                    // configuration itself is broken and no retry fixes it.
+                    // A shortcut another application holds must not take the
+                    // service down; the watchdog claims it once it is free. An
+                    // untranslatable one stays fatal, since no retry fixes it.
                     Err(error @ HotkeyError::Registration(_)) => {
                         wreath_core::diagnostic!(
                             "Wreath hotkey: {current_hotkey} is unavailable, watchdog will retry every {} seconds: {error}",
@@ -514,8 +502,7 @@ impl HotkeyListener {
         })
     }
 
-    /// Replaces the registered shortcut on the listener thread. If Windows
-    /// rejects the new shortcut, the previous registration is restored.
+    /// A shortcut Windows rejects restores the previous registration.
     pub fn rebind(&self, hotkey: &HotkeyConfig) -> Result<(), HotkeyError> {
         use windows::Win32::Foundation::{LPARAM, WPARAM};
         use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
@@ -538,12 +525,9 @@ impl HotkeyListener {
     }
 }
 
-/// Reclaims the shortcut after a failed registration, and only then. Windows
-/// hands a hotkey to exactly one thread and holds it there until that thread
-/// releases it, so a registration we still own cannot go stale - while giving
-/// it up first, as this watchdog used to do on every tick, both dropped the
-/// presses that landed in the gap and let any other application claim the
-/// combination for good.
+/// Only after a failed registration: Windows holds a hotkey on the owning thread
+/// until it is released, so giving it up per tick lost presses in the gap and let
+/// another application claim the combination for good.
 #[cfg(target_os = "windows")]
 fn refresh_registration(
     id: i32,
@@ -775,8 +759,7 @@ mod tests {
         assert!(registration.is_some());
         assert!(HotkeyRegistration::register(99, &hotkey).is_err());
 
-        // A tick over a healthy registration has to leave it registered, with
-        // no window in between for another application to take it.
+        // No window in between for another application to take it.
         refresh_registration(44, &hotkey, &mut registration);
         assert!(registration.is_some());
         assert!(HotkeyRegistration::register(99, &hotkey).is_err());

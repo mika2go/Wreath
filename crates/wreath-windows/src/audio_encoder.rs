@@ -2,11 +2,8 @@ use crate::audio::AudioError;
 #[cfg(target_os = "windows")]
 use crate::audio::Pcm16Chunk;
 
-/// 192 kbit/s, the highest rate the Microsoft AAC encoder accepts.
-///
-/// AAC-LC at 128 kbit/s is not transparent on stereo material, and speech over
-/// game audio is exactly the noisy, broadband content its artefacts show up on
-/// as a faint gritty edge. The extra 8 kB/s is nothing against the video.
+/// 192 kbit/s, the highest the Microsoft AAC encoder accepts. At 128 its
+/// artefacts are audible on speech over game audio.
 pub const AAC_BYTES_PER_SECOND: u32 = 24_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,15 +64,9 @@ impl AudioEncoderSettings {
     }
 }
 
-/// Keeps the PCM handed to the encoder contiguous with the timeline that
-/// describes it.
-///
-/// WASAPI hands over whatever frames it has; when the endpoint or the queue
-/// loses some, the next packet simply carries a later timestamp. Submitting
-/// that straight to the encoder splices two unrelated waveforms together while
-/// the timeline jumps over the hole, so the AAC frames stop lining up with the
-/// times attached to them. Bridging the hole with silence keeps the payload and
-/// the timeline describing the same thing.
+/// Keeps the PCM contiguous with the timeline describing it: a lost packet just
+/// moves the next timestamp, which splices unrelated waveforms unless the hole
+/// is bridged with silence.
 #[cfg(any(target_os = "windows", test))]
 #[derive(Default)]
 struct EncoderTimeline {
@@ -99,8 +90,7 @@ enum TimelinePlan {
 
 #[cfg(any(target_os = "windows", test))]
 impl EncoderTimeline {
-    /// Longest hole worth filling. Anything beyond this is a pause, a device
-    /// change or a resume, where silence would only pad the clip.
+    /// Beyond this it is a pause or device change, where silence only pads.
     const MAX_BRIDGE: std::time::Duration = std::time::Duration::from_secs(1);
 
     fn plan(&self, timestamp: std::time::Duration, sample_rate: u32) -> TimelinePlan {
@@ -108,8 +98,7 @@ impl EncoderTimeline {
             return TimelinePlan::Restart { timestamp };
         };
         if timestamp <= expected {
-            // Never move backwards: the encoder needs a monotonic timeline and
-            // the payload is contiguous regardless of what the clock reported.
+            // The encoder needs a monotonic timeline; the payload is contiguous.
             return TimelinePlan::Continue {
                 timestamp: expected,
             };
@@ -165,15 +154,13 @@ fn frames_duration(frames: u32, sample_rate: u32) -> std::time::Duration {
     )
 }
 
-/// Number of frames a splice is ramped over, so neither edge of a bridged hole
-/// is a step in the waveform.
+/// Ramp length, so neither edge of a bridged hole steps the waveform.
 #[cfg(any(target_os = "windows", test))]
 fn splice_fade_frames(sample_rate: u32) -> u32 {
     (sample_rate / 500).max(1)
 }
 
-/// Silence that starts from wherever the last packet left off, so entering the
-/// hole is a short ramp rather than a jump to zero.
+/// Starts from where the last packet left off rather than jumping to zero.
 #[cfg(any(target_os = "windows", test))]
 fn bridging_silence(frames: u32, channels: u16, tail: &[i16], sample_rate: u32) -> Vec<u8> {
     let channels = usize::from(channels.max(1));
@@ -562,8 +549,7 @@ mod tests {
         );
     }
 
-    /// A capture hole used to splice two unrelated waveforms together while the
-    /// timeline jumped over it.
+    /// A capture hole spliced two unrelated waveforms together.
     #[test]
     fn a_capture_hole_is_bridged_with_silence() {
         let timeline = timeline_at(Duration::from_millis(100));

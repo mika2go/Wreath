@@ -10,21 +10,17 @@ use wreath_windows::control::{DeadlineReader, NamedPipeServer, SingleInstance};
 use wreath_windows::hotkey::{HotkeyListener, SaveGuard};
 use wreath_windows::pipeline::{PipelineRunState, ReplayPipeline};
 
-/// A client writes its request the moment it is connected, so anything slower
-/// than this is a client that died mid-request. Waiting on it would block
-/// every other client, including the hotkey: while a connection is being
-/// served there is no free pipe instance for anyone else.
+/// Anything slower is a client that died mid-request. There is one pipe
+/// instance, so waiting on it blocks every other client including the hotkey.
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
-/// Long enough to cover the slowest answer the daemon can give, so a press is
-/// only ever rejected while a save really is running.
+/// Covers the slowest answer the daemon can give, so a press is only rejected
+/// while a save really is running.
 const SAVE_GUARD_TIMEOUT: Duration = Duration::from_secs(60);
 const HOTKEY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub fn run() -> Result<(), String> {
     let Some(_single_instance) = claim_single_instance()? else {
-        // A second daemon would fight the running one over the control pipe,
-        // the shortcut, and the capture device. Leaving quietly is what the
-        // tray's recovery path expects.
+        // A second daemon would fight over the pipe, the shortcut and the device.
         return Ok(());
     };
     let paths = AppPaths::discover();
@@ -35,10 +31,8 @@ pub fn run() -> Result<(), String> {
         config.save(&paths).map_err(|error| error.to_string())?;
     }
     let server = NamedPipeServer::new(paths.pipe_name()).map_err(|error| error.to_string())?;
-    // Create the named-pipe instance before graphics/audio initialization. On
-    // slower machines that initialization can take several seconds; clients
-    // can now connect immediately and wait for the daemon instead of seeing a
-    // misleading "file not found" error during normal startup.
+    // Before graphics and audio initialization, which can take seconds: clients
+    // then wait for the daemon instead of seeing "file not found".
     let (connections, handled) = listen(server)?;
     let mut pipeline = ReplayPipeline::spawn(config.clone()).map_err(|error| error.to_string())?;
     let pipe_name = paths.pipe_name().to_owned();
@@ -96,9 +90,7 @@ pub fn run() -> Result<(), String> {
                 BufReader::new(DeadlineReader::new(&mut connection, REQUEST_READ_TIMEOUT));
             ipc::read_request(&mut reader)
         };
-        // One client that vanishes mid-request used to end the daemon, and
-        // with it the replay buffer and the registered shortcut. Serving the
-        // next client is always the better answer.
+        // A client vanishing mid-request used to take the daemon down with it.
         let request = match request {
             Ok(request) => request,
             Err(error) => {
@@ -162,10 +154,8 @@ pub fn run() -> Result<(), String> {
         if let Err(error) = ipc::write_response(&mut connection, &response) {
             wreath_core::diagnostic!("Wreath control: cannot answer a client: {error}");
         }
-        // Windows keeps a single instance of this pipe, so the served handle
-        // has to be closed before the listener is allowed to create the next
-        // one. Releasing the listener first left the two racing, and a lost
-        // race ended the daemon.
+        // With a single pipe instance the served handle has to close before the
+        // listener creates the next one; the other order raced and lost.
         drop(connection);
         handled
             .send(())
@@ -224,12 +214,10 @@ fn claim_single_instance() -> Result<Option<SingleInstance>, String> {
 
 type AcceptedConnection = Result<std::fs::File, String>;
 
-/// Creating the next pipe instance can fail while Windows is still tearing the
-/// previous one down. That is a moment to wait out, not a reason to stop.
+/// The next pipe instance can fail while Windows tears the previous one down.
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
-/// A failure that survives this long is not transient. Ending the daemon is
-/// then the right move: it releases the registered shortcut so the tray can
-/// start a service that answers again.
+/// A failure surviving this long is not transient, and ending the daemon
+/// releases the shortcut so the tray can start a service that answers.
 const ACCEPT_RETRY_LIMIT: u32 = 50;
 
 fn listen(

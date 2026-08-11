@@ -45,14 +45,9 @@ impl ReplaySpec {
         }
     }
 
-    /// Bits per second the encoder is aimed at.
-    ///
-    /// The original constants asked for about 0.2 bits per pixel at the default
-    /// quality, which is generous; 0.08 to 0.10 is what streaming services ask
-    /// for. Going straight to that operating point turned out to be too far in
-    /// one step for a constant-bitrate encoder, so this sits between the two at
-    /// roughly 0.15, about a quarter below where it started. The quality
-    /// setting scales around it, and hevc is where the real saving is.
+    /// Roughly 0.15 bits per pixel at the default quality: between the original
+    /// 0.2 and the 0.08-0.10 streaming services use, which was too far in one
+    /// step for a constant-bitrate encoder.
     pub fn target_bitrate_kbps(&self) -> u32 {
         let pixels_per_second =
             u64::from(self.width) * u64::from(self.height) * u64::from(self.frames_per_second);
@@ -81,8 +76,7 @@ impl ReplaySpec {
     }
 }
 
-/// A running platform recorder. Implementations may be an external Linux process
-/// or an in-process Windows capture pipeline.
+/// An external Linux process or an in-process Windows capture pipeline.
 pub trait ReplayRecorder {
     type Error: Error;
 
@@ -91,8 +85,7 @@ pub trait ReplayRecorder {
     fn stop(&mut self) -> Result<(), Self::Error>;
 }
 
-/// Creates the platform recorder while keeping daemon lifecycle logic independent
-/// from the capture API used by the operating system.
+/// Keeps the daemon lifecycle independent of the platform capture API.
 pub trait ReplayBackend {
     type Error: Error;
     type Recorder: ReplayRecorder<Error = Self::Error>;
@@ -132,8 +125,7 @@ mod tests {
         assert!(replay.estimated_buffer_megabytes() < 100);
     }
 
-    /// A 30 second clip is something people send to someone, so the defaults
-    /// have to land at a shareable size rather than at the encoder's ceiling.
+    /// The defaults have to land at a shareable size, not the encoder ceiling.
     #[test]
     fn default_clips_stay_shareable_at_common_resolutions() {
         let sizes = [(1920, 1080, 60), (2560, 1440, 105), (3840, 2160, 230)];

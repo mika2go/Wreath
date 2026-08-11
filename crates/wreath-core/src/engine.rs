@@ -320,8 +320,7 @@ impl GpuScreenRecorder {
                 desktop_gain_source
                     .as_ref()
                     .map(|source| source.name.as_str())
-                    // A configured monitor source is recorded directly when it
-                    // needs no level change of its own.
+                    // Recorded directly when it needs no level change of its own.
                     .or(spec.desktop_device.as_deref()),
             ))
             .process_group(0)

@@ -44,9 +44,8 @@ pub fn write_mp4<'a>(
             "replay buffer has no video packets".into(),
         ));
     }
-    // Rebase on the earliest packet of either track. Using the first video
-    // packet instead collapsed every audio packet ahead of it onto timestamp
-    // zero, because the subtraction saturates.
+    // Earliest of either track: rebasing on the first video packet collapsed the
+    // audio ahead of it onto zero.
     let first_timestamp = packets
         .first()
         .map(|packet| packet.timestamp)
@@ -131,16 +130,9 @@ fn ordered_packets<'a>(packets: impl Iterator<Item = &'a EncodedPacket>) -> Vec<
     packets
 }
 
-/// How long each sample is actually on screen, taken from the gap to the next
-/// sample on its own track.
-///
-/// Every encoded video packet claims the nominal frame duration, but Windows
-/// Graphics Capture only delivers a frame when the picture changes and the
-/// pipeline skips frames the encoder is not ready for. The muxer builds the
-/// track from these durations, so a clip whose frames were sparse came out
-/// proportionally shorter than the span it covered - a 30 second replay saved
-/// as 24. Stretching a sample until its successor arrives holds the picture,
-/// which is what actually happened, and keeps the track as long as the capture.
+/// Taken from the gap to the next sample on the same track. Capture only
+/// delivers a frame when the picture changes, so nominal frame durations built a
+/// track shorter than the span it covered - a 30 second replay saved as 24.
 #[cfg(any(target_os = "windows", test))]
 fn presented_durations(packets: &[&EncodedPacket]) -> Vec<std::time::Duration> {
     let mut durations = vec![std::time::Duration::ZERO; packets.len()];
@@ -267,9 +259,7 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
-    /// A 30 second replay saved as 24 because sparse frames each claimed the
-    /// nominal frame duration, so the track was as long as the frames it had
-    /// rather than as long as the capture it covered.
+    /// Sparse frames claiming the nominal duration saved a 30 second replay as 24.
     #[test]
     fn a_held_frame_stretches_until_its_successor_instead_of_shortening_the_clip() {
         let packets = [
@@ -281,8 +271,7 @@ mod tests {
 
         let durations = presented_durations(&ordered);
 
-        // Each frame claims 10 ms, but a quarter of a second passed between
-        // them; the covered span has to survive into the track.
+        // Each frame claims 10 ms, but a quarter of a second passed between them.
         assert_eq!(durations[0], std::time::Duration::from_millis(250));
         assert_eq!(durations[1], std::time::Duration::from_millis(250));
         // The last sample has no successor and keeps its own duration.
@@ -313,8 +302,7 @@ mod tests {
         }
     }
 
-    /// A clip carries exactly one audio track. Extra stems made ordinary
-    /// players pick an arbitrary one, which is how clips ended up silent.
+    /// Extra stems made players pick an arbitrary track, so clips came out silent.
     #[test]
     fn a_clip_carries_a_single_audio_track() {
         let packets = [

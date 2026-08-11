@@ -72,9 +72,8 @@ impl Player {
         .map_err(|error| format!("Media Foundation player initialization failed: {error}"))?;
         let media = media.ok_or_else(|| "Media Foundation returned no player".to_owned())?;
 
-        // These options only affect presentation. Some Windows Media Foundation
-        // implementations reject them until a media item is attached, so they
-        // must never decide whether the clip itself counts as loaded.
+        // Presentation only, and rejected until a media item is attached, so they
+        // must not decide whether the clip counts as loaded.
         let _ = unsafe { media.SetAspectRatioMode(MFVideoARMode_PreservePicture.0 as u32) };
         let _ = unsafe { media.SetBorderColor(COLORREF(0x0010_1012)) };
 
@@ -100,9 +99,8 @@ impl Player {
             .chain(Some(0))
             .collect::<Vec<_>>();
         let result = (|| {
-            // Replacing a clip keeps the same path. Explicitly release the old
-            // media item before resolving that URL again, otherwise Media
-            // Foundation can keep reporting the pre-cut duration.
+            // A replaced clip keeps its path, and without this Media Foundation
+            // keeps reporting the pre-cut duration.
             let _ = unsafe { self.media.ClearMediaItem() };
             let mut item = None;
             unsafe {
@@ -203,10 +201,8 @@ impl Player {
                 unsafe { self.media.Play() }.map_err(|error| error.to_string())?;
             }
         } else if event_type == MFP_EVENT_TYPE_PLAYBACK_ENDED.0 {
-            // Media Foundation's ended state cannot be stopped. Automatic
-            // looping used to seek immediately here, which made the session
-            // emit an invalid-state error after an otherwise healthy clip.
-            // Leave the final frame in place; the next explicit Play restarts.
+            // The ended state cannot be stopped, and seeking from here made the
+            // session emit an invalid-state error; the next Play restarts.
             self.should_play.set(false);
         }
         Ok(())

@@ -6,15 +6,13 @@ const MIN_REPLAY_MEMORY_BYTES: u64 = 8 * 1_048_576;
 const PIPELINE_COMMAND_CAPACITY: usize = 4;
 #[cfg(target_os = "windows")]
 const SAVE_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-/// Pausing, resuming, and stopping wait on the same worker a save does. Left
-/// unbounded they held the daemon's control loop, and with it the hotkey, for
-/// as long as the worker stayed busy.
+/// Unbounded, these held the daemon's control loop - and the hotkey - for as
+/// long as the worker stayed busy.
 #[cfg(target_os = "windows")]
 const CONTROL_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 #[cfg(target_os = "windows")]
-/// Frames the encoder may hold at once. Three left hardware encoders without
-/// enough in flight to pipeline properly, and every frame that arrived while
-/// they were all busy was dropped, which shows up as the picture holding still.
+/// Too few and a hardware encoder cannot pipeline, so frames arriving while all
+/// are busy get dropped and the picture holds still.
 const ENCODER_SURFACE_COUNT: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,17 +48,9 @@ impl Default for PipelineStatus {
     }
 }
 
-/// Memory the replay buffer may hold.
-///
-/// This is a safety cap, not the size the buffer aims for. Sized close to the
-/// nominal average it became the binding constraint instead of the duration:
-/// content denser than the estimate pushed the buffer over the cap, and
-/// trimming drops a whole group of pictures - which, because Windows Graphics
-/// Capture only delivers a frame when the picture changes, can be many seconds
-/// of wall clock. That is what cut a 30 second replay short. The cap now sits
-/// well above the estimate, so only the configured duration decides the length
-/// and memory is still bounded. The rejection threshold stays on the nominal
-/// estimate so headroom never makes a workable configuration unusable.
+/// A safety cap, not the size the buffer aims for. Sized close to the nominal
+/// average it became the binding constraint instead of the duration and cut a
+/// 30 second replay short.
 pub fn replay_memory_budget(estimated_bytes: u64) -> Result<usize, crate::video::VideoError> {
     if estimated_bytes > MAX_REPLAY_MEMORY_BYTES {
         return Err(crate::video::VideoError::Initialization(format!(
@@ -199,9 +189,7 @@ impl Drop for ReplayPipeline {
             },
             CONTROL_COMMAND_TIMEOUT,
         );
-        // A worker that will not stop is already broken; waiting for it here
-        // would freeze the daemon that is replacing it, so it is left to the
-        // process exit instead of joined.
+        // Joining a worker that will not stop would freeze the daemon replacing it.
         if reply_receiver
             .recv_timeout(CONTROL_COMMAND_TIMEOUT)
             .is_err()
@@ -417,9 +405,7 @@ impl PipelineAudio {
         if self.mixer.is_none() {
             return self.encoder.encode(normalized);
         }
-        // With a microphone in the mix the desktop packet waits here until the
-        // microphone has covered the same span, so both reach the encoder as
-        // one waveform.
+        // The desktop packet waits until the microphone covers the same span.
         self.pending_master.push_back(normalized);
         self.encode_synchronized_master()
     }
@@ -435,8 +421,7 @@ impl PipelineAudio {
         let normalized = crate::audio::normalize_to_pcm16(format, chunk)?;
         self.note_microphone_clipping(&normalized.data);
         let microphone_end = pcm_chunk_end(&normalized, format.sample_rate);
-        // The mixer owns the microphone's rate and channel conversion as well
-        // as its recording level, so the voice needs no separate path here.
+        // The mixer owns the microphone's conversion and level.
         self.mixer
             .as_mut()
             .ok_or_else(|| crate::audio::AudioError("microphone mixer is unavailable".into()))?
@@ -503,12 +488,8 @@ impl PipelineAudio {
     }
 }
 
-/// Counts samples sitting at the top of the 16-bit range.
-///
-/// Raw capture leaves the driver's automatic gain control out of the path, so
-/// a hot Windows input level now reaches the encoder as hard clipping instead
-/// of being ridden down. That sounds like crackling and cannot be undone
-/// later, so it has to be visible in the log.
+/// Raw capture leaves the driver's gain control out, so a hot input level
+/// reaches the encoder as clipping. It cannot be undone later, so it is logged.
 #[cfg(any(target_os = "windows", test))]
 fn clipped_samples(data: &[u8]) -> u64 {
     data.chunks_exact(2)
@@ -789,8 +770,7 @@ fn run_pipeline(
                 status,
             )?;
             if input_requests == 0 || available_surfaces.is_empty() {
-                // The encoder could not keep up, so this frame never reaches
-                // the clip and the picture holds. Invisible until now.
+                // The frame never reaches the clip and the picture holds.
                 skipped_frames = skipped_frames.saturating_add(1);
                 if skipped_frames.is_power_of_two() {
                     wreath_core::diagnostic!(
@@ -919,9 +899,8 @@ fn spawn_save(
 #[cfg(target_os = "windows")]
 struct MarshaledMediaType(Option<windows::Win32::System::Com::IStream>);
 
-// SAFETY: the contained stream is created specifically by
-// CoMarshalInterThreadInterfaceInStream for transfer to one other COM apartment.
-// It is either consumed there or released normally if spawning the worker fails.
+// SAFETY: the stream comes from CoMarshalInterThreadInterfaceInStream for
+// transfer to one other apartment, where it is consumed or released.
 #[cfg(target_os = "windows")]
 unsafe impl Send for MarshaledMediaType {}
 
@@ -955,8 +934,7 @@ impl MarshaledMediaType {
             )
         })?;
         let media_type = unsafe { CoGetInterfaceAndReleaseStream(&stream) };
-        // CoGetInterfaceAndReleaseStream owns the matching Release call even
-        // when unmarshalling fails, so the Rust wrapper must not release twice.
+        // CoGetInterfaceAndReleaseStream owns the Release even when it fails.
         std::mem::forget(stream);
         media_type.map_err(|error| crate::video::VideoError::Initialization(error.to_string()))
     }
@@ -1039,8 +1017,7 @@ fn target_bitrate_kbps(config: &wreath_core::config::Config, width: u32, height:
     wreath_core::replay::ReplaySpec::from_config(config, &monitor).target_bitrate_kbps()
 }
 
-/// Bytes the configured replay is expected to encode to. Headroom is added by
-/// `replay_memory_budget`, so the rejection threshold stays on real need.
+/// Headroom is added by `replay_memory_budget`; this stays on real need.
 #[cfg(any(target_os = "windows", test))]
 fn estimated_buffer_bytes(bitrate_kbps: u32, duration_seconds: u16) -> u64 {
     u64::from(bitrate_kbps)
@@ -1082,8 +1059,7 @@ mod tests {
         assert!(bytes < 100 * 1_048_576);
     }
 
-    /// The byte budget has to sit well above the nominal average, or it becomes
-    /// the binding constraint and shortens clips below their duration.
+    /// A budget near the nominal average becomes the binding constraint.
     #[test]
     fn the_memory_budget_leaves_room_above_the_nominal_average() {
         let nominal = estimated_buffer_bytes(20_000, 30);

@@ -1,8 +1,5 @@
-//! Append-only diagnostic log.
-//!
-//! The Windows binaries are linked for the GUI subsystem, so they have no
-//! console and anything written to stderr is discarded. Capture diagnostics
-//! have to reach a file or they cannot be read at all.
+//! Append-only diagnostic log. The Windows binaries are GUI-subsystem, so they
+//! have no console and anything written to stderr is discarded.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -10,9 +7,8 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-/// Keeps a long-running tray process from filling the disk. The log is
-/// restarted rather than rotated; a capture problem reproduces in seconds, so
-/// history beyond the current session is not worth the extra file.
+/// Restarted rather than rotated: a capture problem reproduces in seconds, so
+/// history beyond the session is not worth the extra file.
 const MAX_LOG_BYTES: u64 = 1_048_576;
 
 struct Sink {
@@ -29,8 +25,7 @@ fn sink() -> &'static Sink {
             let epoch_seconds = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_secs());
-            // Line offsets are monotonic seconds into the session; this header
-            // is what ties them back to a wall-clock time.
+            // Ties the monotonic line offsets back to a wall-clock time.
             let _ = writeln!(
                 file,
                 "--- wreath {} session start, unix time {epoch_seconds} ---",
@@ -66,8 +61,7 @@ pub fn log_file() -> Option<PathBuf> {
     Some(crate::paths::AppPaths::discover().log_file)
 }
 
-/// Records one diagnostic line. Never fails and never panics: a broken log must
-/// not take a recording down with it.
+/// Never fails: a broken log must not take a recording down with it.
 pub fn record(message: &str) {
     let sink = sink();
     let elapsed = sink.started.elapsed();

@@ -7,11 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::paths::AppPaths;
 
-/// Highest capture frame rate Wreath offers.
-///
-/// Hardware encoders could not sustain more than this at the resolutions
-/// people record at, so frames were dropped and the picture held still, while
-/// the extra rate doubled clip size for no visible gain.
+/// Hardware encoders could not sustain more than this at recording resolutions,
+/// so frames were dropped and the picture held still.
 pub const MAX_FRAMES_PER_SECOND: u16 = 60;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -54,9 +51,8 @@ pub struct HotkeyConfig {
 #[serde(default)]
 pub struct AudioConfig {
     pub desktop: bool,
-    /// Playback endpoint the desktop mix is captured from. `None` follows
-    /// whatever Windows currently calls the default output; a stored ID pins
-    /// the capture to that device even when the default changes underneath.
+    /// `None` follows the Windows default output; a stored ID pins the capture
+    /// even when the default changes underneath.
     pub desktop_device: Option<String>,
     pub desktop_gain_percent: u16,
     pub microphone: bool,
@@ -257,10 +253,8 @@ impl Config {
         Ok(())
     }
 
-    /// Brings a configuration written by an older build back into range.
-    ///
-    /// A rejected configuration stops the recorder from starting at all, which
-    /// would strand exactly the people whose settings need changing.
+    /// Rejecting an out-of-range configuration would strand exactly the people
+    /// whose settings need changing.
     fn migrate(&mut self) {
         self.capture.frames_per_second = self.capture.frames_per_second.min(MAX_FRAMES_PER_SECOND);
     }
@@ -356,16 +350,14 @@ mod tests {
         assert_eq!(config.audio.desktop_gain_percent, 100);
     }
 
-    /// A configuration that never named an output keeps following the Windows
-    /// default, which is what every existing installation expects.
+    /// A configuration that never named an output follows the Windows default.
     #[test]
     fn an_unnamed_output_follows_the_system_default() {
         let config: Config = toml::from_str("[audio]\ndesktop = true\n").unwrap();
         assert_eq!(config.audio.desktop_device, None);
     }
 
-    /// Configurations written while Wreath still offered to filter Discord out
-    /// of the desktop mix stay loadable; the setting is simply gone.
+    /// The Discord filter is gone, but its configurations stay loadable.
     #[test]
     fn a_retired_audio_setting_does_not_reject_the_configuration() {
         let config: Config =

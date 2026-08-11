@@ -39,9 +39,8 @@ use crate::model::{
     quality_label,
 };
 
-// Medal-inspired contrast hierarchy: a near-black clip canvas, distinctly
-// raised neutral controls and high-contrast light actions. Color is reserved
-// for capture status, warnings and destructive operations.
+// Near-black clip canvas, raised neutral controls, light actions. Color is
+// reserved for capture status, warnings and destructive operations.
 const CANVAS: u32 = 0x09090b;
 const STAGE: u32 = 0x131316;
 const SURFACE: u32 = 0x1c1c20;
@@ -305,11 +304,8 @@ fn home_girl_layout(
     (destination, text_right)
 }
 
-/// Places the settings sticker in the bottom-right corner of the page.
-///
-/// It lives entirely below the last settings row and inside the content
-/// margins, and it is dropped rather than shrunk to nothing when a short window
-/// leaves no room, so it can never crowd a control.
+/// Decoration: it stays below the last settings row and is dropped rather than
+/// shrunk when a short window leaves no room.
 fn settings_sticker_layout(left: f32, right: f32, height: f32) -> Option<LogicalRect> {
     const MINIMUM_HEIGHT: f32 = 96.0;
     const MAXIMUM_HEIGHT: f32 = 190.0;
@@ -368,12 +364,8 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    /// Decoded thumbnails kept resident.
-    ///
-    /// The cache used to grow for the lifetime of the window: every clip
-    /// scrolled past left a bitmap behind and nothing ever removed it, so a
-    /// large library turned into hundreds of megabytes that were never drawn
-    /// again. A few screens' worth is all that is ever needed at once.
+    /// Bounded: an unbounded cache turned a large library into hundreds of
+    /// megabytes of bitmaps that were never drawn again.
     const MAX_THUMBNAILS: usize = 96;
 
     pub fn new() -> Result<Self, String> {
@@ -3144,9 +3136,7 @@ impl Renderer {
         Ok(())
     }
 
-    /// A frameless media control with a small hover lift. The hit target stays
-    /// at its full size while only the glyph moves, so the controls feel light
-    /// without becoming harder to click.
+    /// Only the glyph moves on hover; the hit target keeps its full size.
     fn floating_icon(
         &mut self,
         area: LogicalRect,
@@ -3662,9 +3652,7 @@ mod tests {
         assert!(compact_content_right - 100.0 >= 420.0);
     }
 
-    /// The sticker is decoration, so it stays below the last settings row and
-    /// inside the content margins, and it disappears rather than overlap a
-    /// control when the window is short.
+    /// Decoration: it disappears rather than overlap a control on a short window.
     #[test]
     fn the_settings_sticker_never_reaches_the_controls() {
         let rows_bottom = settings_row_top(2) + SETTINGS_ROW_HEIGHT;

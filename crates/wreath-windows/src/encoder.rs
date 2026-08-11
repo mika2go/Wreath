@@ -260,8 +260,7 @@ impl HardwareVideoEncoder {
         Ok(classify_event(event_type))
     }
 
-    /// Reads one queued encoder event without waiting. This is called only when
-    /// the pipeline was already woken by a captured frame or control command.
+    /// Called only when the pipeline was already woken by a frame or command.
     pub fn try_next_event(&self) -> Result<Option<EncoderEvent>, VideoError> {
         use windows::Win32::Media::MediaFoundation::{
             MF_E_NO_EVENTS_AVAILABLE, MF_EVENT_FLAG_NO_WAIT,
