@@ -323,6 +323,8 @@ fn install_responsive_layout(
             clip_columns * 10 + collection_columns,
         );
         clip_views.update_preview_geometry(clip_columns, collection_columns);
+        home_view.set_layout(width, window.height());
+        settings_view.set_layout(width, window.height());
         if previous.get() == current {
             return ControlFlow::Continue;
         }
@@ -332,8 +334,6 @@ fn install_responsive_layout(
         set_css_class(&content, "narrow", narrow_content);
         set_css_class(&content, "very-narrow", compact_header);
         clip_views.set_layout(compact_header, clip_columns, collection_columns);
-        home_view.set_layout(width, window.height());
-        settings_view.set_layout(width, window.height());
         content.set_hhomogeneous(compact_header);
         ControlFlow::Continue
     });

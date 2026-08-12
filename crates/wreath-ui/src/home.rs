@@ -33,8 +33,16 @@ impl HomeView {
     pub fn set_layout(&self, window_width: i32, window_height: i32) {
         let (content_width, mascot_width, mascot_height, visible_height) =
             home_layout(window_width, window_height);
+        let (mascot_left, mascot_top) = home_mascot_offset(
+            self.page.width(),
+            self.page.height(),
+            mascot_width,
+            visible_height,
+        );
         self.content.set_size_request(content_width, -1);
         self.mascot.set_size_request(mascot_width, visible_height);
+        self.mascot.set_margin_start(mascot_left);
+        self.mascot.set_margin_top(mascot_top);
         self.mascot_picture
             .set_size_request(mascot_width, mascot_height);
         self.mascot
@@ -99,6 +107,7 @@ pub fn build() -> HomeView {
 
     let page = Overlay::new();
     page.add_css_class("home-page");
+    page.set_overflow(gtk::Overflow::Hidden);
 
     let stage = GtkBox::new(Orientation::Horizontal, 0);
     stage.add_css_class("home-stage");
@@ -108,8 +117,8 @@ pub fn build() -> HomeView {
 
     let mascot = Fixed::new();
     mascot.add_css_class("home-mascot");
-    mascot.set_halign(Align::End);
-    mascot.set_valign(Align::End);
+    mascot.set_halign(Align::Start);
+    mascot.set_valign(Align::Start);
     mascot.set_size_request(356, 430);
     mascot.set_overflow(gtk::Overflow::Hidden);
     let mascot_picture = embedded_picture(HOME_GIRL_PNG);
@@ -358,9 +367,21 @@ fn home_layout(window_width: i32, window_height: i32) -> (i32, i32, i32, i32) {
     )
 }
 
+fn home_mascot_offset(
+    page_width: i32,
+    page_height: i32,
+    mascot_width: i32,
+    visible_height: i32,
+) -> (i32, i32) {
+    (
+        (page_width - mascot_width).max(0),
+        (page_height - visible_height).max(0),
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{audio_label, format_bytes, home_layout};
+    use super::{audio_label, format_bytes, home_layout, home_mascot_offset};
     use wreath_core::config::Config;
 
     #[test]
@@ -387,5 +408,11 @@ mod tests {
     fn home_layout_matches_the_windows_mascot_crop_and_text_width() {
         assert_eq!(home_layout(1_440, 900), (930, 356, 500, 430));
         assert_eq!(home_layout(980, 680), (586, 276, 388, 318));
+    }
+
+    #[test]
+    fn home_mascot_is_anchored_to_the_real_page_corner() {
+        assert_eq!(home_mascot_offset(1_352, 816, 356, 430), (996, 386));
+        assert_eq!(home_mascot_offset(200, 180, 276, 318), (0, 0));
     }
 }
