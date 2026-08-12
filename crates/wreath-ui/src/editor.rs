@@ -53,6 +53,7 @@ pub struct EditorController {
     save: Button,
     replace: Button,
     source: RefCell<Option<PathBuf>>,
+    source_title: RefCell<String>,
     return_page: RefCell<String>,
     timing: Rc<RefCell<Option<ClipTiming>>>,
     on_complete: RefCell<Option<Box<dyn Fn()>>>,
@@ -71,6 +72,7 @@ impl EditorController {
     pub fn open_returning_to(&self, clip: &Clip, return_page: &str) {
         self.return_page.replace(return_page.to_owned());
         self.source.replace(Some(clip.path.clone()));
+        self.source_title.replace(clip.title.clone());
         self.timing.replace(None);
         self.title.set_text(&format!("Edit {}", clip.title));
         self.detail.set_text("Reading duration and keyframes…");
@@ -320,7 +322,7 @@ impl EditorController {
                             let metadata = std::fs::metadata(&report.path).ok();
                             let clip = Clip {
                                 path: report.path,
-                                title: self.title.text().to_string(),
+                                title: self.source_title.borrow().clone(),
                                 size_bytes: metadata.as_ref().map_or(0, std::fs::Metadata::len),
                                 modified: metadata
                                     .and_then(|value| value.modified().ok())
@@ -471,6 +473,7 @@ pub fn build(stack: &Stack) -> EditorView {
         save,
         replace,
         source: RefCell::new(None),
+        source_title: RefCell::new(String::new()),
         return_page: RefCell::new("library".to_owned()),
         timing,
         on_complete: RefCell::new(None),

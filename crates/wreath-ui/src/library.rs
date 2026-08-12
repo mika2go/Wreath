@@ -11,8 +11,9 @@ use gtk::pango;
 use gtk::prelude::*;
 use gtk::{
     Align, AspectFrame, Box as GtkBox, Button, ContentFit, DragSource, DropTarget, Entry,
-    EventControllerKey, FlowBox, FlowBoxChild, GestureClick, Grid, Label, MediaFile, Orientation,
-    Overlay, Picture, Popover, PositionType, Scale, ScrolledWindow, SelectionMode, Stack,
+    EventControllerKey, EventControllerMotion, FlowBox, FlowBoxChild, GestureClick, Grid, Image,
+    Label, MediaFile, Orientation, Overlay, Picture, Popover, PositionType, Scale, ScrolledWindow,
+    SelectionMode, Stack,
 };
 use gtk::{gdk, gio};
 use wreath_core::clips::{self, Clip, ClipPreview};
@@ -121,7 +122,8 @@ struct PreviewWidgets {
 
 struct LibraryState {
     clips: RefCell<Vec<Clip>>,
-    directory: PathBuf,
+    directory: RefCell<PathBuf>,
+    directory_monitor: RefCell<Option<gio::FileMonitor>>,
     thumbnail_directory: PathBuf,
     flow: FlowBox,
     scroll: ScrolledWindow,
@@ -147,6 +149,7 @@ struct LibraryState {
     selected_clips: RefCell<HashSet<PathBuf>>,
     library_controls: SelectionControls,
     collection_controls: SelectionControls,
+    on_library_change: Rc<dyn Fn()>,
 }
 
 #[derive(Clone)]
@@ -182,23 +185,40 @@ struct CollectionsPage {
 struct PlayerState {
     media: MediaFile,
     stage: Picture,
+    fullscreen_root: Overlay,
+    fullscreen_window: RefCell<Option<glib::WeakRef<gtk::Window>>>,
+    windowed_child: RefCell<Option<gtk::Widget>>,
     title: Label,
     meta: Label,
     current: RefCell<Option<Clip>>,
-    library_directory: PathBuf,
+    library_directory: RefCell<PathBuf>,
     playlist: RefCell<Vec<Clip>>,
     current_index: Cell<Option<usize>>,
     return_page: RefCell<String>,
     previous: Button,
     next: Button,
     play_pause: Button,
+    play_pause_icon: Image,
     timeline: Scale,
     time: Label,
     volume: Scale,
     volume_value: Label,
     mute: Button,
+    mute_icon: Image,
     fullscreen: Button,
+    fullscreen_controls: GtkBox,
+    fullscreen_previous: Button,
+    fullscreen_next: Button,
+    fullscreen_play_pause: Button,
+    fullscreen_play_pause_icon: Image,
+    fullscreen_timeline: Scale,
+    fullscreen_time: Label,
+    fullscreen_volume: Scale,
+    fullscreen_mute: Button,
+    fullscreen_mute_icon: Image,
+    fullscreen_hide_source: RefCell<Option<glib::SourceId>>,
     updating_timeline: Cell<bool>,
+    updating_volume: Cell<bool>,
     last_audible_volume: Cell<f64>,
 }
 
@@ -248,6 +268,7 @@ impl PlayerState {
         self.current.replace(Some(clip.clone()));
         self.current_index.set(Some(index));
         self.media.set_file(Some(&gio::File::for_path(&clip.path)));
+        self.apply_audio();
         self.media.play();
         self.update_controls();
     }
@@ -267,63 +288,84 @@ impl PlayerState {
         let count = self.playlist.borrow().len();
         self.previous
             .set_sensitive(index.is_some_and(|value| value > 0));
+        self.fullscreen_previous
+            .set_sensitive(index.is_some_and(|value| value > 0));
         self.next
             .set_sensitive(index.is_some_and(|value| value + 1 < count));
-        self.play_pause.set_label(if self.media.is_playing() {
-            "Ⅱ"
+        self.fullscreen_next
+            .set_sensitive(index.is_some_and(|value| value + 1 < count));
+        let playing = self.media.is_playing();
+        let playback_icon = if playing {
+            "media-playback-pause-symbolic"
         } else {
-            "▶"
-        });
+            "media-playback-start-symbolic"
+        };
+        let playback_label = if playing { "Pause" } else { "Play" };
+        self.play_pause_icon.set_icon_name(Some(playback_icon));
+        self.fullscreen_play_pause_icon
+            .set_icon_name(Some(playback_icon));
         self.play_pause
-            .update_property(&[gtk::accessible::Property::Label(
-                if self.media.is_playing() {
-                    "Pause"
-                } else {
-                    "Play"
-                },
-            )]);
+            .update_property(&[gtk::accessible::Property::Label(playback_label)]);
+        self.fullscreen_play_pause
+            .update_property(&[gtk::accessible::Property::Label(playback_label)]);
 
         let duration = media_seconds(self.media.duration());
         let position = media_seconds(self.media.timestamp()).min(duration);
         self.updating_timeline.set(true);
         self.timeline.set_range(0.0, duration.max(0.001));
         self.timeline.set_value(position);
+        self.fullscreen_timeline.set_range(0.0, duration.max(0.001));
+        self.fullscreen_timeline.set_value(position);
         self.updating_timeline.set(false);
-        self.time.set_text(&format!(
+        let time = format!(
             "{} / {}",
             format_player_time(position),
             format_player_time(duration)
-        ));
-        self.timeline.update_property(&[
+        );
+        self.time.set_text(&time);
+        self.fullscreen_time.set_text(&time);
+        let timeline_properties = [
             gtk::accessible::Property::Label("Playback position"),
             gtk::accessible::Property::ValueText(&format!(
                 "{} of {}",
                 format_player_time(position),
                 format_player_time(duration)
             )),
-        ]);
+        ];
+        self.timeline.update_property(&timeline_properties);
+        self.fullscreen_timeline
+            .update_property(&timeline_properties);
+        self.updating_volume.set(true);
+        self.fullscreen_volume.set_value(self.volume.value());
+        self.updating_volume.set(false);
         self.volume_value
             .set_text(&format!("{}%", self.volume.value().round() as u8));
-        self.mute.set_label(if self.volume.value() <= 0.0 {
-            "🔇"
+        let muted = self.volume.value() <= 0.0;
+        let volume_icon = if muted {
+            "audio-volume-muted-symbolic"
         } else {
-            "🔊"
-        });
-        self.volume.update_property(&[
+            "audio-volume-high-symbolic"
+        };
+        let volume_label = if muted {
+            "Unmute player"
+        } else {
+            "Mute player"
+        };
+        self.mute_icon.set_icon_name(Some(volume_icon));
+        self.fullscreen_mute_icon.set_icon_name(Some(volume_icon));
+        let volume_properties = [
             gtk::accessible::Property::Label("Player volume"),
             gtk::accessible::Property::ValueText(&format!(
                 "{} percent",
                 self.volume.value().round() as u8
             )),
-        ]);
+        ];
+        self.volume.update_property(&volume_properties);
+        self.fullscreen_volume.update_property(&volume_properties);
         self.mute
-            .update_property(&[gtk::accessible::Property::Label(
-                if self.volume.value() <= 0.0 {
-                    "Unmute player"
-                } else {
-                    "Mute player"
-                },
-            )]);
+            .update_property(&[gtk::accessible::Property::Label(volume_label)]);
+        self.fullscreen_mute
+            .update_property(&[gtk::accessible::Property::Label(volume_label)]);
     }
 
     fn toggle_mute(&self) {
@@ -336,7 +378,18 @@ impl PlayerState {
         }
     }
 
+    fn apply_audio(&self) {
+        let (volume, muted) = player_audio_settings(self.volume.value());
+        self.media.set_volume(volume);
+        self.media.set_muted(muted);
+    }
+
     fn toggle_fullscreen(&self) {
+        if self.windowed_child.borrow().is_some() {
+            self.exit_fullscreen();
+            return;
+        }
+
         let Some(window) = self
             .stage
             .root()
@@ -344,35 +397,70 @@ impl PlayerState {
         else {
             return;
         };
-        if window.is_fullscreen() {
-            window.unfullscreen();
-            self.fullscreen
-                .update_property(&[gtk::accessible::Property::Label("Enter fullscreen")]);
-        } else {
-            window.fullscreen();
-            self.fullscreen
-                .update_property(&[gtk::accessible::Property::Label("Exit fullscreen")]);
-        }
+        let Some(windowed_child) = window.child() else {
+            return;
+        };
+
+        self.windowed_child.replace(Some(windowed_child));
+        self.fullscreen_window.replace(Some(window.downgrade()));
+        window.set_child(Some(&self.fullscreen_root));
+        window.fullscreen();
+        self.fullscreen.set_tooltip_text(Some("Exit fullscreen"));
+        self.fullscreen
+            .update_property(&[gtk::accessible::Property::Label("Exit fullscreen")]);
     }
 
     fn exit_fullscreen(&self) -> bool {
-        let Some(window) = self
-            .stage
-            .root()
-            .and_then(|root| root.downcast::<gtk::Window>().ok())
-        else {
+        let window = self
+            .fullscreen_window
+            .borrow_mut()
+            .take()
+            .and_then(|window| window.upgrade());
+        let windowed_child = self.windowed_child.borrow_mut().take();
+        let (Some(window), Some(windowed_child)) = (window, windowed_child) else {
             return false;
         };
-        if !window.is_fullscreen() {
-            return false;
-        }
+
         window.unfullscreen();
+        window.set_child(Some(&windowed_child));
+        if let Some(source) = self.fullscreen_hide_source.borrow_mut().take() {
+            source.remove();
+        }
+        self.fullscreen_controls.set_visible(true);
+        self.fullscreen.set_tooltip_text(Some("Enter fullscreen"));
+        self.fullscreen
+            .update_property(&[gtk::accessible::Property::Label("Enter fullscreen")]);
         true
     }
 }
 
+fn reveal_fullscreen_controls(player: &Rc<PlayerState>) {
+    if player.windowed_child.borrow().is_none() {
+        return;
+    }
+    player.fullscreen_controls.set_visible(true);
+    if let Some(source) = player.fullscreen_hide_source.borrow_mut().take() {
+        source.remove();
+    }
+    let weak_player = Rc::downgrade(player);
+    let source = glib::timeout_add_local_once(Duration::from_secs(3), move || {
+        if let Some(player) = weak_player.upgrade()
+            && player.windowed_child.borrow().is_some()
+        {
+            player.fullscreen_controls.set_visible(false);
+            player.fullscreen_hide_source.borrow_mut().take();
+        }
+    });
+    player.fullscreen_hide_source.replace(Some(source));
+}
+
 fn media_seconds(microseconds: i64) -> f64 {
     microseconds.max(0) as f64 / 1_000_000.0
+}
+
+fn player_audio_settings(percent: f64) -> (f64, bool) {
+    let volume = percent.clamp(0.0, 100.0) / 100.0;
+    (volume, volume <= f64::EPSILON)
 }
 
 fn format_player_time(seconds: f64) -> String {
@@ -380,7 +468,7 @@ fn format_player_time(seconds: f64) -> String {
     format!("{:02}:{:02}", total / 60, total % 60)
 }
 
-pub fn build(stack: &Stack) -> ClipViews {
+pub fn build(stack: &Stack, on_library_change: impl Fn() + 'static) -> ClipViews {
     let paths = AppPaths::discover();
     let config = Config::load(&paths).unwrap_or_default();
     let _ = std::fs::create_dir_all(&config.storage.directory);
@@ -461,7 +549,8 @@ pub fn build(stack: &Stack) -> ClipViews {
 
     let state = Rc::new(LibraryState {
         clips: RefCell::new(Vec::new()),
-        directory: config.storage.directory.clone(),
+        directory: RefCell::new(config.storage.directory.clone()),
+        directory_monitor: RefCell::new(None),
         thumbnail_directory: paths.thumbnail_dir.clone(),
         flow,
         scroll,
@@ -487,6 +576,7 @@ pub fn build(stack: &Stack) -> ClipViews {
         selected_clips: RefCell::new(HashSet::new()),
         library_controls: library_controls.clone(),
         collection_controls: collections_page.controls.clone(),
+        on_library_change: Rc::new(on_library_change),
     });
 
     let completed_state = Rc::downgrade(&state);
@@ -558,20 +648,6 @@ pub fn build(stack: &Stack) -> ClipViews {
             .to_owned();
         confirm_delete_collection(button, &name, &path, &delete_state);
     });
-
-    if let Ok(monitor) = gio::File::for_path(&config.storage.directory)
-        .monitor_directory(gio::FileMonitorFlags::NONE, None::<&gio::Cancellable>)
-    {
-        let monitor = Rc::new(monitor);
-        let monitor_keepalive = monitor.clone();
-        let monitor_state = state.clone();
-        let clip_directory = config.storage.directory.clone();
-        monitor.connect_changed(move |_, _, _, _| {
-            let _ = &monitor_keepalive;
-            let _ = &clip_directory;
-            refresh_all(&monitor_state);
-        });
-    }
 
     ClipViews {
         library: page,
@@ -752,11 +828,48 @@ fn reload_clips(state: &LibraryState, directory: &std::path::Path) {
 }
 
 fn refresh_all(state: &Rc<LibraryState>) {
-    reload_clips(state, &state.directory);
+    let configured_directory = Config::load(&AppPaths::discover())
+        .unwrap_or_default()
+        .storage
+        .directory;
+    let directory_changed = *state.directory.borrow() != configured_directory;
+    if directory_changed {
+        let _ = std::fs::create_dir_all(&configured_directory);
+        state.directory.replace(configured_directory.clone());
+        state
+            .player
+            .library_directory
+            .replace(configured_directory.clone());
+        state.selected_collection.replace(None);
+        state.selected_clips.borrow_mut().clear();
+        state.selection_mode.set(false);
+    }
+    if directory_changed || state.directory_monitor.borrow().is_none() {
+        install_directory_monitor(state);
+    }
+    reload_clips(state, &configured_directory);
     state.preview_widgets.borrow_mut().clear();
     render_clips(state);
     render_collections(state);
     update_selection_controls(state);
+    (state.on_library_change)();
+}
+
+fn install_directory_monitor(state: &Rc<LibraryState>) {
+    let directory = state.directory.borrow().clone();
+    let Ok(monitor) = gio::File::for_path(directory)
+        .monitor_directory(gio::FileMonitorFlags::NONE, None::<&gio::Cancellable>)
+    else {
+        state.directory_monitor.replace(None);
+        return;
+    };
+    let monitor_state = Rc::downgrade(state);
+    monitor.connect_changed(move |_, _, _, _| {
+        if let Some(state) = monitor_state.upgrade() {
+            refresh_all(&state);
+        }
+    });
+    state.directory_monitor.replace(Some(monitor));
 }
 
 fn render_clips(state: &Rc<LibraryState>) {
@@ -816,7 +929,7 @@ fn render_collections(state: &Rc<LibraryState>) {
     let query = state.search.text().trim().to_ascii_lowercase();
     let all = collection_button("All clips", state.clips.borrow().len(), None, state);
     state.collection_tiles.insert(&all, -1);
-    for collection in clips::collections(&state.directory).unwrap_or_default() {
+    for collection in clips::collections(state.directory.borrow().as_path()).unwrap_or_default() {
         let button = collection_button(
             &collection.name,
             collection.clip_count,
@@ -922,7 +1035,7 @@ fn collection_button(
             };
             match clips::move_to_collection(
                 &clip,
-                &drop_state.directory,
+                drop_state.directory.borrow().as_path(),
                 &collection_path,
                 &drop_state.thumbnail_directory,
             ) {
@@ -989,7 +1102,7 @@ fn confirm_delete_collection(
     let remove_state = state.clone();
     confirm.connect_clicked(move |_| {
         match clips::delete_collection(
-            &remove_state.directory,
+            remove_state.directory.borrow().as_path(),
             &removed_path,
             &remove_state.thumbnail_directory,
         ) {
@@ -1059,7 +1172,10 @@ fn show_create_collection(button: &Button, state: &Rc<LibraryState>) {
     let create_state = state.clone();
     let entered_name = name.clone();
     create.connect_clicked(move |_| {
-        match clips::create_collection(&create_state.directory, entered_name.text().as_str()) {
+        match clips::create_collection(
+            create_state.directory.borrow().as_path(),
+            entered_name.text().as_str(),
+        ) {
             Ok(path) => {
                 create_state.selected_collection.replace(Some(path));
                 create_state.count.remove_css_class("error");
@@ -1176,7 +1292,8 @@ fn update_selection_controls(state: &LibraryState) {
     let selection_mode = state.selection_mode.get();
     let selected = state.selected_clips.borrow().len();
     let can_move = selected > 0
-        && clips::collections(&state.directory).is_ok_and(|collections| !collections.is_empty());
+        && clips::collections(state.directory.borrow().as_path())
+            .is_ok_and(|collections| !collections.is_empty());
     for controls in [&state.library_controls, &state.collection_controls] {
         controls.browse_actions.set_visible(!selection_mode);
         controls.selection_actions.set_visible(selection_mode);
@@ -1188,7 +1305,7 @@ fn update_selection_controls(state: &LibraryState) {
 }
 
 fn show_move_selected(button: &Button, state: &Rc<LibraryState>) {
-    let collections = clips::collections(&state.directory).unwrap_or_default();
+    let collections = clips::collections(state.directory.borrow().as_path()).unwrap_or_default();
     if collections.is_empty() || state.selected_clips.borrow().is_empty() {
         return;
     }
@@ -1260,7 +1377,7 @@ fn move_selected_to_collection(state: &Rc<LibraryState>, destination: &std::path
     for clip in chosen {
         match clips::move_to_collection(
             &clip,
-            &state.directory,
+            state.directory.borrow().as_path(),
             destination,
             &state.thumbnail_directory,
         ) {
@@ -1496,7 +1613,7 @@ fn show_clip_menu(
     content.append(&edit);
     let rename = menu_action("Rename");
     content.append(&rename);
-    let collections = clips::collections(&state.directory).unwrap_or_default();
+    let collections = clips::collections(state.directory.borrow().as_path()).unwrap_or_default();
     if !collections.is_empty() {
         let move_label = Label::new(Some("Move to collection"));
         move_label.add_css_class("menu-section-label");
@@ -1512,7 +1629,7 @@ fn show_clip_menu(
         action.connect_clicked(move |_| {
             match clips::move_to_collection(
                 &moved_clip,
-                &move_state.directory,
+                move_state.directory.borrow().as_path(),
                 &destination,
                 &move_state.thumbnail_directory,
             ) {
@@ -1768,12 +1885,18 @@ fn build_player(
     stage_row.add_css_class("player-stage-row");
     stage_row.set_hexpand(true);
     stage_row.set_vexpand(true);
-    let previous = Button::with_label("‹");
+    let previous_icon = Image::from_icon_name("go-previous-symbolic");
+    previous_icon.set_pixel_size(24);
+    let previous = Button::new();
+    previous.set_child(Some(&previous_icon));
     previous.add_css_class("player-step");
     previous.set_tooltip_text(Some("Previous clip"));
     previous.update_property(&[gtk::accessible::Property::Label("Previous clip")]);
     previous.set_sensitive(false);
-    let next = Button::with_label("›");
+    let next_icon = Image::from_icon_name("go-next-symbolic");
+    next_icon.set_pixel_size(24);
+    let next = Button::new();
+    next.set_child(Some(&next_icon));
     next.add_css_class("player-step");
     next.set_tooltip_text(Some("Next clip"));
     next.update_property(&[gtk::accessible::Property::Label("Next clip")]);
@@ -1793,7 +1916,10 @@ fn build_player(
     volume.set_size_request(36, 142);
     volume.set_tooltip_text(Some("Player volume"));
     volume.update_property(&[gtk::accessible::Property::Label("Player volume")]);
-    let mute = Button::with_label("🔊");
+    let mute_icon = Image::from_icon_name("audio-volume-high-symbolic");
+    mute_icon.set_pixel_size(18);
+    let mute = Button::new();
+    mute.set_child(Some(&mute_icon));
     mute.add_css_class("player-media-action");
     mute.set_tooltip_text(Some("Mute player"));
     mute.update_property(&[gtk::accessible::Property::Label("Mute player")]);
@@ -1807,7 +1933,10 @@ fn build_player(
     let controls = GtkBox::new(Orientation::Horizontal, 12);
     controls.add_css_class("player-controls");
     controls.set_margin_top(14);
-    let play_pause = Button::with_label("▶");
+    let play_pause_icon = Image::from_icon_name("media-playback-start-symbolic");
+    play_pause_icon.set_pixel_size(20);
+    let play_pause = Button::new();
+    play_pause.set_child(Some(&play_pause_icon));
     play_pause.add_css_class("player-media-action");
     play_pause.set_tooltip_text(Some("Play or pause"));
     play_pause.update_property(&[
@@ -1820,7 +1949,10 @@ fn build_player(
     timeline.set_hexpand(true);
     timeline.set_tooltip_text(Some("Playback position"));
     timeline.update_property(&[gtk::accessible::Property::Label("Playback position")]);
-    let fullscreen = Button::with_label("⛶");
+    let fullscreen_icon = Image::from_icon_name("view-fullscreen-symbolic");
+    fullscreen_icon.set_pixel_size(18);
+    let fullscreen = Button::new();
+    fullscreen.set_child(Some(&fullscreen_icon));
     fullscreen.add_css_class("player-media-action");
     fullscreen.set_tooltip_text(Some("Enter fullscreen"));
     fullscreen.update_property(&[
@@ -1835,26 +1967,148 @@ fn build_player(
     controls.append(&time);
     page.append(&controls);
 
+    let fullscreen_root = Overlay::new();
+    fullscreen_root.add_css_class("fullscreen-player");
+    fullscreen_root.set_hexpand(true);
+    fullscreen_root.set_vexpand(true);
+    let fullscreen_stage = Picture::for_paintable(&media);
+    fullscreen_stage.add_css_class("fullscreen-video");
+    fullscreen_stage.set_content_fit(ContentFit::Contain);
+    fullscreen_stage.set_can_shrink(true);
+    fullscreen_stage.set_halign(Align::Fill);
+    fullscreen_stage.set_valign(Align::Fill);
+    fullscreen_stage.set_hexpand(true);
+    fullscreen_stage.set_vexpand(true);
+    fullscreen_root.set_child(Some(&fullscreen_stage));
+
+    let fullscreen_controls = GtkBox::new(Orientation::Vertical, 0);
+    fullscreen_controls.add_css_class("fullscreen-controls");
+    fullscreen_controls.set_halign(Align::Fill);
+    fullscreen_controls.set_valign(Align::End);
+    fullscreen_controls.set_hexpand(true);
+    fullscreen_controls.set_size_request(-1, 80);
+    let fullscreen_timeline = Scale::with_range(Orientation::Horizontal, 0.0, 1.0, 0.01);
+    fullscreen_timeline.add_css_class("player-timeline");
+    fullscreen_timeline.add_css_class("fullscreen-timeline");
+    fullscreen_timeline.set_draw_value(false);
+    fullscreen_timeline.set_hexpand(true);
+    fullscreen_timeline.set_tooltip_text(Some("Playback position"));
+    fullscreen_timeline.update_property(&[gtk::accessible::Property::Label("Playback position")]);
+    fullscreen_controls.append(&fullscreen_timeline);
+
+    let fullscreen_row = GtkBox::new(Orientation::Horizontal, 4);
+    fullscreen_row.add_css_class("fullscreen-controls-row");
+    fullscreen_row.set_hexpand(true);
+    fullscreen_row.set_valign(Align::Center);
+    let fullscreen_play_pause_icon = Image::from_icon_name("media-playback-start-symbolic");
+    fullscreen_play_pause_icon.set_pixel_size(20);
+    let fullscreen_play_pause = Button::new();
+    fullscreen_play_pause.set_child(Some(&fullscreen_play_pause_icon));
+    fullscreen_play_pause.add_css_class("player-media-action");
+    fullscreen_play_pause.set_tooltip_text(Some("Play or pause"));
+    fullscreen_play_pause.update_property(&[
+        gtk::accessible::Property::Label("Play"),
+        gtk::accessible::Property::KeyShortcuts("Space"),
+    ]);
+    let fullscreen_previous_icon = Image::from_icon_name("go-previous-symbolic");
+    fullscreen_previous_icon.set_pixel_size(18);
+    let fullscreen_previous = Button::new();
+    fullscreen_previous.set_child(Some(&fullscreen_previous_icon));
+    fullscreen_previous.add_css_class("player-media-action");
+    fullscreen_previous.set_tooltip_text(Some("Previous clip"));
+    fullscreen_previous.update_property(&[gtk::accessible::Property::Label("Previous clip")]);
+    fullscreen_previous.set_sensitive(false);
+    let fullscreen_next_icon = Image::from_icon_name("go-next-symbolic");
+    fullscreen_next_icon.set_pixel_size(18);
+    let fullscreen_next = Button::new();
+    fullscreen_next.set_child(Some(&fullscreen_next_icon));
+    fullscreen_next.add_css_class("player-media-action");
+    fullscreen_next.set_tooltip_text(Some("Next clip"));
+    fullscreen_next.update_property(&[gtk::accessible::Property::Label("Next clip")]);
+    fullscreen_next.set_sensitive(false);
+    let fullscreen_mute_icon = Image::from_icon_name("audio-volume-high-symbolic");
+    fullscreen_mute_icon.set_pixel_size(18);
+    let fullscreen_mute = Button::new();
+    fullscreen_mute.set_child(Some(&fullscreen_mute_icon));
+    fullscreen_mute.add_css_class("player-media-action");
+    fullscreen_mute.set_tooltip_text(Some("Mute player"));
+    fullscreen_mute.update_property(&[gtk::accessible::Property::Label("Mute player")]);
+    let fullscreen_volume = Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
+    fullscreen_volume.add_css_class("player-timeline");
+    fullscreen_volume.add_css_class("fullscreen-volume-slider");
+    fullscreen_volume.set_draw_value(false);
+    fullscreen_volume.set_value(100.0);
+    fullscreen_volume.set_size_request(130, -1);
+    fullscreen_volume.set_tooltip_text(Some("Player volume"));
+    fullscreen_volume.update_property(&[gtk::accessible::Property::Label("Player volume")]);
+    let fullscreen_time = Label::new(Some("00:00 / 00:00"));
+    fullscreen_time.add_css_class("player-time");
+    fullscreen_time.add_css_class("fullscreen-time");
+    fullscreen_time.set_margin_start(12);
+    let fullscreen_row_spacer = GtkBox::new(Orientation::Horizontal, 0);
+    fullscreen_row_spacer.set_hexpand(true);
+    let fullscreen_exit_label = Label::new(Some("Exit fullscreen"));
+    fullscreen_exit_label.add_css_class("fullscreen-exit-label");
+    let fullscreen_exit_icon = Image::from_icon_name("view-restore-symbolic");
+    fullscreen_exit_icon.set_pixel_size(20);
+    let fullscreen_exit = Button::new();
+    fullscreen_exit.set_child(Some(&fullscreen_exit_icon));
+    fullscreen_exit.add_css_class("player-media-action");
+    fullscreen_exit.add_css_class("fullscreen-exit-action");
+    fullscreen_exit.set_tooltip_text(Some("Exit fullscreen"));
+    fullscreen_exit.update_property(&[
+        gtk::accessible::Property::Label("Exit fullscreen"),
+        gtk::accessible::Property::KeyShortcuts("Escape"),
+    ]);
+    fullscreen_row.append(&fullscreen_play_pause);
+    fullscreen_row.append(&fullscreen_previous);
+    fullscreen_row.append(&fullscreen_next);
+    fullscreen_row.append(&fullscreen_mute);
+    fullscreen_row.append(&fullscreen_volume);
+    fullscreen_row.append(&fullscreen_time);
+    fullscreen_row.append(&fullscreen_row_spacer);
+    fullscreen_row.append(&fullscreen_exit_label);
+    fullscreen_row.append(&fullscreen_exit);
+    fullscreen_controls.append(&fullscreen_row);
+    fullscreen_root.add_overlay(&fullscreen_controls);
+
     let player = Rc::new(PlayerState {
         media,
         stage,
+        fullscreen_root,
+        fullscreen_window: RefCell::new(None),
+        windowed_child: RefCell::new(None),
         title,
         meta,
         current: RefCell::new(None),
-        library_directory: library_directory.to_owned(),
+        library_directory: RefCell::new(library_directory.to_owned()),
         playlist: RefCell::new(Vec::new()),
         current_index: Cell::new(None),
         return_page: RefCell::new("library".to_owned()),
         previous,
         next,
         play_pause,
+        play_pause_icon,
         timeline,
         time,
         volume,
         volume_value,
         mute,
+        mute_icon,
         fullscreen,
+        fullscreen_controls,
+        fullscreen_previous,
+        fullscreen_next,
+        fullscreen_play_pause,
+        fullscreen_play_pause_icon,
+        fullscreen_timeline,
+        fullscreen_time,
+        fullscreen_volume,
+        fullscreen_mute,
+        fullscreen_mute_icon,
+        fullscreen_hide_source: RefCell::new(None),
         updating_timeline: Cell::new(false),
+        updating_volume: Cell::new(false),
         last_audible_volume: Cell::new(100.0),
     });
 
@@ -1868,8 +2122,9 @@ fn build_player(
 
     let reveal_player = player.clone();
     reveal.connect_clicked(move |_| {
+        let directory = reveal_player.library_directory.borrow().clone();
         let _ = Command::new("xdg-open")
-            .arg(&reveal_player.library_directory)
+            .arg(directory)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1916,17 +2171,93 @@ fn build_player(
         if value > 0.0 {
             volume_player.last_audible_volume.set(value);
         }
-        volume_player.media.set_volume(value / 100.0);
+        volume_player.apply_audio();
         volume_player.update_controls();
+    });
+    let prepared_player = Rc::downgrade(&player);
+    player.media.connect_prepared_notify(move |_| {
+        if let Some(player) = prepared_player.upgrade() {
+            player.apply_audio();
+        }
     });
     let mute_player = player.clone();
     player
         .mute
         .connect_clicked(move |_| mute_player.toggle_mute());
     let fullscreen_player = player.clone();
+    player.fullscreen.connect_clicked(move |_| {
+        fullscreen_player.toggle_fullscreen();
+        reveal_fullscreen_controls(&fullscreen_player);
+    });
+    let fullscreen_previous_player = player.clone();
+    player.fullscreen_previous.connect_clicked(move |_| {
+        fullscreen_previous_player.step(-1);
+        reveal_fullscreen_controls(&fullscreen_previous_player);
+    });
+    let fullscreen_next_player = player.clone();
+    player.fullscreen_next.connect_clicked(move |_| {
+        fullscreen_next_player.step(1);
+        reveal_fullscreen_controls(&fullscreen_next_player);
+    });
+    let fullscreen_playback_player = player.clone();
+    player.fullscreen_play_pause.connect_clicked(move |_| {
+        _ = fullscreen_playback_player.toggle_playback();
+        reveal_fullscreen_controls(&fullscreen_playback_player);
+    });
+    let fullscreen_stage_player = Rc::downgrade(&player);
+    let fullscreen_stage_click = GestureClick::new();
+    fullscreen_stage_click.connect_released(move |_, _, _, _| {
+        if let Some(player) = fullscreen_stage_player.upgrade() {
+            _ = player.toggle_playback();
+            reveal_fullscreen_controls(&player);
+        }
+    });
+    fullscreen_stage.add_controller(fullscreen_stage_click);
+    let fullscreen_seek_player = player.clone();
     player
-        .fullscreen
-        .connect_clicked(move |_| fullscreen_player.toggle_fullscreen());
+        .fullscreen_timeline
+        .connect_value_changed(move |scale| {
+            if fullscreen_seek_player.updating_timeline.get()
+                || !fullscreen_seek_player.media.is_seekable()
+            {
+                return;
+            }
+            fullscreen_seek_player
+                .media
+                .seek((scale.value() * 1_000_000.0).round() as i64);
+            reveal_fullscreen_controls(&fullscreen_seek_player);
+        });
+    let fullscreen_volume_player = player.clone();
+    player
+        .fullscreen_volume
+        .connect_value_changed(move |scale| {
+            if fullscreen_volume_player.updating_volume.get() {
+                return;
+            }
+            fullscreen_volume_player
+                .volume
+                .set_value(scale.value().clamp(0.0, 100.0));
+            reveal_fullscreen_controls(&fullscreen_volume_player);
+        });
+    let fullscreen_mute_player = player.clone();
+    player.fullscreen_mute.connect_clicked(move |_| {
+        fullscreen_mute_player.toggle_mute();
+        reveal_fullscreen_controls(&fullscreen_mute_player);
+    });
+    let fullscreen_exit_player = Rc::downgrade(&player);
+    fullscreen_exit.connect_clicked(move |_| {
+        if let Some(player) = fullscreen_exit_player.upgrade() {
+            player.exit_fullscreen();
+        }
+    });
+    let fullscreen_motion_player = Rc::downgrade(&player);
+    let fullscreen_motion = EventControllerMotion::new();
+    fullscreen_motion.connect_motion(move |_, _, _| {
+        if let Some(player) = fullscreen_motion_player.upgrade() {
+            reveal_fullscreen_controls(&player);
+        }
+    });
+    player.fullscreen_root.add_controller(fullscreen_motion);
 
     let update_player = player.clone();
     let update_stack = stack.clone();
@@ -1952,6 +2283,13 @@ mod tests {
         assert_eq!(format_player_time(0.0), "00:00");
         assert_eq!(format_player_time(65.4), "01:05");
         assert_eq!(format_player_time(3_661.0), "61:01");
+    }
+
+    #[test]
+    fn preview_volume_drives_both_stream_gain_and_real_mute() {
+        assert_eq!(player_audio_settings(0.0), (0.0, true));
+        assert_eq!(player_audio_settings(35.0), (0.35, false));
+        assert_eq!(player_audio_settings(150.0), (1.0, false));
     }
 
     #[test]

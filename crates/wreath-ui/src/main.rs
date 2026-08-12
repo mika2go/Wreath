@@ -110,7 +110,8 @@ fn build_ui(application: &Application) {
     content.set_transition_duration(0);
 
     let home_view = home::build();
-    let clip_views = library::build(&content);
+    let refreshed_home = home_view.clone();
+    let clip_views = library::build(&content, move || refreshed_home.refresh());
     let settings_page = settings::build();
 
     let search_shell = GtkBox::new(Orientation::Horizontal, 8);
@@ -191,8 +192,10 @@ fn build_ui(application: &Application) {
     let collections_button = collections_nav.clone();
     let settings_button = settings_nav.clone();
     let home_views = clip_views.clone();
+    let home_status = home_view.clone();
     home_nav.connect_clicked(move |_| {
         home_views.clear_selection();
+        home_status.refresh();
         home_stack.set_visible_child_name("home");
         set_active_nav(
             &home_button,
@@ -308,27 +311,11 @@ fn install_responsive_layout(
         let width = window.width();
         let compact_sidebar = width < 1_080;
         let narrow_content = width < 1_080;
-        let compact_header = width <= 980;
-        let clip_columns = if width >= 1_500 {
-            6
-        } else if width >= 1_100 {
-            4
-        } else if width >= 820 {
-            3
-        } else if width >= 620 {
-            2
-        } else {
-            1
-        };
-        let collection_columns = if width >= 1_250 {
-            4
-        } else if width >= 1_080 {
-            3
-        } else if width >= 820 {
-            2
-        } else {
-            1
-        };
+        // The Windows layout keeps page headings and actions on one line for
+        // every supported window size (the Linux window minimum is 980 px).
+        let compact_header = width < 900;
+        let clip_columns = clip_columns_for_window(width);
+        let collection_columns = collection_columns_for_window(width);
         let current = (
             compact_sidebar,
             narrow_content,
@@ -345,8 +332,8 @@ fn install_responsive_layout(
         set_css_class(&content, "narrow", narrow_content);
         set_css_class(&content, "very-narrow", compact_header);
         clip_views.set_layout(compact_header, clip_columns, collection_columns);
-        home_view.set_layout(compact_sidebar, compact_header);
-        settings_view.set_compact(compact_sidebar);
+        home_view.set_layout(width, window.height());
+        settings_view.set_layout(width, window.height());
         content.set_hhomogeneous(compact_header);
         ControlFlow::Continue
     });
@@ -357,5 +344,59 @@ fn set_css_class(widget: &impl IsA<gtk::Widget>, class_name: &str, enabled: bool
         widget.add_css_class(class_name);
     } else {
         widget.remove_css_class(class_name);
+    }
+}
+
+fn windows_page_width(window_width: i32) -> f32 {
+    let rail = if window_width < 1_080 { 72.0 } else { 88.0 };
+    let padding = if window_width < 1_080 {
+        28.0
+    } else if window_width < 1_300 {
+        36.0
+    } else {
+        48.0
+    };
+    (window_width as f32 - rail - padding * 2.0).max(1.0)
+}
+
+fn clip_columns_for_width(width: f32) -> u32 {
+    if width >= 1_300.0 {
+        6
+    } else if width >= 900.0 {
+        4
+    } else if width >= 650.0 {
+        3
+    } else if width >= 450.0 {
+        2
+    } else {
+        1
+    }
+}
+
+fn clip_columns_for_window(window_width: i32) -> u32 {
+    clip_columns_for_width(windows_page_width(window_width))
+}
+
+fn collection_columns_for_window(window_width: i32) -> u32 {
+    let page_width = windows_page_width(window_width);
+    let sidebar_width = (page_width * 0.24).clamp(170.0, 240.0);
+    clip_columns_for_width((page_width - sidebar_width - 26.0).max(1.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clip_columns_for_window, collection_columns_for_window};
+
+    #[test]
+    fn responsive_columns_follow_the_windows_renderer_geometry() {
+        assert_eq!(clip_columns_for_window(1_500), 6);
+        assert_eq!(clip_columns_for_window(1_440), 4);
+        assert_eq!(clip_columns_for_window(1_080), 4);
+        assert_eq!(clip_columns_for_window(980), 3);
+
+        assert_eq!(collection_columns_for_window(1_440), 4);
+        assert_eq!(collection_columns_for_window(1_280), 3);
+        assert_eq!(collection_columns_for_window(1_080), 3);
+        assert_eq!(collection_columns_for_window(980), 2);
     }
 }

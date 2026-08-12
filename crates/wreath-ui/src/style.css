@@ -198,8 +198,8 @@ button.nav-button.active {
 .content-area.narrow .player-page,
 .content-area.narrow .editor-page,
 .content-area.narrow .settings-page {
-  padding-left: 24px;
-  padding-right: 24px;
+  padding-left: 28px;
+  padding-right: 28px;
 }
 
 .content-area.very-narrow .clips-page,
@@ -207,7 +207,7 @@ button.nav-button.active {
 .content-area.very-narrow .player-page,
 .content-area.very-narrow .editor-page,
 .content-area.very-narrow .settings-page {
-  padding: 24px 16px 20px;
+  padding: 24px 28px 20px;
 }
 
 .content-area.narrow .home-page,
@@ -789,6 +789,40 @@ button.danger-action:hover {
   border-radius: 12px;
 }
 
+.fullscreen-player,
+.fullscreen-video {
+  background: #000000;
+}
+
+.fullscreen-controls {
+  min-height: 80px;
+  background: linear-gradient(to bottom, rgba(9, 9, 11, 0.08), rgba(9, 9, 11, 0.96));
+}
+
+.fullscreen-timeline {
+  margin: 6px 24px 0;
+}
+
+.fullscreen-controls-row {
+  min-height: 54px;
+  margin: 0 14px 4px;
+}
+
+.fullscreen-volume-slider {
+  min-width: 130px;
+}
+
+.fullscreen-time,
+.fullscreen-exit-label {
+  color: #c4c5cc;
+  font-size: 10px;
+  font-feature-settings: "tnum";
+}
+
+.fullscreen-exit-label {
+  margin-right: 4px;
+}
+
 .player-stage-row {
   padding: 0 4px;
 }
@@ -799,30 +833,51 @@ button.player-media-action {
   min-height: 40px;
   padding: 0;
   color: #f5f5f7;
-  background: #1c1c20;
-  border: 1px solid #2f2f35;
-  border-radius: 99px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
   box-shadow: none;
-  font-size: 17px;
+  outline: 0 solid transparent;
+  outline-offset: 2px;
+  transition: color 140ms ease-out, outline-color 140ms ease-out;
 }
 
 button.player-step {
   min-width: 44px;
   min-height: 44px;
-  font-size: 25px;
 }
 
 button.player-step:hover,
 button.player-media-action:hover {
   color: #ffffff;
-  background: #29292f;
-  border-color: #46464f;
+  background: transparent;
+  border: none;
+}
+
+button.player-step > image,
+button.player-media-action > image,
+.editor-video button > image {
+  transform: translateY(0);
+  transition: transform 140ms ease-out;
+}
+
+button.player-step:hover > image,
+button.player-media-action:hover > image,
+.editor-video button:hover > image {
+  transform: translateY(-2px);
+}
+
+button.player-step:focus-visible,
+button.player-media-action:focus-visible,
+.editor-video button:focus-visible {
+  outline: 1px solid rgba(245, 245, 247, 0.72);
+  outline-offset: 2px;
 }
 
 button.player-step:disabled {
   color: #53535c;
   background: transparent;
-  border-color: transparent;
+  border: none;
 }
 
 .player-volume {
@@ -872,6 +927,17 @@ button.player-step:disabled {
   border-radius: 10px;
 }
 
+.editor-video button,
+.editor-video button:hover,
+.editor-video button:active,
+.editor-video button:checked {
+  color: #f5f5f7;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 .editor-timeline {
   padding: 10px 16px 10px;
   background: rgba(255, 255, 255, 0.035);
@@ -907,7 +973,7 @@ button.player-step:disabled {
 }
 
 button.settings-tab {
-  min-width: 96px;
+  min-width: 112px;
   min-height: 42px;
   padding: 0 14px;
   color: #747a89;
@@ -926,18 +992,18 @@ button.settings-tab:hover {
 }
 
 button.settings-tab.active {
-  color: #76d9a3;
-  background: rgba(73, 211, 137, 0.075);
-  border-color: rgba(73, 211, 137, 0.72);
+  color: #f5f5f7;
+  background: #35353c;
+  border-color: #edeef2;
 }
 
 button.settings-save-action {
   min-height: 42px;
-  padding: 0 4px;
-  color: #76d9a3;
-  background: transparent;
-  border: none;
-  border-radius: 0;
+  padding: 0 18px;
+  color: #09090b;
+  background: #edeef2;
+  border: 1px solid #edeef2;
+  border-radius: 9px;
   outline: none;
   box-shadow: none;
   font-weight: 700;
@@ -945,16 +1011,19 @@ button.settings-save-action {
 
 button.settings-save-action:hover,
 button.settings-save-action:focus-visible {
-  color: #9be9bd;
-  background: transparent;
-  outline: none;
+  color: #09090b;
+  background: #ffffff;
+  border-color: #ffffff;
+  outline: 2px solid rgba(255, 255, 255, 0.42);
+  outline-offset: 2px;
   box-shadow: none;
 }
 
 button.settings-save-action.saved,
 button.settings-save-action.saved:hover {
-  color: #76d9a3;
-  background: transparent;
+  color: #09090b;
+  background: #76d9a3;
+  border-color: #76d9a3;
 }
 
 .settings-panel-description {
@@ -969,8 +1038,24 @@ button.settings-save-action.saved:hover {
 }
 
 .row-detail {
-  color: #686e7d;
+  color: #8d929f;
   font-size: 10px;
+}
+
+.settings-row {
+  min-height: 76px;
+  padding: 0 16px 0 18px;
+  background: #1c1c20;
+  border: 1px solid #393940;
+  border-radius: 11px;
+}
+
+.settings-row:hover {
+  background: #202024;
+}
+
+.settings-control:disabled {
+  opacity: 0.52;
 }
 
 .gain-value {
@@ -985,31 +1070,56 @@ separator {
   background: rgba(255, 255, 255, 0.065);
 }
 
-entry:not(.search),
-dropdown,
-spinbutton {
-  min-height: 36px;
-  padding: 0 4px;
+.settings-control {
+  min-height: 42px;
+  padding: 0 14px;
   color: #eceef4;
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.11);
-  border-radius: 0;
+  background: #2d2d33;
+  border: 1px solid #393940;
+  border-radius: 9px;
   box-shadow: none;
 }
 
-entry:not(.search):focus,
-dropdown:focus,
-spinbutton:focus {
-  border-bottom-color: rgba(255, 255, 255, 0.8);
-  outline: none;
+.settings-control:focus,
+dropdown.settings-control:focus,
+checkbutton.settings-control:focus-visible {
+  border-color: #edeef2;
+  outline: 2px solid rgba(237, 238, 242, 0.26);
+  outline-offset: 2px;
   box-shadow: none;
 }
 
-entry.recording:not(.search),
-entry.recording:not(.search):focus {
+entry.settings-control.recording:not(.search),
+entry.settings-control.recording:not(.search):focus {
   color: #ffffff;
-  border-bottom-color: rgba(255, 255, 255, 0.95);
+  border-color: rgba(255, 255, 255, 0.95);
+}
+
+checkbutton.settings-control {
+  font-weight: 700;
+}
+
+checkbutton.settings-control:checked {
+  color: #f5f5f7;
+  background: #35353c;
+  border-color: #edeef2;
+}
+
+checkbutton.settings-control check {
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+}
+
+box.settings-control entry {
+  min-height: 38px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
 }
 
 popover arrow {
@@ -1042,6 +1152,23 @@ spinbutton button {
   background: transparent;
   border: none;
   box-shadow: none;
+}
+
+.quality-choice-option {
+  min-width: 210px;
+  padding: 6px 10px;
+}
+
+.quality-choice-label {
+  color: #eceef4;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.quality-choice-detail {
+  color: #8d929f;
+  font-size: 10px;
+  font-feature-settings: "tnum";
 }
 
 scale trough {
