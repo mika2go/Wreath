@@ -2,10 +2,8 @@ pub const CLIP_SAVED_MESSAGE: u32 = 0x8000 + 31;
 
 #[cfg(target_os = "windows")]
 pub fn broadcast_clip_saved() {
-    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        FindWindowExW, FindWindowW, HWND_MESSAGE, PostMessageW,
-    };
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
     use windows::core::{PCWSTR, w};
 
     let app = unsafe { FindWindowW(w!("WreathApplicationWindow"), PCWSTR::null()) };
@@ -14,14 +12,8 @@ pub fn broadcast_clip_saved() {
     {
         let _ = unsafe { PostMessageW(Some(app), CLIP_SAVED_MESSAGE, WPARAM(0), LPARAM(0)) };
     }
-    let tray = unsafe {
-        FindWindowExW(
-            Some(HWND_MESSAGE),
-            Some(HWND::default()),
-            w!("WreathTrayWindow"),
-            PCWSTR::null(),
-        )
-    };
+    // The tray window is top-level so it can hear Explorer restarting.
+    let tray = unsafe { FindWindowW(w!("WreathTrayWindow"), PCWSTR::null()) };
     if let Ok(tray) = tray
         && !tray.is_invalid()
     {

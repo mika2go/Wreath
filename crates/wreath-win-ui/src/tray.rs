@@ -11,10 +11,11 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
     DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetCursorPos, GetMessageW, GetWindowLongPtrW,
-    HMENU, HWND_MESSAGE, MF_SEPARATOR, MF_STRING, MSG, PostQuitMessage, RegisterClassW,
+    HMENU, MF_SEPARATOR, MF_STRING, MSG, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
     SetForegroundWindow, SetTimer, SetWindowLongPtrW, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON,
-    TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND,
-    WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NCCREATE, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+    TrackPopupMenu, TranslateMessage, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_DESTROY,
+    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NCCREATE, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+    WS_EX_TOOLWINDOW,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::ipc::{DaemonState, Request, Response};
@@ -39,7 +40,16 @@ struct AppState {
     paths: AppPaths,
     clips_directory: std::path::PathBuf,
     icon: NOTIFYICONDATAW,
+    icon_added: bool,
     recovery: crate::recovery::RecoveryThrottle,
+}
+
+/// Explorer broadcasts this after it creates the notification area. Only a
+/// top-level window receives it, which is why this one is not message-only.
+fn taskbar_created_message() -> u32 {
+    static MESSAGE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
+    *MESSAGE.get_or_init(|| unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) })
 }
 
 pub fn run() -> Result<(), String> {
@@ -51,7 +61,11 @@ pub fn run() -> Result<(), String> {
         let _ = unsafe { CloseHandle(single_instance) };
         return Ok(());
     }
-    ensure_daemon()?;
+    // A recorder that cannot be started at logon must not cost the tray icon as
+    // well; the status timer keeps trying and the tooltip reports the state.
+    if let Err(error) = ensure_daemon() {
+        wreath_core::diagnostic!("Wreath tray: cannot start the recorder yet: {error}");
+    }
     let class_name = w!("WreathTrayWindow");
     let class = WNDCLASSW {
         lpfnWndProc: Some(window_proc),
@@ -69,12 +83,15 @@ pub fn run() -> Result<(), String> {
         paths,
         clips_directory,
         icon: NOTIFYICONDATAW::default(),
+        icon_added: false,
         recovery: crate::recovery::RecoveryThrottle::new(Instant::now()),
     });
     let state = Box::into_raw(state);
+    // Top-level and never shown: a message-only window is excluded from the
+    // broadcast that says the notification area exists again.
     let window = unsafe {
         CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
+            WS_EX_TOOLWINDOW,
             class_name,
             w!("Wreath"),
             WINDOW_STYLE::default(),
@@ -82,7 +99,7 @@ pub fn run() -> Result<(), String> {
             0,
             0,
             0,
-            Some(HWND_MESSAGE),
+            None,
             None,
             None,
             Some(state.cast()),
@@ -126,12 +143,22 @@ unsafe extern "system" fn window_proc(
             unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, state) };
             if let Some(state) = state_mut(window) {
                 state.icon = tray_icon(window, "Wreath is starting");
-                if !unsafe { Shell_NotifyIconW(NIM_ADD, &state.icon) }.as_bool() {
-                    return LRESULT(0);
-                }
+                // Failing here used to abort window creation, so an autostart
+                // that beat Explorer to the notification area ended as an error
+                // box and no tray at all.
+                state.icon_added = unsafe { Shell_NotifyIconW(NIM_ADD, &state.icon) }.as_bool();
             }
         }
         return LRESULT(1);
+    }
+
+    if message != 0 && message == taskbar_created_message() {
+        if let Some(state) = state_mut(window) {
+            let _ = unsafe { Shell_NotifyIconW(NIM_DELETE, &state.icon) };
+            state.icon_added = false;
+        }
+        ensure_icon(window);
+        return LRESULT(0);
     }
 
     match message {
@@ -155,6 +182,7 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == STATUS_TIMER => {
+            ensure_icon(window);
             refresh_status(window);
             LRESULT(0)
         }
@@ -221,6 +249,17 @@ fn handle_simple(window: HWND, request: Request, _confirmation: &str) {
     }
 }
 
+/// The other paths set `uFlags` to what they are changing, so the full set has
+/// to be restored before the icon can be added again.
+fn ensure_icon(window: HWND) {
+    if let Some(state) = state_mut(window)
+        && !state.icon_added
+    {
+        state.icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+        state.icon_added = unsafe { Shell_NotifyIconW(NIM_ADD, &state.icon) }.as_bool();
+    }
+}
+
 fn refresh_status(window: HWND) {
     let tooltip = match send(Request::Status) {
         Ok(Response::Status {
@@ -265,7 +304,14 @@ fn refresh_status(window: HWND) {
                 )
             }
         }
-        _ => "Wreath — daemon unavailable".into(),
+        _ => {
+            if recovery_due(window)
+                && let Err(error) = ensure_daemon()
+            {
+                wreath_core::diagnostic!("Wreath tray: cannot start the recorder: {error}");
+            }
+            "Wreath — daemon unavailable".into()
+        }
     };
     if let Some(state) = state_mut(window) {
         copy_wide(&mut state.icon.szTip, &tooltip);
