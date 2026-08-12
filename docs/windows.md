@@ -23,17 +23,30 @@ the buffered video payload or introducing a save-time hole in the next replay.
 Only one daemon runs per session; a second one exits at once instead of
 competing for the pipe, the shortcut, and the capture device. Every wait on the
 control channel is bounded at both ends: the daemon drops a client that stalls
-mid-request instead of blocking the loop the hotkey depends on, and a client
-stops waiting for an answer that is not coming. The hotkey keeps its
-registration for the life of the daemon and is only registered again after a
-failed attempt, so nothing else can claim the combination in between, and a
-replay save that never returns stops blocking the shortcut after a minute.
+mid-request instead of blocking the loop, and a client stops waiting for an
+answer that is not coming.
+
+The shortcut does not use that channel at all: a press reaches the capture
+worker directly inside the daemon, so a busy pipe cannot swallow it, and a
+replay save that never returns stops blocking the shortcut after a minute. A
+working registration is never surrendered, so nothing else can claim the
+combination in a gap; instead the daemon probes every five seconds whether
+Windows still delivers it and registers it again once it does not, which is what
+a session switch or a locked screen can silently cause. What no registration can
+repair is elevation: Windows withholds the shortcut from an unelevated recorder
+while an elevated window is in the foreground, so the log records at startup
+which of the two the recorder is.
 
 The tray opens or focuses the full application and its menu saves a replay,
 pauses or resumes capture, opens clips or the configuration file, and enables
 per-user startup. Enabling startup writes only `wreath-tray.exe` to
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`; it requires no service
-and no administrator rights.
+and no administrator rights. Windows can switch that entry off separately in its
+own startup list, which Wreath reports as disabled rather than claiming an
+autostart that never runs. The tray survives a logon that beats Explorer to the
+notification area and an Explorer restart afterwards: it keeps trying to place
+its icon instead of giving up, and starts the recorder later if it could not
+reach it at logon.
 
 The native application uses the same Wreath mark for its window, executable,
 installer, and notification-area icon. Its sidebar expands only when there is
@@ -47,8 +60,9 @@ choices carry the bitrate they aim for and the size a full replay reaches on
 the selected monitor, so the cost of a setting is visible before it is picked
 rather than hidden behind a percentage. Changing the
 global shortcut completes as soon as the new modifier-plus-key combination is
-pressed. The Windows default is `Ctrl+Alt+R`; installations that still use the
-old OS-reserved `Win+Shift+R` default are migrated automatically. Capture
+pressed. The Windows default is `Ctrl+R`; installations that still use the older
+`Ctrl+Alt+R` or the OS-reserved `Win+Shift+R` default are migrated
+automatically. Capture
 sessions request borderless presentation before recording starts. Status and
 error notices have a visible close button, and storage is shown only in MB/GB.
 
