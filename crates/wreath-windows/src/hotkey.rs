@@ -316,6 +316,35 @@ impl TryFrom<&HotkeyConfig> for NativeHotkey {
     }
 }
 
+/// Windows delivers no `WM_HOTKEY` to a process running below the integrity
+/// level of the foreground window, so a shortcut that only dies while an
+/// elevated application is focused is not a broken registration. Recorded at
+/// startup, because the log is the only place that distinction is visible.
+#[cfg(target_os = "windows")]
+pub fn process_is_elevated() -> Option<bool> {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{
+        GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = HANDLE::default();
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }.ok()?;
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut length = 0_u32;
+    let queried = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(std::ptr::from_mut(&mut elevation).cast()),
+            u32::try_from(size_of::<TOKEN_ELEVATION>()).unwrap_or(0),
+            &mut length,
+        )
+    };
+    let _ = unsafe { CloseHandle(token) };
+    queried.ok().map(|()| elevation.TokenIsElevated != 0)
+}
+
 #[cfg(target_os = "windows")]
 pub struct HotkeyRegistration {
     id: i32,
@@ -366,6 +395,10 @@ struct HotkeyRebind {
 const REBIND_MESSAGE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
 #[cfg(target_os = "windows")]
 const HOTKEY_WATCHDOG_INTERVAL_MS: u32 = 5_000;
+/// Held for the length of one liveness probe. Presses landing in that window
+/// arrive under this id, so the loop accepts it like the real one.
+#[cfg(target_os = "windows")]
+const HOTKEY_PROBE_ID: i32 = i32::MAX;
 
 #[cfg(target_os = "windows")]
 impl HotkeyListener {
@@ -437,7 +470,10 @@ impl HotkeyListener {
                         std::thread::sleep(std::time::Duration::from_millis(100));
                         continue;
                     }
-                    if message.message == WM_HOTKEY && message.wParam.0 == id as usize {
+                    if message.message == WM_HOTKEY
+                        && (message.wParam.0 == id as usize
+                            || message.wParam.0 == HOTKEY_PROBE_ID as usize)
+                    {
                         on_hotkey();
                     } else if message.message == WM_TIMER
                         && watchdog_timer != 0
@@ -510,7 +546,10 @@ impl HotkeyListener {
         if hotkey.is_bound() {
             NativeHotkey::try_from(hotkey)?;
         }
-        let (reply_sender, reply_receiver) = std::sync::mpsc::sync_channel(1);
+        // Rendezvous: a buffered reply could be accepted after this call gave up
+        // waiting, leaving the thread on the new shortcut and the caller on the
+        // old one.
+        let (reply_sender, reply_receiver) = std::sync::mpsc::sync_channel(0);
         self.rebind
             .send(HotkeyRebind {
                 hotkey: hotkey.clone(),
@@ -525,17 +564,26 @@ impl HotkeyListener {
     }
 }
 
-/// Only after a failed registration: Windows holds a hotkey on the owning thread
-/// until it is released, so giving it up per tick lost presses in the gap and let
-/// another application claim the combination for good.
+/// A working registration is never given up per tick: that lost presses in the
+/// gap and let another application claim the combination for good. It is only
+/// replaced once a probe shows Windows is no longer delivering it.
 #[cfg(target_os = "windows")]
 fn refresh_registration(
     id: i32,
     hotkey: &HotkeyConfig,
     registration: &mut Option<HotkeyRegistration>,
 ) {
-    if registration.is_some() || !hotkey.is_bound() {
+    if !hotkey.is_bound() {
         return;
+    }
+    if registration.is_some() {
+        if !registration_is_lost(hotkey) {
+            return;
+        }
+        wreath_core::diagnostic!(
+            "Wreath hotkey: Windows stopped delivering {hotkey}, registering it again"
+        );
+        drop(registration.take());
     }
     match register_optional(id, hotkey) {
         Ok(new_registration) => {
@@ -547,6 +595,19 @@ fn refresh_registration(
             HOTKEY_WATCHDOG_INTERVAL_MS / 1_000
         ),
     }
+}
+
+/// Windows refuses a combination that is already registered, so a probe that
+/// succeeds proves the registration we still hold a handle for is gone - the
+/// case a plain `is_some` check never notices, because nothing tells the owner
+/// when a session switch or a locked screen drops it.
+///
+/// Another application holding the combination looks the same as our own
+/// registration working, which is the right answer either way: it cannot be
+/// reclaimed while they hold it.
+#[cfg(target_os = "windows")]
+fn registration_is_lost(hotkey: &HotkeyConfig) -> bool {
+    HotkeyRegistration::register(HOTKEY_PROBE_ID, hotkey).is_ok()
 }
 
 #[cfg(target_os = "windows")]
@@ -761,6 +822,28 @@ mod tests {
 
         // No window in between for another application to take it.
         refresh_registration(44, &hotkey, &mut registration);
+        assert!(registration.is_some());
+        assert!(HotkeyRegistration::register(99, &hotkey).is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn watchdog_replaces_a_registration_windows_dropped_silently() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;
+
+        let hotkey = HotkeyConfig {
+            modifiers: vec!["CTRL".into(), "ALT".into(), "SHIFT".into()],
+            key: "F20".into(),
+        };
+        let mut registration = None;
+        refresh_registration(45, &hotkey, &mut registration);
+        assert!(registration.is_some());
+
+        // What a session switch does: the owner keeps a handle that delivers
+        // nothing, so only a probe can tell the shortcut is gone.
+        unsafe { UnregisterHotKey(None, 45) }.unwrap();
+        refresh_registration(45, &hotkey, &mut registration);
+
         assert!(registration.is_some());
         assert!(HotkeyRegistration::register(99, &hotkey).is_err());
     }

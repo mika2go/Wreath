@@ -1,6 +1,6 @@
 use std::io::BufReader;
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use wreath_core::config::Config;
@@ -8,15 +8,14 @@ use wreath_core::ipc::{self, DaemonState, GraphicsAdapter, Request, Response};
 use wreath_core::paths::AppPaths;
 use wreath_windows::control::{DeadlineReader, NamedPipeServer, SingleInstance};
 use wreath_windows::hotkey::{HotkeyListener, SaveGuard};
-use wreath_windows::pipeline::{PipelineRunState, ReplayPipeline};
+use wreath_windows::pipeline::{PipelineRunState, PipelineSaver, ReplayPipeline};
 
 /// Anything slower is a client that died mid-request. There is one pipe
 /// instance, so waiting on it blocks every other client including the hotkey.
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
-/// Covers the slowest answer the daemon can give, so a press is only rejected
+/// Covers the slowest answer the pipeline can give, so a press is only rejected
 /// while a save really is running.
 const SAVE_GUARD_TIMEOUT: Duration = Duration::from_secs(60);
-const HOTKEY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub fn run() -> Result<(), String> {
     let Some(_single_instance) = claim_single_instance()? else {
@@ -35,8 +34,18 @@ pub fn run() -> Result<(), String> {
     // then wait for the daemon instead of seeing "file not found".
     let (connections, handled) = listen(server)?;
     let mut pipeline = ReplayPipeline::spawn(config.clone()).map_err(|error| error.to_string())?;
-    let pipe_name = paths.pipe_name().to_owned();
+    // Reload swaps the pipeline out; the shortcut keeps saving through whichever
+    // one is current instead of holding a handle to a stopped worker.
+    let saver = Arc::new(RwLock::new(pipeline.saver()));
+    let hotkey_saver = Arc::clone(&saver);
     let save_guard = Arc::new(SaveGuard::new(SAVE_GUARD_TIMEOUT));
+    match wreath_windows::hotkey::process_is_elevated() {
+        Some(false) => wreath_core::diagnostic!(
+            "Wreath hotkey: the recorder runs unelevated, so Windows withholds the shortcut while an elevated window is in the foreground"
+        ),
+        Some(true) => wreath_core::diagnostic!("Wreath hotkey: the recorder runs elevated"),
+        None => {}
+    }
     let hotkey = HotkeyListener::spawn(1, &config.hotkey, move || {
         if !save_guard.acquire(Instant::now()) {
             wreath_core::diagnostic!(
@@ -45,33 +54,29 @@ pub fn run() -> Result<(), String> {
             return;
         }
         wreath_core::diagnostic!("Wreath hotkey: replay requested");
-        let pipe_name = pipe_name.clone();
+        let hotkey_saver = Arc::clone(&hotkey_saver);
         let save_guard_for_worker = Arc::clone(&save_guard);
+        // Saving takes seconds; on this thread it would stall the message loop
+        // the next press and the registration watchdog both arrive on.
         let spawn = std::thread::Builder::new()
             .name("wreath-hotkey-save".into())
             .spawn(move || {
                 let _release = SaveGuardRelease(save_guard_for_worker);
-                match wreath_windows::control::send_request_with_timeout(
-                    &pipe_name,
-                    &Request::Save,
-                    HOTKEY_CONNECT_TIMEOUT,
-                ) {
-                    Ok(Response::Saved { path }) => {
+                let saver = hotkey_saver
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone();
+                match saver.save() {
+                    Ok(path) => {
                         wreath_core::diagnostic!(
                             "Wreath hotkey: replay saved to {}",
                             path.display()
                         );
                         wreath_windows::feedback::broadcast_clip_saved();
                     }
-                    Ok(Response::Error { message }) => {
-                        wreath_core::diagnostic!("Wreath hotkey: replay save failed: {message}")
-                    }
                     Err(error) => {
-                        wreath_core::diagnostic!("Wreath hotkey: replay request failed: {error}")
+                        wreath_core::diagnostic!("Wreath hotkey: replay save failed: {error}")
                     }
-                    Ok(response) => wreath_core::diagnostic!(
-                        "Wreath hotkey: unexpected replay response: {response:?}"
-                    ),
                 }
             });
         if let Err(error) = spawn {
@@ -149,7 +154,7 @@ pub fn run() -> Result<(), String> {
                 .unwrap_or_else(|error| Response::Error {
                     message: error.to_string(),
                 }),
-            Request::Reload => reload(&paths, &mut config, &mut pipeline, &hotkey),
+            Request::Reload => reload(&paths, &mut config, &mut pipeline, &saver, &hotkey),
         };
         if let Err(error) = ipc::write_response(&mut connection, &response) {
             wreath_core::diagnostic!("Wreath control: cannot answer a client: {error}");
@@ -262,6 +267,7 @@ fn reload(
     paths: &AppPaths,
     current_config: &mut Config,
     pipeline: &mut ReplayPipeline,
+    saver: &RwLock<PipelineSaver>,
     hotkey: &HotkeyListener,
 ) -> Response {
     let new_config = match Config::load(paths) {
@@ -292,13 +298,20 @@ fn reload(
             message: format!("cannot preserve paused state while reloading: {error}"),
         };
     }
-    if config_changed && let Err(error) = hotkey.rebind(&new_config.hotkey) {
+    // Rebinding an unchanged shortcut means unregistering it first, and another
+    // application can claim the combination in that gap.
+    if new_config.hotkey != current_config.hotkey
+        && let Err(error) = hotkey.rebind(&new_config.hotkey)
+    {
         return Response::Error {
             message: format!("cannot activate the new Windows shortcut: {error}"),
         };
     }
 
     let previous = std::mem::replace(pipeline, replacement);
+    *saver
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = pipeline.saver();
     *current_config = new_config;
     drop(previous);
     Response::Ok

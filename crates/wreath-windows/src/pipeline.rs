@@ -130,11 +130,15 @@ impl ReplayPipeline {
     }
 
     pub fn save(&self) -> Result<std::path::PathBuf, crate::video::VideoError> {
-        match self.send_command_with_timeout(PipelineCommandKind::Save, SAVE_COMMAND_TIMEOUT)? {
-            PipelineCommandResult::Saved(path) => Ok(path),
-            PipelineCommandResult::Ok => Err(crate::video::VideoError::Initialization(
-                "video pipeline returned no saved path".into(),
-            )),
+        self.saver().save()
+    }
+
+    /// Lets the hotkey reach the worker directly. Going out through the control
+    /// pipe and back into the same process made every press depend on a pipe
+    /// with one instance, so a press during any other request was lost.
+    pub fn saver(&self) -> PipelineSaver {
+        PipelineSaver {
+            commands: self.commands.clone(),
         }
     }
 
@@ -143,39 +147,72 @@ impl ReplayPipeline {
         kind: PipelineCommandKind,
         timeout: std::time::Duration,
     ) -> Result<PipelineCommandResult, crate::video::VideoError> {
-        use crossbeam_channel::{RecvTimeoutError, SendTimeoutError};
-
-        let (reply_sender, reply_receiver) = crossbeam_channel::bounded(1);
-        self.commands
-            .send_timeout(
-                PipelineCommand {
-                    kind,
-                    reply: reply_sender,
-                },
-                timeout,
-            )
-            .map_err(|error| match error {
-                SendTimeoutError::Timeout(_) => crate::video::VideoError::Initialization(format!(
-                    "video pipeline did not accept the request within {} seconds",
-                    timeout.as_secs()
-                )),
-                SendTimeoutError::Disconnected(_) => {
-                    crate::video::VideoError::Initialization("video pipeline stopped".into())
-                }
-            })?;
-        reply_receiver
-            .recv_timeout(timeout)
-            .map_err(|error| match error {
-                RecvTimeoutError::Timeout => crate::video::VideoError::Initialization(format!(
-                    "video pipeline did not answer within {} seconds",
-                    timeout.as_secs()
-                )),
-                RecvTimeoutError::Disconnected => {
-                    crate::video::VideoError::Initialization("video pipeline stopped".into())
-                }
-            })?
-            .map_err(crate::video::VideoError::Initialization)
+        send_pipeline_command(&self.commands, kind, timeout)
     }
+}
+
+/// A save handle that outlives the pipeline it came from: the daemon swaps in a
+/// new one on reload, and the hotkey keeps saving through whichever is current.
+#[cfg(target_os = "windows")]
+#[derive(Clone)]
+pub struct PipelineSaver {
+    commands: crossbeam_channel::Sender<PipelineCommand>,
+}
+
+#[cfg(target_os = "windows")]
+impl PipelineSaver {
+    pub fn save(&self) -> Result<std::path::PathBuf, crate::video::VideoError> {
+        match send_pipeline_command(
+            &self.commands,
+            PipelineCommandKind::Save,
+            SAVE_COMMAND_TIMEOUT,
+        )? {
+            PipelineCommandResult::Saved(path) => Ok(path),
+            PipelineCommandResult::Ok => Err(crate::video::VideoError::Initialization(
+                "video pipeline returned no saved path".into(),
+            )),
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn send_pipeline_command(
+    commands: &crossbeam_channel::Sender<PipelineCommand>,
+    kind: PipelineCommandKind,
+    timeout: std::time::Duration,
+) -> Result<PipelineCommandResult, crate::video::VideoError> {
+    use crossbeam_channel::{RecvTimeoutError, SendTimeoutError};
+
+    let (reply_sender, reply_receiver) = crossbeam_channel::bounded(1);
+    commands
+        .send_timeout(
+            PipelineCommand {
+                kind,
+                reply: reply_sender,
+            },
+            timeout,
+        )
+        .map_err(|error| match error {
+            SendTimeoutError::Timeout(_) => crate::video::VideoError::Initialization(format!(
+                "video pipeline did not accept the request within {} seconds",
+                timeout.as_secs()
+            )),
+            SendTimeoutError::Disconnected(_) => {
+                crate::video::VideoError::Initialization("video pipeline stopped".into())
+            }
+        })?;
+    reply_receiver
+        .recv_timeout(timeout)
+        .map_err(|error| match error {
+            RecvTimeoutError::Timeout => crate::video::VideoError::Initialization(format!(
+                "video pipeline did not answer within {} seconds",
+                timeout.as_secs()
+            )),
+            RecvTimeoutError::Disconnected => {
+                crate::video::VideoError::Initialization("video pipeline stopped".into())
+            }
+        })?
+        .map_err(crate::video::VideoError::Initialization)
 }
 
 #[cfg(target_os = "windows")]
