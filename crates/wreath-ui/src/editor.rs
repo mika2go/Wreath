@@ -4,10 +4,12 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use gtk::gdk;
 use gtk::glib::{self, ControlFlow};
 use gtk::prelude::*;
 use gtk::{
-    Align, Box as GtkBox, Button, DrawingArea, GestureDrag, Label, Orientation, Stack, Video, gio,
+    Align, Box as GtkBox, Button, DrawingArea, EventControllerKey, GestureDrag, Label, Orientation,
+    Stack, Video, gio,
 };
 use wreath_core::clips::Clip;
 use wreath_core::paths::AppPaths;
@@ -20,14 +22,16 @@ enum EditorUpdate {
     },
     Finished {
         source: PathBuf,
+        replacing: bool,
         result: Result<TrimReport, String>,
     },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Handle {
     Start,
     End,
+    Playhead,
 }
 
 pub struct EditorView {
@@ -47,7 +51,9 @@ pub struct EditorController {
     selection: Label,
     feedback: Label,
     save: Button,
+    replace: Button,
     source: RefCell<Option<PathBuf>>,
+    return_page: RefCell<String>,
     timing: Rc<RefCell<Option<ClipTiming>>>,
     on_complete: RefCell<Option<Box<dyn Fn()>>>,
     updates: mpsc::Sender<EditorUpdate>,
@@ -55,16 +61,27 @@ pub struct EditorController {
 
 impl EditorController {
     pub fn open(&self, clip: &Clip) {
+        let return_page = self
+            .stack
+            .visible_child_name()
+            .unwrap_or_else(|| "library".into());
+        self.open_returning_to(clip, return_page.as_str());
+    }
+
+    pub fn open_returning_to(&self, clip: &Clip, return_page: &str) {
+        self.return_page.replace(return_page.to_owned());
         self.source.replace(Some(clip.path.clone()));
         self.timing.replace(None);
-        self.title.set_text(&clip.title);
+        self.title.set_text(&format!("Edit {}", clip.title));
         self.detail.set_text("Reading duration and keyframes…");
         self.feedback.set_text("Finding clean cut points");
         self.feedback.remove_css_class("success");
         self.feedback.remove_css_class("error");
         self.timeline.set_sensitive(false);
         self.save.set_sensitive(false);
-        self.save.set_label("Save new clip");
+        self.save.set_label("Save as new clip");
+        self.replace.set_sensitive(false);
+        self.replace.set_label("Save as original");
         self.start.set(0.0);
         self.end.set(0.0);
         self.playhead.set(0.0);
@@ -96,6 +113,7 @@ impl EditorController {
         self.timing.replace(None);
         self.timeline.set_sensitive(false);
         self.save.set_sensitive(false);
+        self.replace.set_sensitive(false);
     }
 
     pub fn toggle_playback(&self) -> bool {
@@ -116,13 +134,10 @@ impl EditorController {
         self.end.set(seconds);
         self.timeline.set_sensitive(true);
         self.save.set_sensitive(true);
-        self.detail.set_text(&format!(
-            "{} total  ·  {} clean cut points",
-            format_time(timing.duration),
-            timing.keyframes.len()
-        ));
+        self.replace.set_sensitive(true);
+        self.detail.set_text("Choose the moment to keep");
         self.feedback
-            .set_text("The handles snap to nearby keyframes for a lossless cut");
+            .set_text("Handles snap to nearby keyframes for a lossless cut");
         self.timing.replace(Some(timing));
         self.update_selection();
         self.restart_preview();
@@ -131,12 +146,15 @@ impl EditorController {
     fn update_selection(&self) {
         let start = duration(self.start.get());
         let end = duration(self.end.get());
-        self.selection.set_text(&format!(
+        let value = format!(
             "{} — {}  ·  {} kept",
             format_time(start),
             format_time(end),
             format_time(end.saturating_sub(start))
-        ));
+        );
+        self.selection.set_text(&value);
+        self.timeline
+            .update_property(&[gtk::accessible::Property::ValueText(&value)]);
         self.timeline.queue_draw();
     }
 
@@ -154,7 +172,17 @@ impl EditorController {
         let Some(timing) = self.timing.borrow().as_ref().cloned() else {
             return;
         };
-        let value = self.snap(value.clamp(0.0, timing.duration.as_secs_f64()));
+        let value = value.clamp(0.0, timing.duration.as_secs_f64());
+        if matches!(handle, Handle::Playhead) {
+            let value = value.clamp(self.start.get(), self.end.get());
+            self.playhead.set(value);
+            if let Some(stream) = self.video.media_stream() {
+                stream.seek((value * 1_000_000.0).round() as i64);
+            }
+            self.timeline.queue_draw();
+            return;
+        }
+        let value = self.snap(value);
         let minimum = trim::MINIMUM_LENGTH.as_secs_f64();
         match handle {
             Handle::Start => self
@@ -165,6 +193,7 @@ impl EditorController {
                     .max(self.start.get() + minimum)
                     .min(timing.duration.as_secs_f64()),
             ),
+            Handle::Playhead => unreachable!(),
         }
         self.update_selection();
         self.restart_preview();
@@ -191,7 +220,7 @@ impl EditorController {
         }
     }
 
-    fn save(&self) {
+    fn save(&self, output: TrimOutput) {
         let Some(source) = self.source.borrow().clone() else {
             return;
         };
@@ -203,9 +232,23 @@ impl EditorController {
             return;
         }
         self.feedback.remove_css_class("error");
-        self.feedback.set_text("Cutting on a background worker…");
+        let replacing = matches!(output, TrimOutput::Replace);
+        self.feedback.set_text(if replacing {
+            "Replacing the original clip on a background worker…"
+        } else {
+            "Cutting on a background worker…"
+        });
         self.save.set_sensitive(false);
-        self.save.set_label("Cutting…");
+        self.replace.set_sensitive(false);
+        if replacing {
+            self.replace.set_label("Replacing…");
+            if let Some(stream) = self.video.media_stream() {
+                stream.pause();
+            }
+            self.video.set_file(None::<&gio::File>);
+        } else {
+            self.save.set_label("Cutting…");
+        }
 
         let thumbnails = AppPaths::discover().thumbnail_dir;
         let updates = self.updates.clone();
@@ -218,11 +261,15 @@ impl EditorController {
                     start,
                     end,
                     mode: TrimMode::Auto,
-                    output: TrimOutput::NewClip(None),
+                    output,
                 };
                 let result =
                     trim::trim(&backend, &request, &thumbnails).map_err(|error| error.to_string());
-                let _ = updates.send(EditorUpdate::Finished { source, result });
+                let _ = updates.send(EditorUpdate::Finished {
+                    source,
+                    replacing,
+                    result,
+                });
             });
     }
 
@@ -236,9 +283,15 @@ impl EditorController {
                     Err(error) => self.fail(&error),
                 }
             }
-            EditorUpdate::Finished { source, result } if current.as_ref() == Some(&source) => {
+            EditorUpdate::Finished {
+                source,
+                replacing,
+                result,
+            } if current.as_ref() == Some(&source) => {
                 self.save.set_sensitive(true);
-                self.save.set_label("Save another cut");
+                self.save.set_label("Save as new clip");
+                self.replace.set_sensitive(true);
+                self.replace.set_label("Save as original");
                 match result {
                     Ok(report) => {
                         let name = report.path.file_name().map_or_else(
@@ -249,7 +302,11 @@ impl EditorController {
                         self.feedback.add_css_class("success");
                         self.feedback.set_text(&format!(
                             "{} · {name}",
-                            if report.reencoded {
+                            if report.reencoded && replacing {
+                                "Original replaced and re-encoded for an exact start"
+                            } else if replacing {
+                                "Original replaced with a lossless cut"
+                            } else if report.reencoded {
                                 "Re-encoded for an exact start"
                             } else {
                                 "Losslessly cut"
@@ -258,8 +315,26 @@ impl EditorController {
                         if let Some(callback) = self.on_complete.borrow().as_ref() {
                             callback();
                         }
+                        if replacing {
+                            let return_page = self.return_page.borrow().clone();
+                            let metadata = std::fs::metadata(&report.path).ok();
+                            let clip = Clip {
+                                path: report.path,
+                                title: self.title.text().to_string(),
+                                size_bytes: metadata.as_ref().map_or(0, std::fs::Metadata::len),
+                                modified: metadata
+                                    .and_then(|value| value.modified().ok())
+                                    .unwrap_or_else(std::time::SystemTime::now),
+                            };
+                            self.open_returning_to(&clip, &return_page);
+                        }
                     }
-                    Err(error) => self.fail(&error),
+                    Err(error) => {
+                        if replacing {
+                            self.video.set_file(Some(&gio::File::for_path(&source)));
+                        }
+                        self.fail(&error);
+                    }
                 }
             }
             _ => {}
@@ -271,8 +346,10 @@ impl EditorController {
         self.feedback.add_css_class("error");
         self.feedback
             .set_text(&format!("Could not cut clip: {message}"));
-        self.save.set_label("Save new clip");
+        self.save.set_label("Save as new clip");
         self.save.set_sensitive(self.timing.borrow().is_some());
+        self.replace.set_label("Save as original");
+        self.replace.set_sensitive(self.timing.borrow().is_some());
     }
 }
 
@@ -283,7 +360,7 @@ pub fn build(stack: &Stack) -> EditorView {
 
     let header = GtkBox::new(Orientation::Horizontal, 14);
     header.set_margin_bottom(18);
-    let back = Button::with_label("←  Library");
+    let back = Button::with_label("‹ Back");
     back.add_css_class("back-action");
     let heading = GtkBox::new(Orientation::Vertical, 2);
     heading.set_hexpand(true);
@@ -295,8 +372,16 @@ pub fn build(stack: &Stack) -> EditorView {
     detail.set_halign(Align::Start);
     heading.append(&title);
     heading.append(&detail);
+    let save = Button::with_label("Save as new clip");
+    save.add_css_class("primary-action");
+    save.set_sensitive(false);
+    let replace = Button::with_label("Save as original");
+    replace.add_css_class("primary-action");
+    replace.set_sensitive(false);
     header.append(&back);
     header.append(&heading);
+    header.append(&save);
+    header.append(&replace);
     page.append(&header);
 
     let video = Video::new();
@@ -310,8 +395,7 @@ pub fn build(stack: &Stack) -> EditorView {
     let timeline = GtkBox::new(Orientation::Vertical, 9);
     timeline.add_css_class("editor-timeline");
     timeline.set_margin_top(16);
-    let timeline_header = GtkBox::new(Orientation::Vertical, 3);
-    let timeline_title = Label::new(Some("KEEP THIS MOMENT"));
+    let timeline_title = Label::new(Some("Keep this moment"));
     timeline_title.add_css_class("editor-kicker");
     timeline_title.set_hexpand(true);
     timeline_title.set_halign(Align::Start);
@@ -320,9 +404,7 @@ pub fn build(stack: &Stack) -> EditorView {
     selection.set_halign(Align::Start);
     selection.set_wrap(true);
     selection.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    timeline_header.append(&timeline_title);
-    timeline_header.append(&selection);
-    timeline.append(&timeline_header);
+    timeline.append(&timeline_title);
 
     let start = Rc::new(Cell::new(0.0));
     let end = Rc::new(Cell::new(0.0));
@@ -333,6 +415,16 @@ pub fn build(stack: &Stack) -> EditorView {
     trim_bar.set_content_height(64);
     trim_bar.set_hexpand(true);
     trim_bar.set_sensitive(false);
+    trim_bar.set_focusable(true);
+    trim_bar.update_property(&[
+        gtk::accessible::Property::Label("Clip trim timeline"),
+        gtk::accessible::Property::Description(
+            "Arrow keys move the playhead. Shift plus arrow adjusts the start; Control plus arrow adjusts the end.",
+        ),
+        gtk::accessible::Property::KeyShortcuts(
+            "Left Right Shift+Left Shift+Right Control+Left Control+Right",
+        ),
+    ]);
     {
         let start = start.clone();
         let end = end.clone();
@@ -351,6 +443,8 @@ pub fn build(stack: &Stack) -> EditorView {
         });
     }
     timeline.append(&trim_bar);
+    selection.set_halign(Align::Center);
+    timeline.append(&selection);
     page.append(&timeline);
 
     let footer = GtkBox::new(Orientation::Horizontal, 14);
@@ -360,11 +454,7 @@ pub fn build(stack: &Stack) -> EditorView {
     feedback.set_halign(Align::Start);
     feedback.set_hexpand(true);
     feedback.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-    let save = Button::with_label("Save new clip");
-    save.add_css_class("primary-action");
-    save.set_sensitive(false);
     footer.append(&feedback);
-    footer.append(&save);
     page.append(&footer);
 
     let controller = Rc::new(EditorController {
@@ -379,7 +469,9 @@ pub fn build(stack: &Stack) -> EditorView {
         selection,
         feedback,
         save,
+        replace,
         source: RefCell::new(None),
+        return_page: RefCell::new("library".to_owned()),
         timing,
         on_complete: RefCell::new(None),
         updates,
@@ -388,8 +480,9 @@ pub fn build(stack: &Stack) -> EditorView {
     let back_stack = stack.clone();
     let back_editor = controller.clone();
     back.connect_clicked(move |_| {
+        let return_page = back_editor.return_page.borrow().clone();
         back_editor.stop();
-        back_stack.set_visible_child_name("library");
+        back_stack.set_visible_child_name(&return_page);
     });
 
     let drag = GestureDrag::new();
@@ -406,12 +499,8 @@ pub fn build(stack: &Stack) -> EditorView {
                 .borrow()
                 .as_ref()
                 .map_or(0.0, |timing| timing.duration.as_secs_f64());
-            let value = ((x - 12.0) / (width - 24.0)).clamp(0.0, 1.0) * duration;
-            let handle = if (value - editor.start.get()).abs() <= (value - editor.end.get()).abs() {
-                Handle::Start
-            } else {
-                Handle::End
-            };
+            let (value, handle) =
+                drag_target(x, width, duration, editor.start.get(), editor.end.get());
             active_handle.set(handle);
             drag_origin.set(x);
             editor.move_handle(handle, value);
@@ -435,8 +524,44 @@ pub fn build(stack: &Stack) -> EditorView {
     }
     controller.timeline.add_controller(drag);
 
+    let keyboard = EventControllerKey::new();
+    let keyboard_editor = controller.clone();
+    keyboard.connect_key_pressed(move |_, key, _, modifiers| {
+        let direction = if key == gdk::Key::Left {
+            -1.0
+        } else if key == gdk::Key::Right {
+            1.0
+        } else {
+            return glib::Propagation::Proceed;
+        };
+        if keyboard_editor.timing.borrow().is_none() {
+            return glib::Propagation::Proceed;
+        }
+        let handle = if modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
+            Handle::Start
+        } else if modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
+            Handle::End
+        } else {
+            Handle::Playhead
+        };
+        let current = match handle {
+            Handle::Start => keyboard_editor.start.get(),
+            Handle::End => keyboard_editor.end.get(),
+            Handle::Playhead => keyboard_editor.playhead.get(),
+        };
+        keyboard_editor.move_handle(handle, current + direction * 0.1);
+        glib::Propagation::Stop
+    });
+    controller.timeline.add_controller(keyboard);
+
     let save_editor = controller.clone();
-    controller.save.connect_clicked(move |_| save_editor.save());
+    controller
+        .save
+        .connect_clicked(move |_| save_editor.save(TrimOutput::NewClip(None)));
+    let replace_editor = controller.clone();
+    controller
+        .replace
+        .connect_clicked(move |_| replace_editor.save(TrimOutput::Replace));
 
     let update_editor = controller.clone();
     glib::timeout_add_local(Duration::from_millis(33), move || {
@@ -507,10 +632,47 @@ fn duration(seconds: f64) -> Duration {
     Duration::from_secs_f64(seconds.max(0.0))
 }
 
+fn drag_target(x: f64, width: f64, duration: f64, start: f64, end: f64) -> (f64, Handle) {
+    let rail_width = (width - 24.0).max(1.0);
+    let value = ((x - 12.0) / rail_width).clamp(0.0, 1.0) * duration;
+    let pixels_per_second = rail_width / duration.max(0.001);
+    let start_distance = (value - start).abs() * pixels_per_second;
+    let end_distance = (value - end).abs() * pixels_per_second;
+    let handle = if start_distance <= 14.0 {
+        Handle::Start
+    } else if end_distance <= 14.0 {
+        Handle::End
+    } else {
+        Handle::Playhead
+    };
+    (value, handle)
+}
+
 fn format_time(value: Duration) -> String {
     let total_millis = value.as_millis();
     let minutes = total_millis / 60_000;
     let seconds = total_millis % 60_000 / 1_000;
     let millis = total_millis % 1_000;
     format!("{minutes:02}:{seconds:02}.{millis:03}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editor_drag_distinguishes_handles_from_playhead() {
+        assert_eq!(
+            drag_target(12.0, 1024.0, 100.0, 0.0, 100.0).1,
+            Handle::Start
+        );
+        assert_eq!(
+            drag_target(1012.0, 1024.0, 100.0, 0.0, 100.0).1,
+            Handle::End
+        );
+        assert_eq!(
+            drag_target(512.0, 1024.0, 100.0, 0.0, 100.0).1,
+            Handle::Playhead
+        );
+    }
 }

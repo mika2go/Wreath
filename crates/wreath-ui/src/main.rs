@@ -2,25 +2,32 @@ mod editor;
 mod home;
 mod library;
 mod settings;
-mod theme;
 
 use std::cell::Cell;
 use std::process::ExitCode;
 use std::rc::Rc;
 use std::time::Duration;
 
-use gtk::gdk;
 use gtk::glib::{self, ControlFlow};
 use gtk::prelude::*;
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, CssProvider, EventControllerKey,
-    Image, Orientation, PropagationPhase, Stack,
+    Image, Label, Orientation, PropagationPhase, Stack,
 };
+use gtk::{gdk, gio};
 
 const APP_ID: &str = "io.github.mika2go.Wreath";
 
 fn main() -> ExitCode {
-    let application = Application::builder().application_id(APP_ID).build();
+    let flags = if std::env::var_os("WREATH_UI_NON_UNIQUE").is_some() {
+        gio::ApplicationFlags::NON_UNIQUE
+    } else {
+        gio::ApplicationFlags::empty()
+    };
+    let application = Application::builder()
+        .application_id(APP_ID)
+        .flags(flags)
+        .build();
     application.connect_startup(|_| install_css());
     application.connect_activate(build_ui);
     application.run().into()
@@ -28,7 +35,7 @@ fn main() -> ExitCode {
 
 fn install_css() {
     let provider = CssProvider::new();
-    load_css(&provider);
+    provider.load_from_string(include_str!("style.css"));
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,
@@ -36,17 +43,6 @@ fn install_css() {
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
     }
-    let provider = provider.clone();
-    theme::watch_palette_changes(move || load_css(&provider));
-}
-
-fn load_css(provider: &CssProvider) {
-    let stylesheet = format!(
-        "{}\n{}",
-        theme::Palette::discover().css_prefix(),
-        include_str!("style.css")
-    );
-    provider.load_from_string(&stylesheet);
 }
 
 fn build_ui(application: &Application) {
@@ -57,39 +53,52 @@ fn build_ui(application: &Application) {
     let window = ApplicationWindow::builder()
         .application(application)
         .title("Wreath")
-        .default_width(1280)
-        .default_height(760)
+        .default_width(1440)
+        .default_height(900)
         .resizable(true)
         .build();
+    window.set_size_request(980, 680);
     window.add_css_class("wreath-window");
 
     let shell = GtkBox::new(Orientation::Horizontal, 0);
     let sidebar = GtkBox::new(Orientation::Vertical, 0);
     sidebar.add_css_class("sidebar");
-    sidebar.set_size_request(62, -1);
-
-    let brand = GtkBox::new(Orientation::Horizontal, 0);
-    brand.add_css_class("brand");
-    brand.set_halign(Align::Center);
-    let mark = Image::from_icon_name("io.github.mika2go.Wreath-symbolic");
-    mark.set_pixel_size(24);
-    mark.add_css_class("brand-mark");
-    brand.append(&mark);
-    sidebar.append(&brand);
+    sidebar.set_size_request(88, -1);
 
     let home_nav = nav_button("Home", "user-home-symbolic");
     home_nav.add_css_class("active");
+    home_nav.update_state(&[gtk::accessible::State::Selected(Some(true))]);
     let library_nav = nav_button("Library", "video-display-symbolic");
     let collections_nav = nav_button("Collections", "folder-symbolic");
     let settings_nav = nav_button("Settings", "preferences-system-symbolic");
     sidebar.append(&home_nav);
     sidebar.append(&library_nav);
     sidebar.append(&collections_nav);
-    sidebar.append(&settings_nav);
 
     let sidebar_spacer = GtkBox::new(Orientation::Vertical, 0);
     sidebar_spacer.set_vexpand(true);
     sidebar.append(&sidebar_spacer);
+    sidebar.append(&settings_nav);
+
+    let workspace = GtkBox::new(Orientation::Vertical, 0);
+    workspace.add_css_class("workspace");
+    workspace.set_hexpand(true);
+    workspace.set_vexpand(true);
+
+    let topbar = GtkBox::new(Orientation::Horizontal, 0);
+    topbar.add_css_class("topbar");
+    let product = GtkBox::new(Orientation::Vertical, 0);
+    product.add_css_class("product-mark");
+    product.set_hexpand(true);
+    let product_context = Label::new(Some("Local capture"));
+    product_context.add_css_class("product-context");
+    product_context.set_halign(Align::Start);
+    let product_name = Label::new(Some("WREATH"));
+    product_name.add_css_class("product-name");
+    product_name.set_halign(Align::Start);
+    product.append(&product_context);
+    product.append(&product_name);
+    topbar.append(&product);
 
     let content = Stack::new();
     content.add_css_class("content-area");
@@ -103,19 +112,65 @@ fn build_ui(application: &Application) {
     let home_view = home::build();
     let clip_views = library::build(&content);
     let settings_page = settings::build();
+
+    let search_shell = GtkBox::new(Orientation::Horizontal, 8);
+    search_shell.add_css_class("shell-search");
+    search_shell.set_valign(Align::Center);
+    search_shell.set_visible(false);
+    search_shell.set_size_request(244, 38);
+    let search = clip_views.search();
+    search.set_placeholder_text(Some("Search your clips"));
+    search.set_size_request(170, 36);
+    search.update_property(&[
+        gtk::accessible::Property::Label("Search clips"),
+        gtk::accessible::Property::KeyShortcuts("Ctrl+K"),
+    ]);
+    let search_shortcut = Label::new(Some("Ctrl K"));
+    search_shortcut.add_css_class("search-shortcut");
+    search_shell.append(&search);
+    search_shell.append(&search_shortcut);
+    topbar.append(&search_shell);
+
     content.add_named(&home_view.page, Some("home"));
     content.add_named(&clip_views.library, Some("library"));
     content.add_named(&clip_views.collections, Some("collections"));
     content.add_named(&clip_views.player, Some("player"));
     content.add_named(&clip_views.editor, Some("editor"));
     content.add_named(&settings_page.page, Some("settings"));
+    workspace.append(&topbar);
+    workspace.append(&content);
+
+    let search_visibility = search_shell.clone();
+    content.connect_visible_child_name_notify(move |stack| {
+        search_visibility.set_visible(stack.visible_child_name().as_deref() == Some("library"));
+    });
 
     let playback_keys = EventControllerKey::new();
     playback_keys.set_propagation_phase(PropagationPhase::Capture);
     let playback_stack = content.clone();
     let playback_views = clip_views.clone();
-    playback_keys.connect_key_pressed(move |_, key, _, _| {
-        if key == gdk::Key::space
+    let shell_search = search.clone();
+    let search_home = home_nav.clone();
+    let search_library = library_nav.clone();
+    let search_collections = collections_nav.clone();
+    let search_settings = settings_nav.clone();
+    playback_keys.connect_key_pressed(move |_, key, _, modifiers| {
+        if key == gdk::Key::Escape
+            && playback_stack.visible_child_name().as_deref() == Some("player")
+            && playback_views.exit_player_fullscreen()
+        {
+            glib::Propagation::Stop
+        } else if key == gdk::Key::k && modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
+            playback_views.clear_selection();
+            playback_views.refresh();
+            playback_stack.set_visible_child_name("library");
+            set_active_nav(
+                &search_library,
+                &[&search_home, &search_collections, &search_settings],
+            );
+            shell_search.grab_focus();
+            glib::Propagation::Stop
+        } else if key == gdk::Key::space
             && playback_views.toggle_playback(
                 playback_stack
                     .visible_child_name()
@@ -135,7 +190,9 @@ fn build_ui(application: &Application) {
     let library_button = library_nav.clone();
     let collections_button = collections_nav.clone();
     let settings_button = settings_nav.clone();
+    let home_views = clip_views.clone();
     home_nav.connect_clicked(move |_| {
+        home_views.clear_selection();
         home_stack.set_visible_child_name("home");
         set_active_nav(
             &home_button,
@@ -150,12 +207,13 @@ fn build_ui(application: &Application) {
     let settings_button = settings_nav.clone();
     let library_views = clip_views.clone();
     library_nav.connect_clicked(move |_| {
+        library_views.clear_selection();
         library_views.refresh();
         library_stack.set_visible_child_name("library");
-        library_button.add_css_class("active");
-        home_button.remove_css_class("active");
-        collections_button.remove_css_class("active");
-        settings_button.remove_css_class("active");
+        set_active_nav(
+            &library_button,
+            &[&home_button, &collections_button, &settings_button],
+        );
     });
 
     let collections_stack = content.clone();
@@ -165,12 +223,13 @@ fn build_ui(application: &Application) {
     let settings_button = settings_nav.clone();
     let collection_views = clip_views.clone();
     collections_nav.connect_clicked(move |_| {
+        collection_views.clear_selection();
         collection_views.refresh();
         collections_stack.set_visible_child_name("collections");
-        collections_button.add_css_class("active");
-        home_button.remove_css_class("active");
-        library_button.remove_css_class("active");
-        settings_button.remove_css_class("active");
+        set_active_nav(
+            &collections_button,
+            &[&home_button, &library_button, &settings_button],
+        );
     });
 
     let settings_stack = content.clone();
@@ -178,46 +237,18 @@ fn build_ui(application: &Application) {
     let library_button = library_nav.clone();
     let collections_button = collections_nav.clone();
     let settings_button = settings_nav.clone();
+    let settings_views = clip_views.clone();
     settings_nav.connect_clicked(move |_| {
+        settings_views.clear_selection();
         settings_stack.set_visible_child_name("settings");
-        settings_button.add_css_class("active");
-        home_button.remove_css_class("active");
-        library_button.remove_css_class("active");
-        collections_button.remove_css_class("active");
-    });
-
-    let quick_library_stack = content.clone();
-    let quick_home = home_nav.clone();
-    let quick_library = library_nav.clone();
-    let quick_collections = collections_nav.clone();
-    let quick_settings = settings_nav.clone();
-    let quick_library_views = clip_views.clone();
-    home_view.open_library.connect_clicked(move |_| {
-        quick_library_views.refresh();
-        quick_library_stack.set_visible_child_name("library");
         set_active_nav(
-            &quick_library,
-            &[&quick_home, &quick_collections, &quick_settings],
-        );
-    });
-
-    let quick_collections_stack = content.clone();
-    let quick_home = home_nav.clone();
-    let quick_library = library_nav.clone();
-    let quick_collections = collections_nav.clone();
-    let quick_settings = settings_nav.clone();
-    let quick_collection_views = clip_views.clone();
-    home_view.open_collections.connect_clicked(move |_| {
-        quick_collection_views.refresh();
-        quick_collections_stack.set_visible_child_name("collections");
-        set_active_nav(
-            &quick_collections,
-            &[&quick_home, &quick_library, &quick_settings],
+            &settings_button,
+            &[&home_button, &library_button, &collections_button],
         );
     });
 
     shell.append(&sidebar);
-    shell.append(&content);
+    shell.append(&workspace);
     window.set_child(Some(&shell));
     content.set_visible_child_name("home");
     window.present();
@@ -233,20 +264,24 @@ fn build_ui(application: &Application) {
 
 fn nav_button(label: &str, icon: &str) -> Button {
     let icon = Image::from_icon_name(icon);
-    icon.set_pixel_size(18);
+    icon.set_pixel_size(20);
     icon.add_css_class("nav-icon");
     let button = Button::new();
     button.add_css_class("nav-button");
     button.set_halign(Align::Center);
     button.set_tooltip_text(Some(label));
+    button.update_property(&[gtk::accessible::Property::Label(label)]);
+    button.update_state(&[gtk::accessible::State::Selected(Some(false))]);
     button.set_child(Some(&icon));
     button
 }
 
 fn set_active_nav(active: &Button, inactive: &[&Button]) {
     active.add_css_class("active");
+    active.update_state(&[gtk::accessible::State::Selected(Some(true))]);
     for button in inactive {
         button.remove_css_class("active");
+        button.update_state(&[gtk::accessible::State::Selected(Some(false))]);
     }
 }
 
@@ -271,9 +306,9 @@ fn install_responsive_layout(
             return ControlFlow::Break;
         };
         let width = window.width();
-        let compact_sidebar = width < 760;
-        let narrow_content = width < 980;
-        let compact_header = width < 820;
+        let compact_sidebar = width < 1_080;
+        let narrow_content = width < 1_080;
+        let compact_header = width <= 980;
         let clip_columns = if width >= 1_500 {
             6
         } else if width >= 1_100 {
@@ -285,23 +320,33 @@ fn install_responsive_layout(
         } else {
             1
         };
+        let collection_columns = if width >= 1_250 {
+            4
+        } else if width >= 1_080 {
+            3
+        } else if width >= 820 {
+            2
+        } else {
+            1
+        };
         let current = (
             compact_sidebar,
             narrow_content,
             compact_header,
-            clip_columns,
+            clip_columns * 10 + collection_columns,
         );
+        clip_views.update_preview_geometry(clip_columns, collection_columns);
         if previous.get() == current {
             return ControlFlow::Continue;
         }
         previous.set(current);
 
-        sidebar.set_size_request(if compact_sidebar { 54 } else { 62 }, -1);
+        sidebar.set_size_request(if compact_sidebar { 72 } else { 88 }, -1);
         set_css_class(&content, "narrow", narrow_content);
         set_css_class(&content, "very-narrow", compact_header);
-        clip_views.set_layout(compact_header, clip_columns);
-        home_view.set_compact(compact_header);
-        settings_view.set_compact(compact_header);
+        clip_views.set_layout(compact_header, clip_columns, collection_columns);
+        home_view.set_layout(compact_sidebar, compact_header);
+        settings_view.set_compact(compact_sidebar);
         content.set_hhomogeneous(compact_header);
         ControlFlow::Continue
     });

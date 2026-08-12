@@ -4,15 +4,17 @@ use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::time::Duration;
 
+use gdk_pixbuf::PixbufLoader;
+use gdk_pixbuf::prelude::PixbufLoaderExt;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::{
-    Adjustment, Align, Box as GtkBox, Button, CheckButton, DropDown, Entry, EventControllerFocus,
-    EventControllerKey, GestureClick, Grid, Image, Label, Orientation, Scale, ScrolledWindow,
-    SpinButton, Stack, StringList,
+    Adjustment, Align, Box as GtkBox, Button, CheckButton, ContentFit, DropDown, Entry,
+    EventControllerFocus, EventControllerKey, FileDialog, GestureClick, Grid, Image, Label,
+    Orientation, Picture, Scale, ScrolledWindow, SpinButton, Stack, StringList,
 };
-use wreath_core::audio::{self, Microphone};
-use wreath_core::config::{Codec, Config, HotkeyConfig};
+use wreath_core::audio::{self, DesktopOutput, Microphone};
+use wreath_core::config::{Codec, Config, HotkeyConfig, MAX_FRAMES_PER_SECOND};
 use wreath_core::display::{self, Monitor};
 use wreath_core::paths::AppPaths;
 use wreath_core::shortcuts;
@@ -26,15 +28,34 @@ pub struct SettingsView {
     feedback: Label,
     apply: Button,
     panels: Vec<GtkBox>,
+    audio_columns: GtkBox,
+    sticker: GtkBox,
 }
 
 #[derive(Clone)]
 struct SettingsRow {
     grid: Grid,
-    label: Label,
+    copy: GtkBox,
     control: gtk::Widget,
     row: i32,
 }
+
+const QUALITY_PRESETS: [(u8, &str); 5] = [
+    (50, "Low"),
+    (65, "Medium"),
+    (75, "High"),
+    (85, "Ultra"),
+    (100, "Insane"),
+];
+const STORAGE_LIMITS: [(u32, &str); 6] = [
+    (1_024, "1 GB"),
+    (5_120, "5 GB"),
+    (10_240, "10 GB"),
+    (25_600, "25 GB"),
+    (51_200, "50 GB"),
+    (102_400, "100 GB"),
+];
+const SETTINGS_STICKER_PNG: &[u8] = include_bytes!("../../../assets/wreath-settings-67.png");
 
 #[derive(Clone)]
 struct HotkeyCapture {
@@ -300,20 +321,20 @@ impl SettingsView {
     pub fn set_compact(&self, compact: bool) {
         for grid in &self.grids {
             grid.set_column_spacing(if compact { 0 } else { 28 });
-            grid.set_row_spacing(if compact { 7 } else { 9 });
+            grid.set_row_spacing(if compact { 14 } else { 18 });
         }
         for row in &self.rows {
-            row.grid.remove(&row.label);
+            row.grid.remove(&row.copy);
             row.grid.remove(&row.control);
             if compact {
-                row.label.set_size_request(-1, -1);
-                row.label.set_margin_bottom(2);
-                row.grid.attach(&row.label, 0, row.row * 2, 1, 1);
+                row.copy.set_size_request(-1, -1);
+                row.copy.set_margin_bottom(2);
+                row.grid.attach(&row.copy, 0, row.row * 2, 1, 1);
                 row.grid.attach(&row.control, 0, row.row * 2 + 1, 1, 1);
             } else {
-                row.label.set_size_request(132, -1);
-                row.label.set_margin_bottom(0);
-                row.grid.attach(&row.label, 0, row.row, 1, 1);
+                row.copy.set_size_request(250, -1);
+                row.copy.set_margin_bottom(0);
+                row.grid.attach(&row.copy, 0, row.row, 1, 1);
                 row.grid.attach(&row.control, 1, row.row, 1, 1);
             }
         }
@@ -327,11 +348,19 @@ impl SettingsView {
         self.apply
             .set_halign(if compact { Align::Fill } else { Align::End });
         self.apply
-            .set_size_request(if compact { -1 } else { 92 }, 42);
+            .set_size_request(if compact { -1 } else { 132 }, 42);
         for panel in &self.panels {
-            panel.set_size_request(if compact { -1 } else { 640 }, -1);
-            panel.set_hexpand(compact);
+            panel.set_size_request(-1, -1);
+            panel.set_hexpand(true);
         }
+        self.audio_columns.set_orientation(if compact {
+            Orientation::Vertical
+        } else {
+            Orientation::Horizontal
+        });
+        self.audio_columns
+            .set_spacing(if compact { 18 } else { 24 });
+        self.sticker.set_visible(!compact);
     }
 }
 
@@ -339,7 +368,12 @@ pub fn build() -> SettingsView {
     let paths = AppPaths::discover();
     let config = Config::load(&paths).unwrap_or_default();
     let monitors = display::monitors().unwrap_or_default();
+    let desktop_outputs = configured_desktop_outputs(
+        audio::desktop_outputs().unwrap_or_default(),
+        config.audio.desktop_device.as_deref(),
+    );
     let microphones = audio::microphones().unwrap_or_default();
+    let initial_autostart = autostart_enabled().unwrap_or(false);
 
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.add_css_class("settings-page");
@@ -347,26 +381,25 @@ pub fn build() -> SettingsView {
     let title = Label::new(Some("Settings"));
     title.add_css_class("page-title");
     title.set_halign(Align::Start);
-    let subtitle = Label::new(Some(
-        "Capture exactly what you want, without background clutter.",
-    ));
+    let subtitle = Label::new(Some("Tune capture without leaving Wreath"));
     subtitle.add_css_class("page-subtitle");
     subtitle.set_halign(Align::Start);
     subtitle.set_wrap(true);
-    subtitle.set_margin_bottom(34);
-    root.append(&title);
+    title.set_margin_top(10);
     root.append(&subtitle);
+    title.set_margin_bottom(24);
+    root.append(&title);
 
     let tabs = GtkBox::new(Orientation::Horizontal, 4);
     tabs.add_css_class("settings-tabs");
     tabs.set_halign(Align::Start);
-    tabs.set_margin_bottom(28);
+    tabs.set_hexpand(true);
     let settings_stack = Stack::new();
     settings_stack.add_css_class("settings-stack");
     settings_stack.set_hhomogeneous(false);
     settings_stack.set_vhomogeneous(false);
-    settings_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
-    settings_stack.set_transition_duration(120);
+    settings_stack.set_transition_type(gtk::StackTransitionType::None);
+    settings_stack.set_transition_duration(0);
 
     let display_page = settings_panel(
         "Display",
@@ -413,6 +446,9 @@ pub fn build() -> SettingsView {
         settings_tab("Storage", "storage"),
     ];
     tab_buttons[0].0.add_css_class("active");
+    tab_buttons[0]
+        .0
+        .update_state(&[gtk::accessible::State::Selected(Some(true))]);
     for (button, _) in &tab_buttons {
         tabs.append(button);
     }
@@ -428,13 +464,12 @@ pub fn build() -> SettingsView {
             stack.set_visible_child_name(page_name);
             for button in &buttons {
                 button.remove_css_class("active");
+                button.update_state(&[gtk::accessible::State::Selected(Some(false))]);
             }
             active.add_css_class("active");
+            active.update_state(&[gtk::accessible::State::Selected(Some(true))]);
         });
     }
-    root.append(&tabs);
-    root.append(&settings_stack);
-
     let mut rows = Vec::new();
     let mut grids = Vec::new();
     let display_grid = settings_grid();
@@ -443,21 +478,48 @@ pub fn build() -> SettingsView {
     let monitor_dropdown = DropDown::new(Some(monitor_model.clone()), None::<gtk::Expression>);
     monitor_dropdown.set_hexpand(true);
     monitor_dropdown.set_selected(selected_monitor_index(&monitors, &config));
-    rows.push(attach_row(&display_grid, 0, "Monitor", &monitor_dropdown));
+    rows.push(attach_row(
+        &display_grid,
+        0,
+        "Monitor",
+        "Capture this display when the replay buffer starts.",
+        &monitor_dropdown,
+    ));
+    let fps = spin_button(
+        15.0,
+        f64::from(MAX_FRAMES_PER_SECOND),
+        15.0,
+        f64::from(config.capture.frames_per_second),
+    );
+    rows.push(attach_row(
+        &display_grid,
+        1,
+        "Frame rate",
+        "Higher rates look smoother and use more GPU memory.",
+        &fps,
+    ));
+    let capture_cursor = CheckButton::with_label("Include cursor");
+    capture_cursor.set_active(config.capture.cursor);
+    rows.push(attach_row(
+        &display_grid,
+        2,
+        "Capture cursor",
+        "Include the hardware cursor in saved clips.",
+        &capture_cursor,
+    ));
     display_page.append(&display_grid);
 
     let capture_grid = settings_grid();
     grids.push(capture_grid.clone());
     let duration = spin_button(5.0, 600.0, 5.0, f64::from(config.capture.duration_seconds));
     duration.set_tooltip_text(Some("Seconds retained in the encoded replay buffer"));
-    rows.push(attach_row(&capture_grid, 0, "Clip length", &duration));
-    let fps = spin_button(
-        15.0,
-        240.0,
-        15.0,
-        f64::from(config.capture.frames_per_second),
-    );
-    rows.push(attach_row(&capture_grid, 1, "Frames per second", &fps));
+    rows.push(attach_row(
+        &capture_grid,
+        0,
+        "Clip length",
+        "Longer replays keep more moments but use more memory.",
+        &duration,
+    ));
     let codec_model = StringList::new(&["Automatic", "H.264", "HEVC", "AV1"]);
     let codec = DropDown::new(Some(codec_model), None::<gtk::Expression>);
     codec.set_selected(match config.capture.codec {
@@ -466,27 +528,92 @@ pub fn build() -> SettingsView {
         Codec::Hevc => 2,
         Codec::Av1 => 3,
     });
-    rows.push(attach_row(&capture_grid, 2, "Codec", &codec));
-    let quality = Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
-    quality.set_value(f64::from(config.capture.quality));
-    quality.set_draw_value(false);
+    rows.push(attach_row(
+        &capture_grid,
+        1,
+        "Video codec",
+        "Automatic follows the best supported hardware encoder.",
+        &codec,
+    ));
+    let quality_values = quality_values(config.capture.quality);
+    let quality_labels = quality_values
+        .iter()
+        .map(|value| quality_label(*value))
+        .collect::<Vec<_>>();
+    let quality_model = StringList::new(
+        &quality_labels
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    let quality = DropDown::new(Some(quality_model), None::<gtk::Expression>);
     quality.set_hexpand(true);
-    rows.push(attach_row(&capture_grid, 3, "Quality", &quality));
+    quality.set_selected(
+        quality_values
+            .iter()
+            .position(|value| *value == config.capture.quality)
+            .and_then(|index| u32::try_from(index).ok())
+            .unwrap_or(0),
+    );
+    rows.push(attach_row(
+        &capture_grid,
+        2,
+        "Quality",
+        "Higher presets preserve more detail and use more storage.",
+        &quality,
+    ));
     quality_page.append(&capture_grid);
 
     let control_grid = settings_grid();
     grids.push(control_grid.clone());
     let hotkey = HotkeyCapture::new(&config.hotkey);
-    rows.push(attach_row(&control_grid, 0, "Save replay", &hotkey.entry));
+    rows.push(attach_row(
+        &control_grid,
+        0,
+        "Save replay hotkey",
+        controls_description,
+        &hotkey.entry,
+    ));
+    let autostart = CheckButton::with_label("Start after sign-in");
+    autostart.set_active(initial_autostart);
+    rows.push(attach_row(
+        &control_grid,
+        1,
+        "Start with Linux",
+        "Start Wreath automatically when your user session begins.",
+        &autostart,
+    ));
     controls_page.append(&control_grid);
 
-    let audio_grid = settings_grid();
-    grids.push(audio_grid.clone());
+    let audio_columns = GtkBox::new(Orientation::Horizontal, 24);
+    audio_columns.set_hexpand(true);
+    let game_audio_grid = settings_grid();
+    game_audio_grid.set_hexpand(true);
+    let microphone_grid = settings_grid();
+    microphone_grid.set_hexpand(true);
+    grids.push(game_audio_grid.clone());
+    grids.push(microphone_grid.clone());
     let desktop_audio = CheckButton::with_label("Desktop audio");
     desktop_audio.set_active(config.audio.desktop);
-    rows.push(attach_row(&audio_grid, 0, "System sound", &desktop_audio));
+    rows.push(attach_row(
+        &game_audio_grid,
+        0,
+        "Game audio",
+        "Record game and system sound.",
+        &desktop_audio,
+    ));
     let desktop_gain = Scale::with_range(Orientation::Horizontal, 0.0, 200.0, 5.0);
+    desktop_gain.update_property(&[
+        gtk::accessible::Property::Label("Game audio level"),
+        gtk::accessible::Property::Description(
+            "Recording level; Linux system volume stays unchanged.",
+        ),
+    ]);
     desktop_gain.set_value(f64::from(config.audio.desktop_gain_percent));
+    desktop_gain.update_property(&[gtk::accessible::Property::ValueText(&format!(
+        "{}%",
+        config.audio.desktop_gain_percent
+    ))]);
     desktop_gain.set_draw_value(false);
     desktop_gain.set_hexpand(true);
     desktop_gain.set_sensitive(config.audio.desktop);
@@ -502,18 +629,40 @@ pub fn build() -> SettingsView {
     desktop_gain_control.append(&desktop_gain);
     desktop_gain_control.append(&desktop_gain_value);
     rows.push(attach_row(
-        &audio_grid,
+        &game_audio_grid,
         1,
-        "Desktop level",
+        "Game audio level",
+        "Recording level; Linux system volume stays unchanged.",
         &desktop_gain_control,
     ));
     let displayed_desktop_gain = desktop_gain_value.clone();
     desktop_gain.connect_value_changed(move |scale| {
-        displayed_desktop_gain.set_text(&format!("{:.0}%", scale.value()));
+        let value = format!("{:.0}%", scale.value());
+        displayed_desktop_gain.set_text(&value);
+        scale.update_property(&[gtk::accessible::Property::ValueText(&value)]);
     });
+    let desktop_output_model = desktop_output_model(&desktop_outputs);
+    let desktop_output_dropdown =
+        DropDown::new(Some(desktop_output_model), None::<gtk::Expression>);
+    desktop_output_dropdown.set_hexpand(true);
+    desktop_output_dropdown.set_selected(selected_desktop_output_index(&desktop_outputs, &config));
+    desktop_output_dropdown.set_sensitive(config.audio.desktop);
+    rows.push(attach_row(
+        &game_audio_grid,
+        2,
+        "Output device",
+        "Capture this output instead of following the Linux default.",
+        &desktop_output_dropdown,
+    ));
     let microphone = CheckButton::with_label("Include microphone");
     microphone.set_active(config.audio.microphone);
-    rows.push(attach_row(&audio_grid, 2, "Voice", &microphone));
+    rows.push(attach_row(
+        &microphone_grid,
+        0,
+        "Microphone",
+        "Capture your selected input with its own level.",
+        &microphone,
+    ));
     let microphone_model = microphone_model(&microphones);
     let microphone_dropdown = DropDown::new(Some(microphone_model), None::<gtk::Expression>);
     microphone_dropdown.set_hexpand(true);
@@ -521,13 +670,24 @@ pub fn build() -> SettingsView {
     microphone_dropdown.set_sensitive(config.audio.microphone && !microphones.is_empty());
     microphone_dropdown.set_tooltip_text(Some("PipeWire microphone used in new clips"));
     rows.push(attach_row(
-        &audio_grid,
-        3,
+        &microphone_grid,
+        1,
         "Input device",
+        "Use this PipeWire input for new clips.",
         &microphone_dropdown,
     ));
     let microphone_gain = Scale::with_range(Orientation::Horizontal, 0.0, 200.0, 5.0);
+    microphone_gain.update_property(&[
+        gtk::accessible::Property::Label("Microphone level"),
+        gtk::accessible::Property::Description(
+            "Recording level; Linux microphone volume stays unchanged.",
+        ),
+    ]);
     microphone_gain.set_value(f64::from(config.audio.microphone_gain_percent));
+    microphone_gain.update_property(&[gtk::accessible::Property::ValueText(&format!(
+        "{}%",
+        config.audio.microphone_gain_percent
+    ))]);
     microphone_gain.set_draw_value(false);
     microphone_gain.set_hexpand(true);
     microphone_gain.set_sensitive(config.audio.microphone);
@@ -544,14 +704,17 @@ pub fn build() -> SettingsView {
     microphone_gain_control.append(&microphone_gain);
     microphone_gain_control.append(&microphone_gain_value);
     rows.push(attach_row(
-        &audio_grid,
-        4,
+        &microphone_grid,
+        2,
         "Microphone level",
+        "Recording level; Linux microphone volume stays unchanged.",
         &microphone_gain_control,
     ));
     let displayed_gain = microphone_gain_value.clone();
     microphone_gain.connect_value_changed(move |scale| {
-        displayed_gain.set_text(&format!("{:.0}%", scale.value()));
+        let value = format!("{:.0}%", scale.value());
+        displayed_gain.set_text(&value);
+        scale.update_property(&[gtk::accessible::Property::ValueText(&value)]);
     });
     let microphone_toggle_dropdown = microphone_dropdown.clone();
     let microphone_toggle_gain = microphone_gain.clone();
@@ -561,17 +724,87 @@ pub fn build() -> SettingsView {
         microphone_toggle_gain.set_sensitive(toggle.is_active());
     });
     let desktop_toggle_gain = desktop_gain.clone();
+    let desktop_toggle_output = desktop_output_dropdown.clone();
     desktop_audio.connect_toggled(move |toggle| {
         desktop_toggle_gain.set_sensitive(toggle.is_active());
+        desktop_toggle_output.set_sensitive(toggle.is_active());
     });
-    audio_page.append(&audio_grid);
+    audio_columns.append(&game_audio_grid);
+    audio_columns.append(&microphone_grid);
+    audio_page.append(&audio_columns);
 
     let storage_grid = settings_grid();
     grids.push(storage_grid.clone());
     let output = Entry::new();
     output.set_text(&config.storage.directory.to_string_lossy());
     output.set_hexpand(true);
-    rows.push(attach_row(&storage_grid, 0, "Save location", &output));
+    let choose_output = Button::with_label("Browse…");
+    choose_output.add_css_class("quiet-action");
+    let output_control = GtkBox::new(Orientation::Horizontal, 12);
+    output_control.set_hexpand(true);
+    output_control.append(&output);
+    output_control.append(&choose_output);
+    let selected_output = output.clone();
+    choose_output.connect_clicked(move |button| {
+        let current = PathBuf::from(selected_output.text().as_str());
+        let mut chooser = FileDialog::builder()
+            .title("Choose Wreath save location")
+            .accept_label("Choose")
+            .modal(true);
+        if current.is_absolute() {
+            chooser = chooser.initial_folder(&gtk::gio::File::for_path(current));
+        }
+        let chooser = chooser.build();
+        let chosen_entry = selected_output.clone();
+        let parent = button
+            .root()
+            .and_then(|root| root.downcast::<gtk::Window>().ok());
+        chooser.select_folder(
+            parent.as_ref(),
+            None::<&gtk::gio::Cancellable>,
+            move |result| {
+                if let Ok(file) = result
+                    && let Some(path) = file.path()
+                {
+                    chosen_entry.set_text(&path.to_string_lossy());
+                }
+            },
+        );
+    });
+    rows.push(attach_row(
+        &storage_grid,
+        0,
+        "Save location",
+        "Store clips and collection folders in this local directory.",
+        &output_control,
+    ));
+    let storage_values = storage_values(config.storage.max_megabytes);
+    let storage_labels = storage_values
+        .iter()
+        .map(|value| storage_label(*value))
+        .collect::<Vec<_>>();
+    let storage_model = StringList::new(
+        &storage_labels
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    let storage_limit = DropDown::new(Some(storage_model), None::<gtk::Expression>);
+    storage_limit.set_hexpand(true);
+    storage_limit.set_selected(
+        storage_values
+            .iter()
+            .position(|value| *value == config.storage.max_megabytes)
+            .and_then(|index| u32::try_from(index).ok())
+            .unwrap_or(0),
+    );
+    rows.push(attach_row(
+        &storage_grid,
+        1,
+        "Storage limit",
+        "Old clips are never uploaded.",
+        &storage_limit,
+    ));
     storage_page.append(&storage_grid);
 
     let footer = GtkBox::new(Orientation::Horizontal, 18);
@@ -583,16 +816,40 @@ pub fn build() -> SettingsView {
     let apply_content = GtkBox::new(Orientation::Horizontal, 8);
     let apply_icon = Image::from_icon_name("document-save-symbolic");
     apply_icon.set_pixel_size(17);
-    let apply_label = Label::new(Some("Save"));
+    let apply_label = Label::new(Some("Save settings"));
     apply_content.append(&apply_icon);
     apply_content.append(&apply_label);
     let apply = Button::new();
     apply.add_css_class("settings-save-action");
+    apply.update_property(&[gtk::accessible::Property::Label("Save settings")]);
     apply.set_child(Some(&apply_content));
-    apply.set_size_request(92, 42);
+    apply.set_size_request(132, 42);
     footer.append(&feedback);
-    footer.append(&apply);
+    let toolbar = GtkBox::new(Orientation::Horizontal, 18);
+    toolbar.add_css_class("settings-toolbar");
+    toolbar.set_margin_bottom(22);
+    toolbar.append(&tabs);
+    toolbar.append(&apply);
+    root.append(&toolbar);
+    root.append(&settings_stack);
     root.append(&footer);
+    let sticker_spacer = GtkBox::new(Orientation::Vertical, 0);
+    sticker_spacer.set_vexpand(true);
+    root.append(&sticker_spacer);
+    let sticker = GtkBox::new(Orientation::Vertical, 0);
+    sticker.add_css_class("settings-sticker");
+    sticker.set_halign(Align::End);
+    sticker.set_valign(Align::End);
+    sticker.set_size_request(253, 190);
+    sticker.set_overflow(gtk::Overflow::Hidden);
+    let sticker_picture = embedded_picture(SETTINGS_STICKER_PNG);
+    sticker_picture.set_can_shrink(true);
+    sticker_picture.set_content_fit(ContentFit::Contain);
+    sticker_picture.set_hexpand(true);
+    sticker_picture.set_vexpand(true);
+    sticker_picture.set_size_request(1, 1);
+    sticker.append(&sticker_picture);
+    root.append(&sticker);
 
     let save_paths = paths.clone();
     let saved_feedback = feedback.clone();
@@ -610,15 +867,23 @@ pub fn build() -> SettingsView {
             &duration,
             &fps,
             &codec,
+            &quality_values,
             &quality,
+            &capture_cursor,
             &hotkey,
+            initial_autostart,
+            &autostart,
             &desktop_audio,
             &desktop_gain,
+            &desktop_outputs,
+            &desktop_output_dropdown,
             &microphone,
             &microphones,
             &microphone_dropdown,
             &microphone_gain,
             &output,
+            &storage_values,
+            &storage_limit,
         ) {
             Ok(()) => {
                 saved_feedback.set_text("✓ Changes saved locally. Recorder updated.");
@@ -635,7 +900,7 @@ pub fn build() -> SettingsView {
                 glib::timeout_add_local_once(Duration::from_millis(2200), move || {
                     if reset_generation.get() == generation {
                         reset_apply_icon.set_icon_name(Some("document-save-symbolic"));
-                        reset_apply_label.set_text("Save");
+                        reset_apply_label.set_text("Save settings");
                         reset_apply.remove_css_class("saved");
                     }
                 });
@@ -654,7 +919,7 @@ pub fn build() -> SettingsView {
                 saved_feedback.remove_css_class("success");
                 saved_feedback.add_css_class("error");
                 saved_apply_icon.set_icon_name(Some("document-save-symbolic"));
-                saved_apply_label.set_text("Save");
+                saved_apply_label.set_text("Save settings");
                 saved_apply.remove_css_class("saved");
             }
         }
@@ -671,6 +936,8 @@ pub fn build() -> SettingsView {
         feedback,
         apply,
         panels,
+        audio_columns,
+        sticker,
     }
 }
 
@@ -682,15 +949,23 @@ fn collect_and_save(
     duration: &SpinButton,
     fps: &SpinButton,
     codec: &DropDown,
-    quality: &Scale,
+    quality_values: &[u8],
+    quality: &DropDown,
+    capture_cursor: &CheckButton,
     hotkey: &HotkeyCapture,
+    initial_autostart: bool,
+    autostart: &CheckButton,
     desktop_audio: &CheckButton,
     desktop_gain: &Scale,
+    desktop_outputs: &[DesktopOutput],
+    desktop_output_dropdown: &DropDown,
     microphone: &CheckButton,
     microphones: &[Microphone],
     microphone_dropdown: &DropDown,
     microphone_gain: &Scale,
     output: &Entry,
+    storage_values: &[u32],
+    storage_limit: &DropDown,
 ) -> Result<(), String> {
     let mut config = Config::load(paths).unwrap_or_default();
     let previous_hotkey = config.hotkey.clone();
@@ -710,10 +985,26 @@ fn collect_and_save(
         3 => Codec::Av1,
         _ => return Err("Select a codec.".into()),
     };
-    config.capture.quality = quality.value().round().clamp(0.0, 100.0) as u8;
+    let quality_index = usize::try_from(quality.selected()).unwrap_or(usize::MAX);
+    config.capture.quality = *quality_values
+        .get(quality_index)
+        .ok_or_else(|| "Select a quality preset.".to_owned())?;
+    config.capture.cursor = capture_cursor.is_active();
     config.hotkey = hotkey.value()?;
     config.audio.desktop = desktop_audio.is_active();
     config.audio.desktop_gain_percent = desktop_gain.value().round().clamp(0.0, 200.0) as u16;
+    let desktop_output_index =
+        usize::try_from(desktop_output_dropdown.selected()).unwrap_or(usize::MAX);
+    config.audio.desktop_device = if desktop_output_index == 0 {
+        None
+    } else {
+        desktop_outputs
+            .get(desktop_output_index - 1)
+            .map(|output| output.name.clone())
+    };
+    if config.audio.desktop && desktop_output_index != 0 && config.audio.desktop_device.is_none() {
+        return Err("Select an available output device.".into());
+    }
     config.audio.microphone = microphone.is_active();
     let microphone_index = usize::try_from(microphone_dropdown.selected()).unwrap_or(usize::MAX);
     config.audio.microphone_device = microphones
@@ -728,6 +1019,14 @@ fn collect_and_save(
         return Err("Save location must be an absolute local path.".into());
     }
     config.storage.directory = output_path;
+    let storage_index = usize::try_from(storage_limit.selected()).unwrap_or(usize::MAX);
+    config.storage.max_megabytes = *storage_values
+        .get(storage_index)
+        .ok_or_else(|| "Select a storage limit.".to_owned())?;
+    config.validate().map_err(|error| error.to_string())?;
+    if autostart.is_active() != initial_autostart {
+        set_autostart_enabled(autostart.is_active())?;
+    }
     config.save(paths).map_err(|error| error.to_string())?;
 
     let control = sibling_control_executable();
@@ -780,6 +1079,107 @@ fn selected_monitor_index(monitors: &[Monitor], config: &Config) -> u32 {
         .unwrap_or(gtk::INVALID_LIST_POSITION)
 }
 
+fn configured_desktop_outputs(
+    mut outputs: Vec<DesktopOutput>,
+    configured: Option<&str>,
+) -> Vec<DesktopOutput> {
+    if let Some(configured) = configured
+        && !outputs.iter().any(|output| output.name == configured)
+    {
+        outputs.push(DesktopOutput {
+            name: configured.to_owned(),
+            label: "Configured output · unavailable".to_owned(),
+            is_default: false,
+        });
+    }
+    outputs
+}
+
+fn desktop_output_model(outputs: &[DesktopOutput]) -> StringList {
+    let mut labels = vec!["Follow Linux default".to_owned()];
+    labels.extend(outputs.iter().map(|output| output.label.clone()));
+    StringList::new(&labels.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+fn selected_desktop_output_index(outputs: &[DesktopOutput], config: &Config) -> u32 {
+    config
+        .audio
+        .desktop_device
+        .as_deref()
+        .and_then(|selected| outputs.iter().position(|output| output.name == selected))
+        .and_then(|index| u32::try_from(index + 1).ok())
+        .unwrap_or(0)
+}
+
+fn quality_values(current: u8) -> Vec<u8> {
+    let current = current.min(100);
+    let mut values = QUALITY_PRESETS
+        .iter()
+        .map(|(value, _)| *value)
+        .collect::<Vec<_>>();
+    if !values.contains(&current) {
+        values.push(current);
+        values.sort_unstable();
+    }
+    values
+}
+
+fn quality_label(value: u8) -> String {
+    QUALITY_PRESETS
+        .iter()
+        .find(|(preset, _)| *preset == value)
+        .map_or_else(|| format!("{value}%"), |(_, label)| (*label).to_owned())
+}
+
+fn storage_values(current: u32) -> Vec<u32> {
+    let mut values = STORAGE_LIMITS
+        .iter()
+        .map(|(value, _)| *value)
+        .collect::<Vec<_>>();
+    if !values.contains(&current) {
+        values.push(current);
+        values.sort_unstable();
+    }
+    values
+}
+
+fn storage_label(value: u32) -> String {
+    STORAGE_LIMITS
+        .iter()
+        .find(|(preset, _)| *preset == value)
+        .map_or_else(|| format!("{} MB", value), |(_, label)| (*label).to_owned())
+}
+
+fn autostart_enabled() -> Result<bool, String> {
+    let status = Command::new("systemctl")
+        .args(["--user", "is-enabled", "--quiet", "wreathd.service"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| format!("Could not read Linux autostart: {error}"))?;
+    Ok(status.success())
+}
+
+fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
+    let action = if enabled { "enable" } else { "disable" };
+    let output = Command::new("systemctl")
+        .args(["--user", action, "wreathd.service"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("Could not update Linux autostart: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        Err(if detail.is_empty() {
+            "Could not update Linux autostart.".to_owned()
+        } else {
+            format!("Could not update Linux autostart: {detail}")
+        })
+    }
+}
+
 fn microphone_model(microphones: &[Microphone]) -> StringList {
     if microphones.is_empty() {
         return StringList::new(&["No microphones found"]);
@@ -810,31 +1210,41 @@ fn selected_microphone_index(microphones: &[Microphone], config: &Config) -> u32
 fn settings_panel(title: &str, description: &str) -> GtkBox {
     let panel = GtkBox::new(Orientation::Vertical, 0);
     panel.add_css_class("settings-panel");
-    panel.set_halign(Align::Start);
-    panel.set_size_request(640, -1);
-    let title = Label::new(Some(title));
-    title.add_css_class("settings-panel-title");
-    title.set_halign(Align::Start);
-    let description = Label::new(Some(description));
-    description.add_css_class("settings-panel-description");
-    description.set_halign(Align::Start);
-    description.set_wrap(true);
-    description.set_margin_bottom(22);
-    panel.append(&title);
-    panel.append(&description);
+    panel.set_halign(Align::Fill);
+    panel.set_hexpand(true);
+    panel.set_tooltip_text(Some(&format!("{title}: {description}")));
     panel
+}
+
+fn embedded_picture(bytes: &[u8]) -> Picture {
+    let loader = PixbufLoader::new();
+    if loader.write(bytes).is_ok()
+        && loader.close().is_ok()
+        && let Some(pixbuf) = loader.pixbuf()
+    {
+        let pixbuf = pixbuf
+            .scale_simple(253, 190, gdk_pixbuf::InterpType::Bilinear)
+            .unwrap_or(pixbuf);
+        let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
+        return Picture::for_paintable(&texture);
+    }
+    Picture::new()
 }
 
 fn settings_tab(label: &str, page: &'static str) -> (Button, &'static str) {
     let button = Button::with_label(label);
     button.add_css_class("settings-tab");
+    button.update_property(&[gtk::accessible::Property::Label(&format!(
+        "{label} settings"
+    ))]);
+    button.update_state(&[gtk::accessible::State::Selected(Some(false))]);
     (button, page)
 }
 
 fn settings_grid() -> Grid {
     let grid = Grid::new();
     grid.set_column_spacing(28);
-    grid.set_row_spacing(9);
+    grid.set_row_spacing(18);
     grid.set_hexpand(true);
     grid
 }
@@ -843,18 +1253,33 @@ fn attach_row(
     grid: &Grid,
     row: i32,
     label_text: &str,
+    detail_text: &str,
     control: &impl IsA<gtk::Widget>,
 ) -> SettingsRow {
     let label = Label::new(Some(label_text));
     label.add_css_class("row-label");
     label.set_halign(Align::Start);
-    label.set_valign(Align::Center);
-    label.set_size_request(132, -1);
-    grid.attach(&label, 0, row, 1, 1);
+    let detail = Label::new(Some(detail_text));
+    detail.add_css_class("row-detail");
+    detail.set_halign(Align::Start);
+    detail.set_wrap(true);
+    detail.set_xalign(0.0);
+    let copy = GtkBox::new(Orientation::Vertical, 2);
+    copy.set_valign(Align::Center);
+    copy.set_size_request(250, -1);
+    copy.append(&label);
+    copy.append(&detail);
+    control.set_tooltip_text(Some(detail_text));
+    let widget: &gtk::Widget = control.as_ref();
+    widget.update_property(&[
+        gtk::accessible::Property::Label(label_text),
+        gtk::accessible::Property::Description(detail_text),
+    ]);
+    grid.attach(&copy, 0, row, 1, 1);
     grid.attach(control, 1, row, 1, 1);
     SettingsRow {
         grid: grid.clone(),
-        label,
+        copy,
         control: control.clone().upcast(),
         row,
     }
@@ -894,5 +1319,32 @@ mod tests {
     fn enter_is_reserved_for_confirmation() {
         assert!(is_confirm_key(gtk::gdk::Key::Return));
         assert!(is_confirm_key(gtk::gdk::Key::KP_Enter));
+    }
+
+    #[test]
+    fn windows_quality_presets_and_custom_values_are_preserved() {
+        assert_eq!(quality_values(75), vec![50, 65, 75, 85, 100]);
+        assert_eq!(quality_label(75), "High");
+        assert_eq!(quality_values(62), vec![50, 62, 65, 75, 85, 100]);
+        assert_eq!(quality_label(62), "62%");
+    }
+
+    #[test]
+    fn windows_storage_limits_and_custom_values_are_preserved() {
+        assert_eq!(
+            storage_values(10_240),
+            vec![1_024, 5_120, 10_240, 25_600, 51_200, 102_400]
+        );
+        assert_eq!(storage_label(10_240), "10 GB");
+        assert_eq!(storage_label(2_048), "2048 MB");
+        assert!(storage_values(2_048).contains(&2_048));
+    }
+
+    #[test]
+    fn an_unavailable_configured_output_stays_selectable() {
+        let outputs = configured_desktop_outputs(Vec::new(), Some("custom.monitor"));
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].name, "custom.monitor");
+        assert!(outputs[0].label.contains("unavailable"));
     }
 }
