@@ -96,8 +96,12 @@ pub fn rename_collection(directory: &Path, collection: &Path, name: &str) -> io:
             "collection must be a direct child of the clip directory",
         ));
     }
-    let destination = root.join(name);
-    if destination.exists() && destination != collection {
+    let destination = directory.join(name);
+    if destination.exists() {
+        let existing = destination.canonicalize()?;
+        if existing == collection {
+            return Ok(destination);
+        }
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "a collection with this name already exists",
