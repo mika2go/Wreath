@@ -342,7 +342,7 @@ fn home_girl_layout(
 /// Decoration: it stays below the last settings row and is dropped rather than
 /// shrunk when a short window leaves no room.
 fn settings_sticker_layout(left: f32, right: f32, height: f32) -> Option<LogicalRect> {
-    const MINIMUM_HEIGHT: f32 = 96.0;
+    const MINIMUM_HEIGHT: f32 = 97.0;
     const MAXIMUM_HEIGHT: f32 = 190.0;
     const BOTTOM_MARGIN: f32 = 16.0;
 
