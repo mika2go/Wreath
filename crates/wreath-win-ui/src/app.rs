@@ -7,9 +7,11 @@ use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, GlobalFree, HANDLE, HGLOBAL, HWND, LPARAM,
     LRESULT, POINT, RECT, WPARAM,
 };
+use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, ClientToScreen, EndPaint, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-    MonitorFromWindow, PAINTSTRUCT, UpdateWindow,
+    BeginPaint, ClientToScreen, CreateRoundRectRgn, DeleteObject, EndPaint, GetMonitorInfoW,
+    MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow, PAINTSTRUCT, ScreenToClient,
+    SetWindowRgn, UpdateWindow,
 };
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::DataExchange::{
@@ -27,16 +29,17 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
-    DispatchMessageW, FindWindowW, GWL_STYLE, GWLP_USERDATA, GetClientRect, GetCursorPos,
-    GetMessageW, GetParent, GetWindowLongPtrW, GetWindowPlacement, HWND_TOP, IDC_ARROW,
-    LoadCursorW, MINMAXINFO, MSG, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED, SW_HIDE,
-    SW_RESTORE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow,
-    TranslateMessage, WINDOW_EX_STYLE, WINDOWPLACEMENT, WM_CHAR, WM_DESTROY, WM_DPICHANGED,
-    WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP,
-    WM_TIMER, WNDCLASSW, WS_CHILD, WS_DISABLED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
+    DestroyWindow, DispatchMessageW, FindWindowW, GWL_STYLE, GWLP_USERDATA, GetClientRect,
+    GetCursorPos, GetMessageW, GetParent, GetWindowLongPtrW, GetWindowPlacement, HWND_TOP,
+    IDC_ARROW, IsZoomed, LoadCursorW, MINMAXINFO, MSG, PostQuitMessage, RegisterClassW,
+    SIZE_MINIMIZED, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetTimer,
+    SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow, TranslateMessage,
+    WINDOW_EX_STYLE, WINDOWPLACEMENT, WM_CHAR, WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO,
+    WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE,
+    WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW,
+    WS_CHILD, WS_DISABLED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_OVERLAPPEDWINDOW, WS_POPUP,
+    WS_VISIBLE,
 };
 use windows::core::{PCWSTR, w};
 use wreath_core::config::Codec;
@@ -50,7 +53,7 @@ use crate::player::{PLAYER_EVENT, Player};
 use crate::renderer::{
     Renderer, editor_player_bounds, editor_timeline_fraction, editor_timeline_rail,
     fullscreen_timeline_rail, fullscreen_volume_rail, player_bounds, player_timeline_rail,
-    player_volume_rail,
+    player_volume_rail, settings_audio_gain_rail, settings_gain_percent,
 };
 
 const WINDOW_CLASS: windows::core::PCWSTR = w!("WreathApplicationWindow");
@@ -64,7 +67,7 @@ const PREVIEW_SEEK_SETTLE: Duration = Duration::from_millis(160);
 const PREVIEW_SLACK_SECONDS: f64 = 0.05;
 const NOTICE_LIFETIME: Duration = Duration::from_secs(3);
 const FULLSCREEN_CONTROLS_LIFETIME: Duration = Duration::from_secs(3);
-const FULLSCREEN_CONTROLS_HEIGHT: f32 = 80.0;
+const FULLSCREEN_CONTROLS_HEIGHT: f32 = 184.0;
 
 struct AppState {
     model: UiModel,
@@ -82,6 +85,7 @@ struct AppState {
     hotkey_updates: mpsc::Receiver<HotkeyUpdate>,
     hotkey_sender: mpsc::Sender<HotkeyUpdate>,
     editor_drag: Option<EditorDrag>,
+    editor_drag_origin: Option<(Duration, Duration)>,
     clip_drag: Option<ClipDrag>,
     slider_drag: Option<SliderDrag>,
     player_seek: Option<Instant>,
@@ -116,6 +120,8 @@ enum EditorDrag {
 
 #[derive(Clone, Copy)]
 enum SliderDrag {
+    DesktopGain,
+    MicrophoneGain,
     PlayerSeek,
     PlayerVolume,
     EditorPlayhead,
@@ -223,6 +229,7 @@ fn run_initialized() -> Result<(), String> {
         hotkey_updates,
         hotkey_sender,
         editor_drag: None,
+        editor_drag_origin: None,
         clip_drag: None,
         slider_drag: None,
         player_seek: None,
@@ -278,6 +285,15 @@ fn run_initialized() -> Result<(), String> {
         )
     }
     .map_err(|error| error.to_string())?;
+    let dark_titlebar: i32 = 1;
+    let _ = unsafe {
+        DwmSetWindowAttribute(
+            window,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            (&dark_titlebar as *const i32).cast(),
+            std::mem::size_of_val(&dark_titlebar) as u32,
+        )
+    };
     let fullscreen_overlay = unsafe {
         CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -365,6 +381,7 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        WM_NCHITTEST => unsafe { DefWindowProcW(window, message, wparam, lparam) },
         WM_SIZE => {
             if let Some(state) = state_mut(window) {
                 if wparam.0 as u32 == SIZE_MINIMIZED {
@@ -428,6 +445,7 @@ unsafe extern "system" fn window_proc(
                     &state.model,
                     ((state.width as f32 / scale).round() as u32).max(1),
                     ((state.height as f32 / scale).round() as u32).max(1),
+                    state.fullscreen.is_some(),
                 );
                 if let Err(error) = painted
                     && state.renderer.is_failing()
@@ -476,7 +494,12 @@ unsafe extern "system" fn window_proc(
                     Some(Action::DragEditorEnd) => Some(EditorDrag::End),
                     _ => None,
                 };
+                state.editor_drag_origin = state
+                    .editor_drag
+                    .map(|_| (state.model.editor_start, state.model.editor_end));
                 state.slider_drag = match hit.as_ref() {
+                    Some(Action::DragDesktopGain) => Some(SliderDrag::DesktopGain),
+                    Some(Action::DragMicrophoneGain) => Some(SliderDrag::MicrophoneGain),
                     Some(Action::DragPlayerSeek) => Some(SliderDrag::PlayerSeek),
                     Some(Action::DragPlayerVolume) => Some(SliderDrag::PlayerVolume),
                     Some(Action::DragEditorPlayhead) => Some(SliderDrag::EditorPlayhead),
@@ -588,6 +611,9 @@ unsafe extern "system" fn window_proc(
                 } else if state.editor_drag.is_some() {
                     update_editor_drag(state, x, true);
                     state.editor_drag = None;
+                    if let Some(previous) = state.editor_drag_origin.take() {
+                        state.model.commit_editor_trim_change(previous);
+                    }
                     let _ = unsafe { ReleaseCapture() };
                     redraw(window);
                 } else if state.slider_drag.is_some() {
@@ -981,6 +1007,7 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             }
             if page == crate::model::Page::Settings {
                 state.model.autostart_enabled = crate::autostart::is_enabled();
+                state.model.settings_section = crate::model::SettingsSection::Display;
             }
             state.model.navigate(page);
             if matches!(
@@ -992,6 +1019,10 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             update_player_window(state);
         }
         Action::SettingsSection(section) => {
+            if state.model.page != crate::model::Page::Settings {
+                state.model.navigate(crate::model::Page::Settings);
+                state.model.autostart_enabled = crate::autostart::is_enabled();
+            }
             state.model.settings_menu = None;
             cancel_hotkey_capture(&mut state.model);
             state.model.hotkey_error = None;
@@ -1002,6 +1033,19 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             state.model.open_clip(index);
             open_current_clip(state);
         }
+        Action::OpenClipMenu(index) => {
+            let mut point = POINT::default();
+            if unsafe { GetCursorPos(&mut point) }.is_ok()
+                && unsafe { ScreenToClient(window, &mut point) }.as_bool()
+            {
+                let scale = state.dpi as f32 / 96.0;
+                state.model.context_menu = Some(ClipContextMenu {
+                    clip: index,
+                    x: point.x as f32 / scale,
+                    y: point.y as f32 / scale,
+                });
+            }
+        }
         Action::EditClip(index) => {
             state.model.context_menu = None;
             state.model.open_clip(index);
@@ -1011,10 +1055,20 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         Action::RenameClip(index) => {
             state.model.context_menu = None;
             state.model.begin_rename(index);
+            update_player_window(state);
+        }
+        Action::RenameActiveClip => {
+            state.model.context_menu = None;
+            if let Some(index) = state.model.active_clip {
+                state.model.begin_rename(index);
+                update_player_window(state);
+            }
         }
         Action::DeleteClip(index) => {
+            exit_player_fullscreen(window, state);
             state.model.context_menu = None;
             state.model.pending_delete = Some(DeleteTarget::Clip(index));
+            update_player_window(state);
         }
         Action::MoveClipToCollection { clip, collection } => {
             state.model.context_menu = None;
@@ -1058,7 +1112,26 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             }
             set_result(&mut state.model, result, "Library refreshed");
         }
-        Action::SaveReplay => match send(Request::Save) {
+        Action::SetLibraryPage(page) => state.model.library_page = page,
+        Action::SetCollectionCardsPage(page) => state.model.collection_cards_page = page,
+        Action::SetCollectionClipsPage(page) => state.model.collection_clips_page = page,
+        Action::ToggleClipSort => {
+            state.model.clips_oldest_first = !state.model.clips_oldest_first;
+            state.model.library_page = 0;
+        }
+        Action::SetLibraryGrid(grid) => {
+            state.model.library_grid = grid;
+            state.model.library_page = 0;
+        }
+        Action::ToggleCollectionSort => {
+            state.model.collections_descending = !state.model.collections_descending;
+            state.model.collection_cards_page = 0;
+        }
+        Action::SetCollectionsGrid(grid) => {
+            state.model.collections_grid = grid;
+            state.model.collection_cards_page = 0;
+        }
+        Action::SaveReplay | Action::QuickSaveReplay => match send(Request::Save) {
             Ok(Response::Saved { path: _ }) => {
                 let result = state.model.refresh();
                 if result.is_ok() {
@@ -1071,9 +1144,19 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             Ok(Response::Error { message }) | Err(message) => state.model.notice = Some(message),
             Ok(_) => {}
         },
-        Action::OpenClipsFolder => open_path(&state.model.config.storage.directory),
+        Action::OpenClipsFolder | Action::QuickOpenClipsFolder => {
+            open_path(&state.model.config.storage.directory)
+        }
+        Action::QuickOpenSettings => {
+            state.model.autostart_enabled = crate::autostart::is_enabled();
+            state.model.navigate(crate::model::Page::Settings);
+            update_player_window(state);
+        }
         Action::Search => {
-            if !matches!(state.model.page, crate::model::Page::Library) {
+            if !matches!(
+                state.model.page,
+                crate::model::Page::Library | crate::model::Page::Collections
+            ) {
                 exit_player_fullscreen(window, state);
                 stop_player(state);
                 state.model.navigate(crate::model::Page::Library);
@@ -1092,6 +1175,22 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             state.model.sidebar_expanded = !state.model.sidebar_expanded;
             update_player_window(state);
         }
+        Action::MinimizeWindow => unsafe {
+            let _ = ShowWindow(window, SW_MINIMIZE);
+        },
+        Action::ToggleMaximizeWindow => unsafe {
+            let _ = ShowWindow(
+                window,
+                if IsZoomed(window).as_bool() {
+                    SW_RESTORE
+                } else {
+                    SW_MAXIMIZE
+                },
+            );
+        },
+        Action::CloseWindow => unsafe {
+            let _ = DestroyWindow(window);
+        },
         Action::ToggleAutostart => {
             let enabled = !state.model.autostart_enabled;
             match crate::autostart::set_enabled(enabled) {
@@ -1107,6 +1206,7 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         }
         Action::ChooseDesktopDevice => choose_desktop_device(&mut state.model),
         Action::ChooseDesktopGain => choose_desktop_gain(&mut state.model),
+        Action::ChooseAudioMode => choose_audio_mode(&mut state.model),
         Action::ToggleMicrophone => {
             state.model.config.audio.microphone = !state.model.config.audio.microphone
         }
@@ -1139,21 +1239,37 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             save_settings(&mut state.model, "Settings saved and capture reloaded")
         }
         Action::CreateCollection => state.model.begin_new_collection(),
-        Action::CancelPrompt => state.model.prompt = None,
-        Action::ConfirmPrompt => confirm_prompt(state),
+        Action::CancelPrompt => {
+            state.model.prompt = None;
+            update_player_window(state);
+        }
+        Action::ConfirmPrompt => {
+            confirm_prompt(state);
+            update_player_window(state);
+        }
         Action::DeleteActiveCollection => {
             if let Some(collection) = state.model.active_collection.clone() {
                 state.model.pending_delete = Some(DeleteTarget::Collection(collection));
             }
         }
-        Action::CancelDelete => state.model.pending_delete = None,
-        Action::ConfirmDelete => confirm_delete(&mut state.model),
+        Action::RenameActiveCollection => {
+            state.model.begin_rename_collection();
+        }
+        Action::CancelDelete => {
+            state.model.pending_delete = None;
+            update_player_window(state);
+        }
+        Action::ConfirmDelete => {
+            confirm_delete(&mut state.model);
+            update_player_window(state);
+        }
         Action::SelectCollection(index) => {
             state.model.active_collection = index
                 .and_then(|index| state.model.collections.get(index))
                 .map(|collection| collection.path.clone());
             state.model.selected_clips.clear();
             state.model.collection_picker_open = false;
+            state.model.collection_clips_page = 0;
         }
         Action::PreviousClip => switch_clip(state, -1),
         Action::NextClip => switch_clip(state, 1),
@@ -1162,10 +1278,31 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             None => state.model.notice = Some("No clip is loaded".into()),
             Some(Ok(())) => {}
         },
-        Action::DragPlayerSeek | Action::DragPlayerVolume | Action::DragEditorPlayhead => {}
+        Action::DragDesktopGain
+        | Action::DragMicrophoneGain
+        | Action::DragPlayerSeek
+        | Action::DragPlayerVolume
+        | Action::DragEditorPlayhead => {}
         Action::ToggleMute => toggle_player_mute(state),
         Action::ToggleFullscreen => toggle_player_fullscreen(window, state),
-        Action::EditActiveClip => begin_editor(state),
+        Action::EditActiveClip => {
+            exit_player_fullscreen(window, state);
+            begin_editor(state);
+        }
+        Action::SetTrimReplace(replace) => state.model.trim_replace_original = replace,
+        Action::UndoEditorTrim => {
+            if state.model.undo_editor_trim() {
+                seek_editor_preview(state, state.model.editor_start, true);
+            }
+        }
+        Action::RedoEditorTrim => {
+            if state.model.redo_editor_trim() {
+                seek_editor_preview(state, state.model.editor_start, true);
+            }
+        }
+        Action::ResetEditorTrim => state.model.reset_editor_trim(),
+        Action::SetEditorStartToPlayhead => state.model.set_editor_start_to_playhead(),
+        Action::SetEditorEndToPlayhead => state.model.set_editor_end_to_playhead(),
         Action::DragEditorStart | Action::DragEditorEnd => {}
         Action::SaveCut => save_cut(state, wreath_core::trim::TrimOutput::NewClip(None)),
         Action::ReplaceCut => save_cut(state, wreath_core::trim::TrimOutput::Replace),
@@ -1542,6 +1679,16 @@ fn confirm_prompt(state: &mut AppState) {
                 Err(error) => Err(format!("Cannot rename clip: {error}")),
             }
         }
+        PromptKind::RenameCollection(collection) => {
+            let directory = state.model.config.storage.directory.clone();
+            match wreath_core::clips::rename_collection(&directory, &collection, &name) {
+                Ok(path) => {
+                    state.model.active_collection = Some(path);
+                    Ok("Sammlung umbenannt")
+                }
+                Err(error) => Err(format!("Sammlung konnte nicht umbenannt werden: {error}")),
+            }
+        }
     };
     match outcome {
         Ok(message) => {
@@ -1820,8 +1967,21 @@ fn update_slider_drag(state: &mut AppState, x: f32, y: f32, settle: bool) {
     let width = ((state.width as f32 / scale).round() as u32).max(1);
     let height = ((state.height as f32 / scale).round() as u32).max(1);
     match drag {
+        SliderDrag::DesktopGain => {
+            let rail = settings_audio_gain_rail(width, height, state.model.sidebar_expanded, 2);
+            state.model.config.audio.desktop_gain_percent = settings_gain_percent(rail, x);
+        }
+        SliderDrag::MicrophoneGain => {
+            let rail = settings_audio_gain_rail(width, height, state.model.sidebar_expanded, 4);
+            state.model.config.audio.microphone_gain_percent = settings_gain_percent(rail, x);
+        }
         SliderDrag::PlayerSeek => {
-            let rail = player_timeline_rail(width, height, state.model.sidebar_expanded);
+            let rail = player_timeline_rail(
+                width,
+                height,
+                state.model.player_aspect_ratio,
+                state.model.sidebar_expanded,
+            );
             let fraction = ((x - rail.left) / (rail.right - rail.left).max(1.0)).clamp(0.0, 1.0);
             let fraction = f64::from(fraction);
             state.model.player_position_seconds = state.model.player_duration_seconds * fraction;
@@ -1984,15 +2144,21 @@ fn update_player_window(state: &mut AppState) {
         }
         return;
     }
+    if state.model.prompt.is_some() || state.model.pending_delete.is_some() {
+        unsafe {
+            let _ = ShowWindow(window, SW_HIDE);
+        }
+        return;
+    }
     let scale = state.dpi as f32 / 96.0;
     let logical_width = (state.width as f32 / scale).round() as u32;
     let logical_height = (state.height as f32 / scale).round() as u32;
     let bounds = if state.fullscreen.is_some() && state.model.page == crate::model::Page::Player {
         crate::renderer::LogicalRect {
             left: 0.0,
-            top: 0.0,
+            top: 78.0,
             right: logical_width as f32,
-            bottom: logical_height as f32,
+            bottom: (logical_height as f32 - FULLSCREEN_CONTROLS_HEIGHT).max(79.0),
         }
     } else if state.model.page == crate::model::Page::Editor {
         editor_player_bounds(
@@ -2020,6 +2186,23 @@ fn update_player_window(state: &mut AppState) {
             SWP_NOZORDER,
         )
     };
+    let pixel_width = ((bounds.right - bounds.left) * scale).round().max(1.0) as i32;
+    let pixel_height = ((bounds.bottom - bounds.top) * scale).round().max(1.0) as i32;
+    if state.fullscreen.is_some() {
+        unsafe {
+            let _ = SetWindowRgn(window, None, true);
+        }
+    } else {
+        let diameter = (18.0 * scale).round().max(2.0) as i32;
+        let region = unsafe {
+            CreateRoundRectRgn(0, 0, pixel_width + 1, pixel_height + 1, diameter, diameter)
+        };
+        if unsafe { SetWindowRgn(window, Some(region), true) } == 0 {
+            unsafe {
+                let _ = DeleteObject(region.into());
+            }
+        }
+    }
     unsafe {
         let _ = ShowWindow(window, SW_SHOW);
     }
@@ -2223,11 +2406,19 @@ fn sync_player_state(state: &mut AppState) {
             state.slider_drag,
             Some(SliderDrag::PlayerSeek | SliderDrag::EditorPlayhead | SliderDrag::FullscreenSeek)
         );
-    if !dragging_playhead {
-        state.model.player_position_seconds = snapshot.position_seconds;
-    }
     state.model.player_duration_seconds = snapshot.duration_seconds;
+    if !dragging_playhead {
+        state.model.player_position_seconds = if snapshot.duration_seconds > 0.0 {
+            snapshot
+                .position_seconds
+                .clamp(0.0, snapshot.duration_seconds)
+        } else {
+            0.0
+        };
+    }
     state.model.player_aspect_ratio = snapshot.aspect_ratio;
+    state.model.player_video_width = snapshot.video_width;
+    state.model.player_video_height = snapshot.video_height;
 }
 
 fn handle_text_key(window: HWND, input: &mut TextInput, key: u32, extend: bool) -> bool {
@@ -2429,6 +2620,20 @@ fn choose_quality(model: &mut UiModel) {
     model.settings_menu = Some(SettingsMenu::new(SettingsMenuKind::Quality, items, current));
 }
 
+fn choose_audio_mode(model: &mut UiModel) {
+    let labels = ["Systemaudio", "Mikrofon", "System + Mikrofon", "Audio aus"]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let current = match (model.config.audio.desktop, model.config.audio.microphone) {
+        (true, false) => Some(0),
+        (false, true) => Some(1),
+        (true, true) => Some(2),
+        (false, false) => Some(3),
+    };
+    open_choice_menu(model, SettingsMenuKind::AudioMode, labels, current);
+}
+
 fn choose_display(model: &mut UiModel) {
     if let Err(error) = load_displays(model) {
         model.notice = Some(error);
@@ -2548,6 +2753,7 @@ fn select_settings_option(model: &mut UiModel, index: usize) {
         return;
     }
     let kind = menu.kind;
+    let quick_setup = model.page == crate::model::Page::Home;
     match kind {
         SettingsMenuKind::Duration => {
             if let Some(value) = [15, 30, 45, 60, 90, 120].get(index) {
@@ -2569,6 +2775,25 @@ fn select_settings_option(model: &mut UiModel, index: usize) {
                 model.config.capture.quality = option.value;
             }
         }
+        SettingsMenuKind::AudioMode => match index {
+            0 => {
+                model.config.audio.desktop = true;
+                model.config.audio.microphone = false;
+            }
+            1 => {
+                model.config.audio.desktop = false;
+                model.config.audio.microphone = true;
+            }
+            2 => {
+                model.config.audio.desktop = true;
+                model.config.audio.microphone = true;
+            }
+            3 => {
+                model.config.audio.desktop = false;
+                model.config.audio.microphone = false;
+            }
+            _ => {}
+        },
         SettingsMenuKind::Display => {
             if let Some(display) = model.displays.get(index) {
                 model.config.capture.monitor = Some(display.name.clone());
@@ -2607,6 +2832,9 @@ fn select_settings_option(model: &mut UiModel, index: usize) {
         }
     }
     model.settings_menu = None;
+    if quick_setup {
+        save_settings(model, "Schnelleinstellung gespeichert");
+    }
 }
 
 fn load_displays(model: &mut UiModel) -> Result<(), String> {

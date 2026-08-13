@@ -86,6 +86,27 @@ pub fn create_collection(directory: &Path, name: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+pub fn rename_collection(directory: &Path, collection: &Path, name: &str) -> io::Result<PathBuf> {
+    let name = validate_name(name)?;
+    let root = directory.canonicalize()?;
+    let collection = collection.canonicalize()?;
+    if collection.parent() != Some(root.as_path()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "collection must be a direct child of the clip directory",
+        ));
+    }
+    let destination = root.join(name);
+    if destination.exists() && destination != collection {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "a collection with this name already exists",
+        ));
+    }
+    fs::rename(&collection, &destination)?;
+    Ok(destination)
+}
+
 pub fn rename(clip: &Clip, name: &str, thumbnail_directory: &Path) -> io::Result<PathBuf> {
     let name = validate_name(name)?;
     let extension = clip
@@ -467,6 +488,23 @@ mod tests {
         assert_eq!(renamed, root.join("New moment.webm"));
         assert!(renamed.exists());
         assert!(rename(&scan(&root).unwrap()[0], "../escape", &thumbnails).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn renames_collection_without_leaving_the_library_root() {
+        let root = test_root("rename-collection");
+        let clips_directory = root.join("clips");
+        fs::create_dir_all(&clips_directory).unwrap();
+        let collection = create_collection(&clips_directory, "Before").unwrap();
+        fs::write(collection.join("moment.mp4"), b"clip").unwrap();
+
+        let renamed = rename_collection(&clips_directory, &collection, "After").unwrap();
+
+        assert_eq!(renamed, clips_directory.join("After"));
+        assert!(renamed.join("moment.mp4").exists());
+        assert!(!collection.exists());
+        assert!(rename_collection(&clips_directory, &renamed, "../escape").is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

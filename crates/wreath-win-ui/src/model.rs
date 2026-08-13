@@ -32,10 +32,21 @@ pub enum Action {
     CancelPrompt,
     ConfirmPrompt,
     OpenClip(usize),
+    OpenClipMenu(usize),
     Back,
     Refresh,
+    SetLibraryPage(usize),
+    SetCollectionCardsPage(usize),
+    SetCollectionClipsPage(usize),
+    ToggleClipSort,
+    SetLibraryGrid(bool),
+    ToggleCollectionSort,
+    SetCollectionsGrid(bool),
     SaveReplay,
     OpenClipsFolder,
+    QuickSaveReplay,
+    QuickOpenClipsFolder,
+    QuickOpenSettings,
     Search,
     ClearSearch,
     PlaceSearchCaret(usize),
@@ -43,6 +54,7 @@ pub enum Action {
     DismissContextMenu,
     EditClip(usize),
     RenameClip(usize),
+    RenameActiveClip,
     MoveClipToCollection { clip: usize, collection: usize },
     ToggleSelectionMode,
     ToggleClipSelection(usize),
@@ -52,11 +64,16 @@ pub enum Action {
     DeleteClip(usize),
     DismissNotice,
     ToggleSidebar,
+    MinimizeWindow,
+    ToggleMaximizeWindow,
+    CloseWindow,
     ToggleAutostart,
     ToggleCursor,
     ToggleDesktopAudio,
     ChooseDesktopDevice,
     ChooseDesktopGain,
+    DragDesktopGain,
+    ChooseAudioMode,
     ToggleMicrophone,
     ChooseDuration,
     ChooseFrameRate,
@@ -65,6 +82,7 @@ pub enum Action {
     ChooseDisplay,
     ChooseMicrophone,
     ChooseMicrophoneGain,
+    DragMicrophoneGain,
     ChooseStorageLimit,
     DismissSettingsMenu,
     SelectSettingsOption(usize),
@@ -74,6 +92,7 @@ pub enum Action {
     SaveSettings,
     CreateCollection,
     DeleteActiveCollection,
+    RenameActiveCollection,
     CancelDelete,
     ConfirmDelete,
     SelectCollection(Option<usize>),
@@ -85,6 +104,12 @@ pub enum Action {
     ToggleMute,
     ToggleFullscreen,
     EditActiveClip,
+    SetTrimReplace(bool),
+    UndoEditorTrim,
+    RedoEditorTrim,
+    ResetEditorTrim,
+    SetEditorStartToPlayhead,
+    SetEditorEndToPlayhead,
     DragEditorStart,
     DragEditorEnd,
     DragEditorPlayhead,
@@ -101,6 +126,7 @@ pub enum DeleteTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptKind {
     RenameClip(usize),
+    RenameCollection(PathBuf),
     NewCollection,
 }
 
@@ -302,6 +328,7 @@ pub enum SettingsMenuKind {
     Duration,
     Codec,
     Quality,
+    AudioMode,
     DesktopDevice,
     DesktopGain,
     Microphone,
@@ -376,22 +403,24 @@ impl Prompt {
 
     pub fn title(&self) -> &'static str {
         match self.kind {
-            PromptKind::RenameClip(_) => "Rename clip",
-            PromptKind::NewCollection => "New collection",
+            PromptKind::RenameClip(_) => "Clip umbenennen",
+            PromptKind::RenameCollection(_) => "Sammlung umbenennen",
+            PromptKind::NewCollection => "Neue Sammlung",
         }
     }
 
     pub fn label(&self) -> &'static str {
         match self.kind {
-            PromptKind::RenameClip(_) => "Clip name",
-            PromptKind::NewCollection => "Collection name",
+            PromptKind::RenameClip(_) => "Clip-Name",
+            PromptKind::RenameCollection(_) => "Name der Sammlung",
+            PromptKind::NewCollection => "Name der Sammlung",
         }
     }
 
     pub fn confirm(&self) -> &'static str {
         match self.kind {
-            PromptKind::RenameClip(_) => "Rename",
-            PromptKind::NewCollection => "Create",
+            PromptKind::RenameClip(_) | PromptKind::RenameCollection(_) => "Umbenennen",
+            PromptKind::NewCollection => "Erstellen",
         }
     }
 }
@@ -416,6 +445,13 @@ pub struct UiModel {
     pub settings_menu: Option<SettingsMenu>,
     pub search: TextInput,
     pub search_focused: bool,
+    pub library_page: usize,
+    pub collection_cards_page: usize,
+    pub collection_clips_page: usize,
+    pub clips_oldest_first: bool,
+    pub library_grid: bool,
+    pub collections_descending: bool,
+    pub collections_grid: bool,
     pub context_menu: Option<ClipContextMenu>,
     pub active_collection: Option<PathBuf>,
     pub active_clip: Option<usize>,
@@ -439,6 +475,8 @@ pub struct UiModel {
     pub player_position_seconds: f64,
     pub player_duration_seconds: f64,
     pub player_aspect_ratio: f32,
+    pub player_video_width: u32,
+    pub player_video_height: u32,
     pub player_volume_percent: u8,
     pub player_last_audible_percent: u8,
     pub pending_delete: Option<DeleteTarget>,
@@ -448,8 +486,11 @@ pub struct UiModel {
     pub editor_source: Option<PathBuf>,
     pub editor_start: Duration,
     pub editor_end: Duration,
+    editor_undo: Vec<(Duration, Duration)>,
+    editor_redo: Vec<(Duration, Duration)>,
     pub editor_loading: bool,
     pub editor_working: bool,
+    pub trim_replace_original: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -483,6 +524,13 @@ impl UiModel {
             settings_menu: None,
             search: TextInput::new(String::new(), PROMPT_MAX_CHARACTERS),
             search_focused: false,
+            library_page: 0,
+            collection_cards_page: 0,
+            collection_clips_page: 0,
+            clips_oldest_first: false,
+            library_grid: true,
+            collections_descending: false,
+            collections_grid: true,
             context_menu: None,
             active_collection: None,
             active_clip: None,
@@ -505,6 +553,8 @@ impl UiModel {
             player_position_seconds: 0.0,
             player_duration_seconds: 0.0,
             player_aspect_ratio: 16.0 / 9.0,
+            player_video_width: 0,
+            player_video_height: 0,
             player_volume_percent: 100,
             player_last_audible_percent: 100,
             pending_delete: None,
@@ -514,8 +564,11 @@ impl UiModel {
             editor_source: None,
             editor_start: Duration::ZERO,
             editor_end: Duration::ZERO,
+            editor_undo: Vec::new(),
+            editor_redo: Vec::new(),
             editor_loading: false,
             editor_working: false,
+            trim_replace_original: false,
         };
         model.refresh()?;
         Ok(model)
@@ -537,6 +590,15 @@ impl UiModel {
     }
 
     pub fn navigate(&mut self, page: Page) {
+        if matches!(self.page, Page::Library | Page::Collections)
+            && matches!(page, Page::Library | Page::Collections)
+            && self.page != page
+        {
+            self.search.clear();
+            self.library_page = 0;
+            self.collection_cards_page = 0;
+            self.collection_clips_page = 0;
+        }
         self.search_focused = false;
         self.context_menu = None;
         self.settings_menu = None;
@@ -636,6 +698,8 @@ impl UiModel {
         self.player_position_seconds = 0.0;
         self.player_duration_seconds = 0.0;
         self.player_aspect_ratio = 16.0 / 9.0;
+        self.player_video_width = 0;
+        self.player_video_height = 0;
     }
 
     pub fn set_player_volume(&mut self, percent: u8) {
@@ -668,6 +732,19 @@ impl UiModel {
         self.prompt = Some(Prompt::new(PromptKind::NewCollection, String::new()));
     }
 
+    pub fn begin_rename_collection(&mut self) -> bool {
+        let Some(path) = self.active_collection.clone() else {
+            return false;
+        };
+        let Some(collection) = self.collections.iter().find(|item| item.path == path) else {
+            return false;
+        };
+        let mut prompt = Prompt::new(PromptKind::RenameCollection(path), collection.name.clone());
+        prompt.input.select_all();
+        self.prompt = Some(prompt);
+        true
+    }
+
     pub fn edit_active_clip(&mut self) -> bool {
         let Some(source) = self.active_clip().map(|clip| clip.path.clone()) else {
             return false;
@@ -680,14 +757,60 @@ impl UiModel {
         self.editor_timing = None;
         self.editor_start = Duration::ZERO;
         self.editor_end = Duration::ZERO;
+        self.editor_undo.clear();
+        self.editor_redo.clear();
         self.editor_loading = true;
         self.editor_working = false;
+        self.trim_replace_original = false;
         true
+    }
+
+    pub fn reset_editor_trim(&mut self) {
+        let previous = (self.editor_start, self.editor_end);
+        self.editor_start = Duration::ZERO;
+        if let Some(timing) = &self.editor_timing {
+            self.editor_end = timing.duration;
+        }
+        self.commit_editor_trim_change(previous);
+    }
+
+    pub fn set_editor_start_to_playhead(&mut self) {
+        let previous = (self.editor_start, self.editor_end);
+        let Some(timing) = &self.editor_timing else {
+            return;
+        };
+        let selected = Duration::from_secs_f64(
+            self.player_position_seconds
+                .clamp(0.0, timing.duration.as_secs_f64()),
+        );
+        let latest = self
+            .editor_end
+            .saturating_sub(wreath_core::trim::MINIMUM_LENGTH);
+        self.editor_start = snap(timing, selected).min(latest);
+        self.commit_editor_trim_change(previous);
+    }
+
+    pub fn set_editor_end_to_playhead(&mut self) {
+        let previous = (self.editor_start, self.editor_end);
+        let Some(timing) = &self.editor_timing else {
+            return;
+        };
+        let selected = Duration::from_secs_f64(
+            self.player_position_seconds
+                .clamp(0.0, timing.duration.as_secs_f64()),
+        );
+        let earliest = self
+            .editor_start
+            .saturating_add(wreath_core::trim::MINIMUM_LENGTH);
+        self.editor_end = snap(timing, selected).max(earliest).min(timing.duration);
+        self.commit_editor_trim_change(previous);
     }
 
     pub fn apply_editor_timing(&mut self, timing: wreath_core::trim::ClipTiming) {
         self.editor_start = Duration::ZERO;
         self.editor_end = timing.duration;
+        self.editor_undo.clear();
+        self.editor_redo.clear();
         self.editor_timing = Some(timing);
         self.editor_loading = false;
     }
@@ -720,26 +843,104 @@ impl UiModel {
         self.editor_end.saturating_sub(self.editor_start)
     }
 
+    pub fn can_undo_editor_trim(&self) -> bool {
+        !self.editor_undo.is_empty()
+    }
+
+    pub fn can_redo_editor_trim(&self) -> bool {
+        !self.editor_redo.is_empty()
+    }
+
+    pub fn commit_editor_trim_change(&mut self, previous: (Duration, Duration)) {
+        let current = (self.editor_start, self.editor_end);
+        if current == previous {
+            return;
+        }
+        if self.editor_undo.last().copied() != Some(previous) {
+            self.editor_undo.push(previous);
+            if self.editor_undo.len() > 64 {
+                self.editor_undo.remove(0);
+            }
+        }
+        self.editor_redo.clear();
+    }
+
+    pub fn undo_editor_trim(&mut self) -> bool {
+        let Some(previous) = self.editor_undo.pop() else {
+            return false;
+        };
+        self.editor_redo.push((self.editor_start, self.editor_end));
+        (self.editor_start, self.editor_end) = previous;
+        true
+    }
+
+    pub fn redo_editor_trim(&mut self) -> bool {
+        let Some(next) = self.editor_redo.pop() else {
+            return false;
+        };
+        self.editor_undo.push((self.editor_start, self.editor_end));
+        (self.editor_start, self.editor_end) = next;
+        true
+    }
+
     pub fn visible_clip_indices(&self, limit: usize) -> Vec<usize> {
+        let library_scope = self.page == Page::Library
+            || (matches!(self.page, Page::Player | Page::Editor)
+                && self.previous_page == Page::Library);
+        let collection_scope = self.page == Page::Collections
+            || (matches!(self.page, Page::Player | Page::Editor)
+                && self.previous_page == Page::Collections);
+        let query = if library_scope {
+            self.search.value.trim().to_ascii_lowercase()
+        } else {
+            String::new()
+        };
+        let mut visible =
+            self.clips
+                .iter()
+                .enumerate()
+                .filter(|(_, clip)| {
+                    let in_collection = !collection_scope
+                        || self.active_collection.as_ref().is_none_or(|collection| {
+                            clip.path.parent() == Some(collection.as_path())
+                        });
+                    let matches_query = query.is_empty()
+                        || clip.title.to_ascii_lowercase().contains(&query)
+                        || clip.path.file_name().is_some_and(|name| {
+                            name.to_string_lossy().to_ascii_lowercase().contains(&query)
+                        });
+                    in_collection && matches_query
+                })
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+        if self.clips_oldest_first {
+            visible.reverse();
+        }
+        visible.truncate(limit);
+        visible
+    }
+
+    pub fn visible_collection_indices(&self) -> Vec<usize> {
         let query = self.search.value.trim().to_ascii_lowercase();
-        self.clips
+        let mut visible = self
+            .collections
             .iter()
             .enumerate()
-            .filter(|(_, clip)| {
-                let in_collection = self
-                    .active_collection
-                    .as_ref()
-                    .is_none_or(|collection| clip.path.parent() == Some(collection.as_path()));
-                let matches_query = query.is_empty()
-                    || clip.title.to_ascii_lowercase().contains(&query)
-                    || clip.path.file_name().is_some_and(|name| {
-                        name.to_string_lossy().to_ascii_lowercase().contains(&query)
-                    });
-                in_collection && matches_query
+            .filter(|(_, collection)| {
+                query.is_empty() || collection.name.to_ascii_lowercase().contains(&query)
             })
             .map(|(index, _)| index)
-            .take(limit)
-            .collect()
+            .collect::<Vec<_>>();
+        visible.sort_by(|left, right| {
+            self.collections[*left]
+                .name
+                .to_ascii_lowercase()
+                .cmp(&self.collections[*right].name.to_ascii_lowercase())
+        });
+        if self.collections_descending {
+            visible.reverse();
+        }
+        visible
     }
 
     pub fn total_size_bytes(&self) -> u64 {
@@ -877,6 +1078,13 @@ mod tests {
             settings_menu: None,
             search: TextInput::new(String::new(), PROMPT_MAX_CHARACTERS),
             search_focused: false,
+            library_page: 0,
+            collection_cards_page: 0,
+            collection_clips_page: 0,
+            clips_oldest_first: false,
+            library_grid: true,
+            collections_descending: false,
+            collections_grid: true,
             context_menu: None,
             active_collection: None,
             active_clip: None,
@@ -899,6 +1107,8 @@ mod tests {
             player_position_seconds: 0.0,
             player_duration_seconds: 0.0,
             player_aspect_ratio: 16.0 / 9.0,
+            player_video_width: 0,
+            player_video_height: 0,
             player_volume_percent: 100,
             player_last_audible_percent: 100,
             pending_delete: None,
@@ -908,8 +1118,11 @@ mod tests {
             editor_source: None,
             editor_start: Duration::ZERO,
             editor_end: Duration::ZERO,
+            editor_undo: Vec::new(),
+            editor_redo: Vec::new(),
             editor_loading: false,
             editor_working: false,
+            trim_replace_original: false,
         }
     }
 
@@ -920,6 +1133,27 @@ mod tests {
         assert_eq!(model.visible_clip_indices(200), vec![0]);
         model.search.clear();
         assert_eq!(model.visible_clip_indices(1), vec![0]);
+    }
+
+    #[test]
+    fn library_always_shows_collection_clips_while_collections_filter_them() {
+        let mut model = model();
+        model.clips.push(Clip {
+            path: PathBuf::from("/clips/Favorites/Collected.mp4"),
+            title: "Collected".into(),
+            size_bytes: 20,
+            modified: SystemTime::UNIX_EPOCH,
+        });
+        model.active_collection = Some(PathBuf::from("/clips/Favorites"));
+
+        model.page = Page::Library;
+        assert_eq!(model.visible_clip_indices(10), vec![0, 1, 2]);
+
+        model.page = Page::Collections;
+        assert_eq!(model.visible_clip_indices(10), vec![2]);
+
+        model.active_collection = None;
+        assert_eq!(model.visible_clip_indices(10), vec![0, 1, 2]);
     }
 
     #[test]
@@ -1329,5 +1563,26 @@ mod tests {
         assert_eq!(model.editor_start, Duration::from_secs(2));
         assert_eq!(model.editor_end, Duration::from_secs(8));
         assert_eq!(model.editor_selected_duration(), Duration::from_secs(6));
+    }
+
+    #[test]
+    fn editor_trim_history_undoes_and_redoes_a_drag_as_one_step() {
+        let mut model = model();
+        model.apply_editor_timing(wreath_core::trim::ClipTiming {
+            duration: Duration::from_secs(10),
+            keyframes: Vec::new(),
+        });
+        let original = (model.editor_start, model.editor_end);
+        model.set_editor_start(200);
+        model.set_editor_end(800);
+        model.commit_editor_trim_change(original);
+
+        assert!(model.can_undo_editor_trim());
+        assert!(model.undo_editor_trim());
+        assert_eq!((model.editor_start, model.editor_end), original);
+        assert!(model.can_redo_editor_trim());
+        assert!(model.redo_editor_trim());
+        assert_eq!(model.editor_start, Duration::from_secs(2));
+        assert_eq!(model.editor_end, Duration::from_secs(8));
     }
 }

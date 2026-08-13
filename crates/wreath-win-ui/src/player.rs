@@ -42,6 +42,8 @@ pub struct PlayerSnapshot {
     pub position_seconds: f64,
     pub duration_seconds: f64,
     pub aspect_ratio: f32,
+    pub video_width: u32,
+    pub video_height: u32,
 }
 
 pub struct Player {
@@ -220,7 +222,7 @@ impl Player {
             time_value(unsafe { self.media.GetDuration(&MFP_POSITIONTYPE_100NS) });
         let mut video_size = SIZE::default();
         let mut aspect_size = SIZE::default();
-        let aspect_ratio = if unsafe {
+        let (aspect_ratio, video_width, video_height) = if unsafe {
             self.media
                 .GetNativeVideoSize(Some(&mut video_size), Some(&mut aspect_size))
         }
@@ -232,12 +234,16 @@ impl Player {
                 video_size
             };
             if size.cx > 0 && size.cy > 0 {
-                size.cx as f32 / size.cy as f32
+                (
+                    size.cx as f32 / size.cy as f32,
+                    size.cx as u32,
+                    size.cy as u32,
+                )
             } else {
-                16.0 / 9.0
+                (16.0 / 9.0, 0, 0)
             }
         } else {
-            16.0 / 9.0
+            (16.0 / 9.0, 0, 0)
         };
         PlayerSnapshot {
             ready: self.ready,
@@ -245,6 +251,8 @@ impl Player {
             position_seconds,
             duration_seconds,
             aspect_ratio,
+            video_width,
+            video_height,
         }
     }
 
