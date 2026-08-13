@@ -345,6 +345,11 @@ fn settings_sticker_layout(left: f32, right: f32, height: f32) -> Option<Logical
     const MINIMUM_HEIGHT: f32 = 97.0;
     const MAXIMUM_HEIGHT: f32 = 190.0;
     const BOTTOM_MARGIN: f32 = 16.0;
+    const MINIMUM_WINDOW_HEIGHT: f32 = 700.0;
+
+    if height < MINIMUM_WINDOW_HEIGHT {
+        return None;
+    }
 
     let top_limit = settings_row_top(2) + SETTINGS_ROW_HEIGHT + 20.0;
     let available_height = height - BOTTOM_MARGIN - top_limit;
