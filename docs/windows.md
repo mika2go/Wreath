@@ -32,10 +32,12 @@ replay save that never returns stops blocking the shortcut after a minute. A
 working registration is never surrendered, so nothing else can claim the
 combination in a gap; instead the daemon probes every five seconds whether
 Windows still delivers it and registers it again once it does not, which is what
-a session switch or a locked screen can silently cause. What no registration can
-repair is elevation: Windows withholds the shortcut from an unelevated recorder
-while an elevated window is in the foreground, so the log records at startup
-which of the two the recorder is.
+a session switch or a locked screen can silently cause. As a second safety net,
+the daemon renews even an apparently healthy registration every five hours, so a
+machine that keeps stale registration state cannot leave the shortcut dead until
+the next restart. What no registration can repair is elevation: Windows withholds
+the shortcut from an unelevated recorder while an elevated window is in the
+foreground, so the log records at startup which of the two the recorder is.
 
 The tray opens or focuses the full application and its menu saves a replay,
 pauses or resumes capture, opens clips or the configuration file, and enables
