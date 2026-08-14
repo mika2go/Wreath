@@ -28,6 +28,7 @@ pub enum SettingsSection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Navigate(Page),
+    OpenAllClips,
     SettingsSection(SettingsSection),
     CancelPrompt,
     ConfirmPrompt,
@@ -1124,6 +1125,11 @@ mod tests {
             editor_working: false,
             trim_replace_original: false,
         }
+    }
+
+    #[test]
+    fn home_clips_link_has_an_independent_hover_action() {
+        assert_ne!(Action::OpenAllClips, Action::Navigate(Page::Library));
     }
 
     #[test]
