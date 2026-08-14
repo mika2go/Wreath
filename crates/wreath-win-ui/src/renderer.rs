@@ -1391,12 +1391,39 @@ impl Renderer {
             &self.section.clone(),
             PRIMARY,
         )?;
+        let all_clips_action = Action::OpenAllClips;
+        let all_clips_area = home_all_clips_link_area(right, recent_top);
+        let all_clips_hovered = self.is_hovered(&all_clips_action);
+        let all_clips_label = "Alle anzeigen  →";
         self.text(
-            "Alle anzeigen  →",
+            all_clips_label,
             rect(right - 150.0, recent_top, right, recent_top + 30.0),
             &self.body.clone(),
-            SECONDARY,
+            if all_clips_hovered {
+                mix(SECONDARY, PRIMARY, self.hover_progress)
+            } else {
+                SECONDARY
+            },
         )?;
+        if all_clips_hovered {
+            self.fill(
+                rect(
+                    all_clips_area.left,
+                    recent_top + 26.0,
+                    all_clips_area.left
+                        + self
+                            .measure(all_clips_label, &self.body)
+                            .min(all_clips_area.right - all_clips_area.left),
+                    recent_top + 27.0,
+                ),
+                mix(BORDER, ACCENT, self.hover_progress),
+                0.0,
+            )?;
+        }
+        self.hits.push(HitRegion {
+            rect: all_clips_area,
+            action: all_clips_action,
+        });
         let indices = model.visible_clip_indices(8);
         if indices.is_empty() {
             self.empty_state("Noch keine Clips", left, right, recent_top + 84.0)?;
@@ -6498,6 +6525,10 @@ fn sidebar_width(width: f32, expanded: bool) -> f32 {
     }
 }
 
+fn home_all_clips_link_area(right: f32, recent_top: f32) -> LogicalRect {
+    rect(right - 150.0, recent_top - 7.0, right, recent_top + 37.0)
+}
+
 fn mix(from: u32, to: u32, amount: f32) -> u32 {
     let amount = amount.clamp(0.0, 1.0);
     let channel = |shift: u32| {
@@ -6586,8 +6617,8 @@ fn hotkey_capture_label(modifiers: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        SETTINGS_ROW_HEIGHT, format_bytes, format_storage_limit, home_girl_layout, rect,
-        settings_gain_percent, settings_row_top, settings_sticker_layout,
+        SETTINGS_ROW_HEIGHT, format_bytes, format_storage_limit, home_all_clips_link_area,
+        home_girl_layout, rect, settings_gain_percent, settings_row_top, settings_sticker_layout,
     };
 
     #[test]
@@ -6625,6 +6656,16 @@ mod tests {
         assert_eq!(compact_girl.bottom, 691.0);
         assert!(compact_content_right <= compact_girl.left - 18.0);
         assert!(compact_content_right - 100.0 >= 420.0);
+    }
+
+    #[test]
+    fn home_all_clips_link_has_a_full_pointer_target() {
+        let area = home_all_clips_link_area(1_376.0, 384.0);
+
+        assert_eq!(area.left, 1_226.0);
+        assert_eq!(area.right, 1_376.0);
+        assert_eq!(area.bottom - area.top, 44.0);
+        assert!(area.contains(1_300.0, 384.0));
     }
 
     /// Decoration: it disappears rather than overlap a control on a short window.

@@ -1018,6 +1018,11 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             }
             update_player_window(state);
         }
+        Action::OpenAllClips => {
+            state.model.navigate(crate::model::Page::Library);
+            state.renderer.retry_unavailable_thumbnails();
+            update_player_window(state);
+        }
         Action::SettingsSection(section) => {
             if state.model.page != crate::model::Page::Settings {
                 state.model.navigate(crate::model::Page::Settings);
