@@ -22,14 +22,11 @@ impl fmt::Display for ControlError {
 
 impl std::error::Error for ControlError {}
 
-/// The control pipe alone left the losing daemon running long enough to start a
-/// second capture and race for the shortcut.
 #[cfg(target_os = "windows")]
 pub struct SingleInstance(windows::Win32::Foundation::HANDLE);
 
 #[cfg(target_os = "windows")]
 impl SingleInstance {
-    /// Returns `None` when another daemon already holds the claim.
     pub fn claim_daemon() -> Result<Option<Self>, ControlError> {
         use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
         use windows::Win32::System::Threading::CreateMutexW;
@@ -117,28 +114,21 @@ pub fn send_request(
     pipe_name: &str,
     request: &wreath_core::ipc::Request,
 ) -> Result<wreath_core::ipc::Response, ControlError> {
-    // Stays responsive when the daemon is absent; the hotkey path waits longer.
     send_request_with_timeout(pipe_name, request, Duration::from_millis(250))
 }
 
-/// A pipe opened as a file has no read timeout, so without this a daemon that
-/// stops answering parks every caller forever and the shortcut goes dead.
 #[cfg(target_os = "windows")]
 fn response_timeout(request: &wreath_core::ipc::Request) -> Duration {
     use wreath_core::ipc::Request;
 
     match request {
-        // Room for the pipeline's own thirty-second save cap to report first.
         Request::Save => Duration::from_secs(35),
-        // Both rebuild the capture pipeline before they answer.
         Request::Reload | Request::SetHotkey { .. } => Duration::from_secs(20),
         Request::Pause | Request::Resume | Request::Shutdown => Duration::from_secs(10),
         Request::Status => Duration::from_secs(5),
     }
 }
 
-/// The single pipe instance may be serving another client; Windows reports that
-/// as `ERROR_PIPE_BUSY`, where waiting and reopening is the expected recovery.
 #[cfg(target_os = "windows")]
 pub fn send_request_with_timeout(
     pipe_name: &str,
@@ -163,8 +153,6 @@ pub fn send_request_with_timeout(
     wreath_core::ipc::read_response(&mut reader).map_err(ControlError::Protocol)
 }
 
-/// Windows offers no read timeout for a pipe opened as a file, so the pending
-/// byte count is polled and the blocking read runs only once data is waiting.
 #[cfg(target_os = "windows")]
 pub struct DeadlineReader<'a> {
     pipe: &'a mut std::fs::File,
@@ -250,7 +238,6 @@ fn wait_for_pipe(pipe_name: &str, deadline: Instant) -> Result<(), ControlError>
             if code == ERROR_SEM_TIMEOUT.0 as i32 || code == ERROR_FILE_NOT_FOUND.0 as i32
     );
     if transient && Instant::now() < deadline {
-        // Recreating the sole pipe instance briefly returns FILE_NOT_FOUND.
         std::thread::sleep(Duration::from_millis(10));
         Ok(())
     } else {

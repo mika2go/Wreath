@@ -329,12 +329,8 @@ fn transfer(
 
     let start = to_hns(plan.start);
     let end = to_hns(plan.end);
-    // A copy cannot drop the keyframe it seeked to, so its first frame is time
-    // zero; a re-encode opens exactly on the cut.
     let exact = inputs.is_some();
     let mut origin: Option<i64> = exact.then_some(start);
-    // Capture only writes a frame when the picture changes, so the frame shown at
-    // the cut sits before it. Dropping it opened the clip on black.
     let mut opening: Option<IMFSample> = None;
     let mut video_done = false;
     let mut video_ended = false;
@@ -359,7 +355,6 @@ fn transfer(
         }
         .map_err(backend_error)?;
         if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
-            // Leaving here cut the other stream off wherever it was.
             if index == streams.video && !video_ended {
                 video_ended = true;
                 video_done = true;
@@ -403,7 +398,6 @@ fn transfer(
                 origin = Some(timestamp);
                 timestamp
             }
-            // Sound ahead of the first frame collapsed onto timestamp zero.
             (None, false) => continue,
         };
         if timestamp < anchor {
@@ -429,7 +423,6 @@ fn transfer(
         written += 1;
     }
 
-    // Over a still picture the held frame is the whole span.
     if let Some(held) = opening.take() {
         let span = end.saturating_sub(start);
         if let Some(duration) = opening_duration(None, start, span) {
@@ -465,19 +458,15 @@ fn emit(
     unsafe { writer.WriteSample(stream, sample) }.map_err(backend_error)
 }
 
-/// The last frame of a cut is held until whatever comes after it; copying that
-/// duration made the clip longer than the editor showed.
 #[cfg(any(target_os = "windows", test))]
 fn shortened_duration(time: i64, duration: i64, limit: i64) -> Option<i64> {
     (duration > 0 && time.saturating_add(duration) > limit).then(|| (limit - time).max(1))
 }
 
-/// Until the first frame the cut keeps, or the whole span if none follows.
 #[cfg(any(target_os = "windows", test))]
 fn opening_duration(next: Option<i64>, anchor: i64, span: i64) -> Option<i64> {
     match next {
         Some(next) if next > anchor => Some(next - anchor),
-        // A frame sits on the cut already; the held one would duplicate it.
         Some(_) => None,
         None => Some(span.max(1)),
     }
@@ -765,7 +754,6 @@ mod tests {
         assert_eq!(keyframe_spacing(pack(60, 0)), 120);
     }
 
-    /// A last frame held past the end saved as a longer clip, frozen at its tail.
     #[test]
     fn a_sample_never_outlasts_the_cut() {
         let limit = to_hns(Duration::from_secs(10));
@@ -783,7 +771,6 @@ mod tests {
         assert_eq!(shortened_duration(limit - 1, i64::MAX, limit), Some(1));
     }
 
-    /// Cutting into a still stretch opened the clip on black.
     #[test]
     fn the_frame_on_screen_at_the_cut_opens_the_clip() {
         let anchor = to_hns(Duration::from_secs(4));
@@ -793,9 +780,7 @@ mod tests {
             opening_duration(Some(to_hns(Duration::from_secs(7))), anchor, span),
             Some(to_hns(Duration::from_secs(3)))
         );
-        // A still picture keeps the held frame for the whole cut.
         assert_eq!(opening_duration(None, anchor, span), Some(span));
-        // A frame of its own sits on the cut, so nothing has to be held.
         assert_eq!(opening_duration(Some(anchor), anchor, span), None);
     }
 

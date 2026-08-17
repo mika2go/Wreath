@@ -2,8 +2,6 @@ use crate::audio::AudioError;
 #[cfg(target_os = "windows")]
 use crate::audio::Pcm16Chunk;
 
-/// 192 kbit/s, the highest the Microsoft AAC encoder accepts. At 128 its
-/// artefacts are audible on speech over game audio.
 pub const AAC_BYTES_PER_SECOND: u32 = 24_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,9 +62,6 @@ impl AudioEncoderSettings {
     }
 }
 
-/// Keeps the PCM contiguous with the timeline describing it: a lost packet just
-/// moves the next timestamp, which splices unrelated waveforms unless the hole
-/// is bridged with silence.
 #[cfg(any(target_os = "windows", test))]
 #[derive(Default)]
 struct EncoderTimeline {
@@ -77,20 +72,20 @@ struct EncoderTimeline {
 #[cfg(any(target_os = "windows", test))]
 #[derive(Debug, PartialEq, Eq)]
 enum TimelinePlan {
-    /// This packet continues directly from the previous one.
-    Continue { timestamp: std::time::Duration },
-    /// Fill the hole ahead of this packet with silence.
+    Continue {
+        timestamp: std::time::Duration,
+    },
     Bridge {
         timestamp: std::time::Duration,
         silent_frames: u32,
     },
-    /// Too far to bridge; drop the old timeline and start over here.
-    Restart { timestamp: std::time::Duration },
+    Restart {
+        timestamp: std::time::Duration,
+    },
 }
 
 #[cfg(any(target_os = "windows", test))]
 impl EncoderTimeline {
-    /// Beyond this it is a pause or device change, where silence only pads.
     const MAX_BRIDGE: std::time::Duration = std::time::Duration::from_secs(1);
 
     fn plan(&self, timestamp: std::time::Duration, sample_rate: u32) -> TimelinePlan {
@@ -98,7 +93,6 @@ impl EncoderTimeline {
             return TimelinePlan::Restart { timestamp };
         };
         if timestamp <= expected {
-            // The encoder needs a monotonic timeline; the payload is contiguous.
             return TimelinePlan::Continue {
                 timestamp: expected,
             };
@@ -154,13 +148,11 @@ fn frames_duration(frames: u32, sample_rate: u32) -> std::time::Duration {
     )
 }
 
-/// Ramp length, so neither edge of a bridged hole steps the waveform.
 #[cfg(any(target_os = "windows", test))]
 fn splice_fade_frames(sample_rate: u32) -> u32 {
     (sample_rate / 500).max(1)
 }
 
-/// Starts from where the last packet left off rather than jumping to zero.
 #[cfg(any(target_os = "windows", test))]
 fn bridging_silence(frames: u32, channels: u16, tail: &[i16], sample_rate: u32) -> Vec<u8> {
     let channels = usize::from(channels.max(1));
@@ -181,7 +173,6 @@ fn bridging_silence(frames: u32, channels: u16, tail: &[i16], sample_rate: u32) 
     data
 }
 
-/// Ramps the first frames of a packet up from zero after a hole.
 #[cfg(any(target_os = "windows", test))]
 fn fade_in(data: &mut [u8], frames: u32, channels: u16, sample_rate: u32) {
     let channels = usize::from(channels.max(1));
@@ -549,7 +540,6 @@ mod tests {
         );
     }
 
-    /// A capture hole spliced two unrelated waveforms together.
     #[test]
     fn a_capture_hole_is_bridged_with_silence() {
         let timeline = timeline_at(Duration::from_millis(100));
@@ -610,7 +600,6 @@ mod tests {
             "one packet is exactly its own frame count"
         );
 
-        // Stereo tail keeps the final frame of each channel for the ramp.
         let data = [1_i16, 2, 3, 4]
             .iter()
             .flat_map(|sample| sample.to_le_bytes())

@@ -44,7 +44,6 @@ impl fmt::Display for AudioError {
 
 impl std::error::Error for AudioError {}
 
-/// PCM16 is the only format the AAC encoder accepts; other layouts fail here.
 pub fn normalize_to_pcm16(format: AudioFormat, chunk: PcmChunk) -> Result<Pcm16Chunk, AudioError> {
     let source_sample_bytes = match (format.floating_point, format.bits_per_sample) {
         (true, 32) => 4,
@@ -143,14 +142,11 @@ fn integer_to_i16(sample: &[u8]) -> i16 {
     }
 }
 
-/// Polled, not event driven: Windows raises the loopback event only for streams
-/// it counts as active, which is how desktop audio went missing.
 #[cfg(target_os = "windows")]
 pub struct LoopbackCapture {
     stream: CaptureStream,
 }
 
-/// Opened raw so the driver's signal processing stays out of the recording.
 #[cfg(target_os = "windows")]
 pub struct MicrophoneCapture {
     stream: CaptureStream,
@@ -171,7 +167,6 @@ pub fn microphones() -> Result<Vec<AudioEndpointTarget>, AudioError> {
     endpoints(eCapture, "Windows audio input")
 }
 
-/// Playback endpoints; desktop audio is captured from one of these.
 #[cfg(target_os = "windows")]
 pub fn outputs() -> Result<Vec<AudioEndpointTarget>, AudioError> {
     use windows::Win32::Media::Audio::eRender;
@@ -318,7 +313,6 @@ impl CaptureStream {
         let stop_event = unsafe { CreateEventW(None, false, false, None) }
             .map_err(|error| AudioError(error.to_string()))?;
         let stop_for_thread = stop_event.0 as usize;
-        // Headroom for encoder and GPU stalls; a smaller queue dropped packets and clicked.
         let (chunk_sender, chunk_receiver) = crossbeam_channel::bounded(256);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let thread_name = match endpoint {
@@ -394,7 +388,6 @@ fn capture_loop(
 
     const MICROPHONE_BUFFER_DURATION_HNS: i64 = 2_000_000;
 
-    // Windows 8+ wants the first IAudioClient activation from an STA.
     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
         .ok()
         .map_err(|error| AudioError(error.to_string()))?;
@@ -502,7 +495,6 @@ fn capture_loop(
     result
 }
 
-/// Polled capture needs a buffer covering more than one poll interval.
 #[cfg(target_os = "windows")]
 const LOOPBACK_BUFFER_DURATION_HNS: i64 = 2_000_000;
 
@@ -515,8 +507,6 @@ type OpenedLoopback = (
     CaptureFormatMode,
 );
 
-/// A pinned endpoint ID survives the default changing mid-recording, which left
-/// clips with a full-length silent track. The default stays the fallback.
 #[cfg(target_os = "windows")]
 fn open_loopback_endpoint(
     enumerator: &windows::Win32::Media::Audio::IMMDeviceEnumerator,
@@ -559,8 +549,6 @@ fn open_loopback_endpoint(
     open(&device)
 }
 
-/// `AUDCLNT_STREAMOPTIONS_RAW` is the only real opt-out from the driver's signal
-/// processing, and it is not universal, so the microphone walks down a ladder.
 #[cfg(target_os = "windows")]
 fn initialize_capture_client(
     device: &windows::Win32::Media::Audio::IMMDevice,
@@ -595,7 +583,6 @@ fn initialize_capture_client(
         CaptureFormatMode::ProcessedMono,
         CaptureFormatMode::ProcessedNative,
     ] {
-        // Initialize cannot be retried after a rejected format, so every rung is fresh.
         let prepared = match prepare_capture_client(device, mode.raw()) {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -671,7 +658,6 @@ impl fmt::Display for CaptureFormatMode {
     }
 }
 
-/// Keeps a 44.1 kHz microphone from being resampled just to be resampled back.
 #[cfg(any(target_os = "windows", test))]
 pub fn preferred_microphone_sample_rate(native_sample_rate: u32) -> u32 {
     if native_sample_rate == 44_100 {
@@ -710,7 +696,6 @@ fn prepare_capture_client(
         unsafe { client.SetClientProperties(&properties) }
             .map_err(|error| AudioError(format!("raw capture mode was refused: {error}")))?;
     }
-    // After the stream options: raw mode can expose a different format.
     let mix_format =
         unsafe { client.GetMixFormat() }.map_err(|error| AudioError(error.to_string()))?;
     if mix_format.is_null() {
@@ -724,8 +709,6 @@ fn prepare_capture_client(
     Ok((client, format, device_period_hns))
 }
 
-/// Lets the audio engine convert instead of Wreath; a driver that refuses fails
-/// here and the caller drops to the native layout.
 #[cfg(target_os = "windows")]
 fn initialize_mono_client(
     client: windows::Win32::Media::Audio::IAudioClient2,
@@ -934,9 +917,7 @@ struct CaptureDiagnostics {
 
 #[cfg(target_os = "windows")]
 impl CaptureDiagnostics {
-    /// Roughly ten seconds of packets at a typical endpoint period.
     const HEARTBEAT_PACKETS: u64 = 1_024;
-    /// Seconds, not packets: an endpoint delivering nothing has to report that.
     const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
     fn new(endpoint: &'static str, device: String) -> Self {
@@ -1001,8 +982,6 @@ impl CaptureDiagnostics {
             self.consecutive_silent = 0;
             self.reported_silence = false;
         }
-        // Silence looks healthy in a packet count, so say it plainly. The run has
-        // to be long, because a quiet moment is not a fault.
         if !self.reported_silence && self.consecutive_silent >= Self::HEARTBEAT_PACKETS {
             self.reported_silence = true;
             wreath_core::diagnostic!(
@@ -1014,8 +993,6 @@ impl CaptureDiagnostics {
         }
     }
 
-    /// `packets=0` means the endpoint handed over nothing at all, which is a
-    /// different fault from silence.
     fn heartbeat(&mut self) {
         if self.last_heartbeat.elapsed() < Self::HEARTBEAT_INTERVAL {
             return;
@@ -1051,9 +1028,6 @@ impl CaptureDiagnostics {
     }
 }
 
-/// The exact frame count drives the timeline, because QPC jitter reaching the
-/// encoder is heard as a rough, gritty edge. The wall clock only starts an epoch
-/// and recovers after a real gap.
 #[cfg(any(target_os = "windows", test))]
 #[derive(Default)]
 struct CapturePacketClock {
@@ -1062,10 +1036,8 @@ struct CapturePacketClock {
 
 #[cfg(any(target_os = "windows", test))]
 impl CapturePacketClock {
-    /// Past this, the endpoint skipped rather than jittered.
     const RESYNC_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(50);
 
-    /// Returns the timestamp, the wall-clock reading, and whether it resynced.
     fn timestamp(
         &mut self,
         qpc_position: u64,
@@ -1076,7 +1048,6 @@ impl CapturePacketClock {
     ) -> (std::time::Duration, std::time::Duration, bool) {
         let reported = std::time::Duration::from_nanos(qpc_position.saturating_mul(100));
         let (timestamp, resynchronized) = match self.next_timestamp {
-            // An unusable reading leaves the sample timeline as the only source.
             Some(expected) if timestamp_error => (expected, false),
             Some(expected)
                 if !discontinuous && expected.abs_diff(reported) <= Self::RESYNC_THRESHOLD =>
@@ -1249,13 +1220,11 @@ mod tests {
         assert_eq!(uncertain, std::time::Duration::from_millis(11));
     }
 
-    /// Wall-clock jitter reaching the encoder is what roughens the audio.
     #[test]
     fn wall_clock_jitter_never_reaches_the_capture_timeline() {
         let mut clock = CapturePacketClock::default();
         let start = 10_000_u64;
         let mut stamps = Vec::new();
-        // Ten contiguous 10 ms packets whose reported time wanders by ±3 ms.
         for packet in 0..10_u64 {
             let jitter = [0_i64, 30_000, -20_000, 12_000, -28_000][packet as usize % 5];
             let reported = (start as i64 + (packet as i64 * 100_000) + jitter) as u64;
@@ -1276,7 +1245,6 @@ mod tests {
     fn a_reported_gap_resynchronizes_to_the_wall_clock() {
         let mut clock = CapturePacketClock::default();
         let _ = clock.timestamp(10_000, 480, 48_000, false, false);
-        // The endpoint skipped half a second and says so.
         let (resumed, _, resynchronized) = clock.timestamp(5_010_000, 480, 48_000, false, true);
 
         assert_eq!(resumed, std::time::Duration::from_millis(501));
@@ -1287,7 +1255,6 @@ mod tests {
     fn a_silent_drift_beyond_the_threshold_also_resynchronizes() {
         let mut clock = CapturePacketClock::default();
         let _ = clock.timestamp(10_000, 480, 48_000, false, false);
-        // No discontinuity flag, but 200 ms from where the frame count says.
         let (resumed, _, resynchronized) = clock.timestamp(2_110_000, 480, 48_000, false, false);
 
         assert_eq!(resumed, std::time::Duration::from_millis(211));

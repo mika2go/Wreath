@@ -47,7 +47,6 @@ pub struct PlayerSnapshot {
 }
 
 pub struct Player {
-    // Keep our callback COM object alive for exactly as long as the player.
     _callback: IMFPMediaPlayerCallback,
     media: IMFPMediaPlayer,
     loaded: bool,
@@ -74,8 +73,6 @@ impl Player {
         .map_err(|error| format!("Media Foundation player initialization failed: {error}"))?;
         let media = media.ok_or_else(|| "Media Foundation returned no player".to_owned())?;
 
-        // Presentation only, and rejected until a media item is attached, so they
-        // must not decide whether the clip counts as loaded.
         let _ = unsafe { media.SetAspectRatioMode(MFVideoARMode_PreservePicture.0 as u32) };
         let _ = unsafe { media.SetBorderColor(COLORREF(0x0010_1012)) };
 
@@ -101,8 +98,6 @@ impl Player {
             .chain(Some(0))
             .collect::<Vec<_>>();
         let result = (|| {
-            // A replaced clip keeps its path, and without this Media Foundation
-            // keeps reporting the pre-cut duration.
             let _ = unsafe { self.media.ClearMediaItem() };
             let mut item = None;
             unsafe {
@@ -203,8 +198,6 @@ impl Player {
                 unsafe { self.media.Play() }.map_err(|error| error.to_string())?;
             }
         } else if event_type == MFP_EVENT_TYPE_PLAYBACK_ENDED.0 {
-            // The ended state cannot be stopped, and seeking from here made the
-            // session emit an invalid-state error; the next Play restarts.
             self.should_play.set(false);
         }
         Ok(())

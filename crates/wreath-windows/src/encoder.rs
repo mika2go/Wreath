@@ -243,7 +243,6 @@ impl HardwareVideoEncoder {
         }))
     }
 
-    /// Blocks on Media Foundation's event queue; no encoder polling is needed.
     pub fn wait_for_event(&self) -> Result<EncoderEvent, VideoError> {
         use windows::Win32::Media::MediaFoundation::MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS;
 
@@ -260,7 +259,6 @@ impl HardwareVideoEncoder {
         Ok(classify_event(event_type))
     }
 
-    /// Called only when the pipeline was already woken by a frame or command.
     pub fn try_next_event(&self) -> Result<Option<EncoderEvent>, VideoError> {
         use windows::Win32::Media::MediaFoundation::{
             MF_E_NO_EVENTS_AVAILABLE, MF_EVENT_FLAG_NO_WAIT,

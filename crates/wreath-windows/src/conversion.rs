@@ -7,7 +7,6 @@ pub struct Nv12Surface {
     output_view: windows::Win32::Graphics::Direct3D11::ID3D11VideoProcessorOutputView,
 }
 
-/// Converts WGC's BGRA textures to encoder-ready NV12 entirely on the GPU.
 #[cfg(target_os = "windows")]
 pub struct GpuColorConverter {
     device: windows::Win32::Graphics::Direct3D11::ID3D11Device,

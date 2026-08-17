@@ -44,8 +44,6 @@ struct AppState {
     recovery: crate::recovery::RecoveryThrottle,
 }
 
-/// Explorer broadcasts this after it creates the notification area. Only a
-/// top-level window receives it, which is why this one is not message-only.
 fn taskbar_created_message() -> u32 {
     static MESSAGE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 
@@ -70,8 +68,6 @@ pub fn run() -> Result<(), String> {
             "Wreath tray: cannot repair the Windows startup entry: {error}"
         ),
     }
-    // A recorder that cannot be started at logon must not cost the tray icon as
-    // well; the status timer keeps trying and the tooltip reports the state.
     if let Err(error) = ensure_daemon() {
         wreath_core::diagnostic!("Wreath tray: cannot start the recorder yet: {error}");
     }
@@ -96,8 +92,6 @@ pub fn run() -> Result<(), String> {
         recovery: crate::recovery::RecoveryThrottle::new(Instant::now()),
     });
     let state = Box::into_raw(state);
-    // Top-level and never shown: a message-only window is excluded from the
-    // broadcast that says the notification area exists again.
     let window = unsafe {
         CreateWindowExW(
             WS_EX_TOOLWINDOW,
@@ -152,9 +146,6 @@ unsafe extern "system" fn window_proc(
             unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, state) };
             if let Some(state) = state_mut(window) {
                 state.icon = tray_icon(window, "Wreath is starting");
-                // Failing here used to abort window creation, so an autostart
-                // that beat Explorer to the notification area ended as an error
-                // box and no tray at all.
                 state.icon_added = unsafe { Shell_NotifyIconW(NIM_ADD, &state.icon) }.as_bool();
             }
         }
@@ -258,8 +249,6 @@ fn handle_simple(window: HWND, request: Request, _confirmation: &str) {
     }
 }
 
-/// The other paths set `uFlags` to what they are changing, so the full set has
-/// to be restored before the icon can be added again.
 fn ensure_icon(window: HWND) {
     if let Some(state) = state_mut(window)
         && !state.icon_added

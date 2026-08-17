@@ -6,9 +6,6 @@ use windows::Win32::System::Registry::{
 use windows::core::w;
 
 const RUN_KEY: windows::core::PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-/// Task Manager's startup tab and the Settings startup page disable an entry
-/// here instead of deleting it, and an entry disabled this way never runs no
-/// matter how correct the `Run` value looks.
 const APPROVAL_KEY: windows::core::PCWSTR =
     w!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run");
 const VALUE_NAME: windows::core::PCWSTR = w!("Wreath");
@@ -54,13 +51,6 @@ fn run_command() -> Option<String> {
     }
 }
 
-/// Windows does nothing at all with a startup entry whose executable is not
-/// where it says, and reports nothing either: the switch in Wreath still reads
-/// as on while nothing starts at the next logon. An installation that moved is
-/// exactly that case, so the entry is pointed back at the tray next to this
-/// executable. Only an entry that already exists is rewritten, and the approval
-/// Windows keeps separately is left untouched, so this never turns on an
-/// autostart that was not asked for.
 pub fn repair() -> Result<bool, String> {
     let Some(command) = run_command().filter(|command| command_is_enabled(command)) else {
         return Ok(false);
@@ -94,7 +84,6 @@ fn approval_withdrawn() -> bool {
     approval_is_disabled(&approval[..approval.len().min(byte_length as usize)])
 }
 
-/// Windows stores the state in the first byte and sets its low bit to disable.
 fn approval_is_disabled(approval: &[u8]) -> bool {
     approval.first().is_some_and(|state| state & 1 != 0)
 }
@@ -107,8 +96,6 @@ fn autostart_command(tray: &std::path::Path) -> String {
     format!("\"{}\"", tray.display())
 }
 
-/// Windows paths differ only in case, and the value Wreath wrote itself is the
-/// one that compares equal, so a repaired entry is not rewritten again.
 fn commands_match(current: &str, expected: &str) -> bool {
     current.trim().eq_ignore_ascii_case(expected.trim())
 }
@@ -136,9 +123,6 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
     if enabled {
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
         write_run_command(&autostart_command(&tray_executable(&executable)))?;
-        // Without this the entry stays switched off and turning it on in Wreath
-        // looks like it worked while nothing starts at the next logon. Windows
-        // treats a missing value as approved.
         let _ = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, APPROVAL_KEY, VALUE_NAME) };
         Ok(())
     } else {
@@ -193,8 +177,6 @@ mod tests {
         ));
     }
 
-    /// An entry left behind by an installation somewhere else starts nothing,
-    /// while Wreath keeps reporting autostart as enabled.
     #[test]
     fn a_startup_entry_from_another_installation_is_rewritten() {
         let current = autostart_command(&tray_executable(Path::new(

@@ -12,7 +12,6 @@ pub fn broadcast_clip_saved() {
     {
         let _ = unsafe { PostMessageW(Some(app), CLIP_SAVED_MESSAGE, WPARAM(0), LPARAM(0)) };
     }
-    // The tray window is top-level so it can hear Explorer restarting.
     let tray = unsafe { FindWindowW(w!("WreathTrayWindow"), PCWSTR::null()) };
     if let Ok(tray) = tray
         && !tray.is_invalid()

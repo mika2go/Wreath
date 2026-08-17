@@ -321,7 +321,6 @@ fn run_initialized() -> Result<(), String> {
             }
         }
         (*state).dpi = GetDpiForWindow(window).max(96);
-        // Visual continuity only; Media Foundation stays the source of truth.
         let _ = SetTimer(Some(window), PLAYER_TIMER, 33, None);
     }
     unsafe {
@@ -385,7 +384,6 @@ unsafe extern "system" fn window_proc(
         WM_SIZE => {
             if let Some(state) = state_mut(window) {
                 if wparam.0 as u32 == SIZE_MINIMIZED {
-                    // Decoded thumbnails are pure footprint while nothing is shown.
                     state.renderer.release_cached_images();
                     return LRESULT(0);
                 }
@@ -1472,9 +1470,6 @@ fn poll_trim_updates(state: &mut AppState) -> bool {
 
 fn begin_hotkey_update(state: &mut AppState, hotkey: wreath_core::config::HotkeyConfig) {
     cancel_hotkey_capture(&mut state.model);
-    // Pressing the configured shortcut again is not a no-op: it is how a
-    // shortcut Windows stopped delivering gets registered again, so the request
-    // goes to the recorder even when nothing about the choice changed.
     state.model.hotkey_pending = true;
     state.model.hotkey_deferred = false;
     state.model.hotkey_error = None;
@@ -1740,7 +1735,6 @@ fn confirm_delete(model: &mut UiModel) {
 }
 
 fn open_current_clip(state: &mut AppState) {
-    // Never show a position or duration belonging to the media item just left.
     state.model.reset_player_state();
     update_player_window(state);
     let Some(path) = state.model.active_clip().map(|clip| clip.path.clone()) else {
@@ -2267,8 +2261,6 @@ fn track_fullscreen_cursor(state: &mut AppState) {
         state.fullscreen_primary_button_down = false;
         return;
     }
-    // Media Foundation's child window can swallow WM_LBUTTONDOWN, so the physical
-    // button edge is polled to keep the controls responsive over the video.
     let button_state = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) };
     let primary_down = button_state < 0;
     let clicked_since_last_poll = (button_state as u16 & 0x0001) != 0;
@@ -2688,8 +2680,6 @@ fn choose_microphone_gain(model: &mut UiModel) {
     open_choice_menu(model, SettingsMenuKind::MicrophoneGain, labels, current);
 }
 
-/// Pinning keeps game sound in the clips when Windows switches its default to a
-/// headset after the recorder has started.
 fn choose_desktop_device(model: &mut UiModel) {
     refresh_outputs(model);
     let mut labels = vec!["Windows default".to_string()];

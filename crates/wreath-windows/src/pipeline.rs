@@ -6,33 +6,14 @@ const MIN_REPLAY_MEMORY_BYTES: u64 = 8 * 1_048_576;
 const PIPELINE_COMMAND_CAPACITY: usize = 4;
 #[cfg(target_os = "windows")]
 const SAVE_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-/// Unbounded, these held the daemon's control loop - and the hotkey - for as
-/// long as the worker stayed busy.
 #[cfg(target_os = "windows")]
 const CONTROL_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 #[cfg(target_os = "windows")]
-/// Too few and a hardware encoder cannot pipeline, so frames arriving while all
-/// are busy get dropped and the picture holds still.
 const ENCODER_SURFACE_COUNT: usize = 6;
-/// How long the loop waits for frames, audio or a command before it checks that
-/// capture is still alive. Nothing else wakes it, so without this a pipeline
-/// that stopped receiving anything would sit in the select forever.
 #[cfg(target_os = "windows")]
 const HEALTH_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
-/// Windows Graphics Capture delivers nothing while the screen does not change,
-/// and it also stops for good after some display, session and driver
-/// transitions without closing the session or reporting anything at all. From
-/// the outside the two look identical, which is why a silent minute is answered
-/// with a fresh capture session instead of an error: recreating it costs
-/// milliseconds, immediately delivers the current screen, and keeps video in
-/// the replay. Left alone, the machine that idles overnight comes back to a
-/// buffer whose video was pushed out by audio and a shortcut that can only
-/// report that there is nothing to save.
 #[cfg(any(target_os = "windows", test))]
 const CAPTURE_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-/// Frames going in with nothing coming back out is the hardware encoder itself
-/// wedged, which a new capture session cannot repair; only a rebuilt pipeline
-/// does, so this is reported as an error for the recovery path to pick up.
 #[cfg(any(target_os = "windows", test))]
 const ENCODER_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -40,19 +21,10 @@ const ENCODER_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CaptureVerdict {
     Healthy,
-    /// Frames go in, nothing comes out.
     EncoderStalled,
-    /// Nothing comes in, and whether that is a screen holding still or a
-    /// session Windows quietly dropped cannot be told apart from here.
     RestartCapture,
 }
 
-/// `silent_for` is measured from the newer of the last frame and the current
-/// capture session, so a restart that changed nothing is not read as one more
-/// stall immediately, and a session that stays dead is still retried at a fixed
-/// interval. The encoder is only suspected while frames really are arriving:
-/// after a restart that produced none, an idle encoder is the consequence, not
-/// the cause.
 #[cfg(any(target_os = "windows", test))]
 fn capture_verdict(
     since_frame: std::time::Duration,
@@ -104,9 +76,6 @@ impl Default for PipelineStatus {
     }
 }
 
-/// A safety cap, not the size the buffer aims for. Sized close to the nominal
-/// average it became the binding constraint instead of the duration and cut a
-/// 30 second replay short.
 pub fn replay_memory_budget(estimated_bytes: u64) -> Result<usize, crate::video::VideoError> {
     if estimated_bytes > MAX_REPLAY_MEMORY_BYTES {
         return Err(crate::video::VideoError::Initialization(format!(
@@ -189,9 +158,6 @@ impl ReplayPipeline {
         self.saver().save()
     }
 
-    /// Lets the hotkey reach the worker directly. Going out through the control
-    /// pipe and back into the same process made every press depend on a pipe
-    /// with one instance, so a press during any other request was lost.
     pub fn saver(&self) -> PipelineSaver {
         PipelineSaver {
             commands: self.commands.clone(),
@@ -207,8 +173,6 @@ impl ReplayPipeline {
     }
 }
 
-/// A save handle that outlives the pipeline it came from: the daemon swaps in a
-/// new one on reload, and the hotkey keeps saving through whichever is current.
 #[cfg(target_os = "windows")]
 #[derive(Clone)]
 pub struct PipelineSaver {
@@ -282,7 +246,6 @@ impl Drop for ReplayPipeline {
             },
             CONTROL_COMMAND_TIMEOUT,
         );
-        // Joining a worker that will not stop would freeze the daemon replacing it.
         if reply_receiver
             .recv_timeout(CONTROL_COMMAND_TIMEOUT)
             .is_err()
@@ -498,7 +461,6 @@ impl PipelineAudio {
         if self.mixer.is_none() {
             return self.encoder.encode(normalized);
         }
-        // The desktop packet waits until the microphone covers the same span.
         self.pending_master.push_back(normalized);
         self.encode_synchronized_master()
     }
@@ -514,7 +476,6 @@ impl PipelineAudio {
         let normalized = crate::audio::normalize_to_pcm16(format, chunk)?;
         self.note_microphone_clipping(&normalized.data);
         let microphone_end = pcm_chunk_end(&normalized, format.sample_rate);
-        // The mixer owns the microphone's conversion and level.
         self.mixer
             .as_mut()
             .ok_or_else(|| crate::audio::AudioError("microphone mixer is unavailable".into()))?
@@ -581,8 +542,6 @@ impl PipelineAudio {
     }
 }
 
-/// Raw capture leaves the driver's gain control out, so a hot input level
-/// reaches the encoder as clipping. It cannot be undone later, so it is logged.
 #[cfg(any(target_os = "windows", test))]
 fn clipped_samples(data: &[u8]) -> u64 {
     data.chunks_exact(2)
@@ -764,8 +723,6 @@ fn run_pipeline(
                     .expect("microphone presence checked"),
             )
         });
-        // A timeout is not an idle pipeline: it is the only moment a capture that
-        // went silent can be noticed, so it returns to the health check above.
         let Ok(operation) = selector.select_timeout(HEALTH_CHECK_INTERVAL) else {
             continue;
         };
@@ -800,8 +757,6 @@ fn run_pipeline(
                     buffer.reset();
                     update_buffer_status(status, &buffer);
                     recording = true;
-                    // Nothing arrived while paused, and that must not read as a
-                    // stalled capture the moment recording continues.
                     health = CaptureHealth::started(std::time::Instant::now());
                     update_status(status, |pipeline| {
                         pipeline.state = PipelineRunState::Recording
@@ -877,7 +832,6 @@ fn run_pipeline(
                 &mut health,
             )?;
             if input_requests == 0 || available_surfaces.is_empty() {
-                // The frame never reaches the clip and the picture holds.
                 skipped_frames = skipped_frames.saturating_add(1);
                 if skipped_frames.is_power_of_two() {
                     wreath_core::diagnostic!(
@@ -1006,8 +960,6 @@ fn spawn_save(
 #[cfg(target_os = "windows")]
 struct MarshaledMediaType(Option<windows::Win32::System::Com::IStream>);
 
-// SAFETY: the stream comes from CoMarshalInterThreadInterfaceInStream for
-// transfer to one other apartment, where it is consumed or released.
 #[cfg(target_os = "windows")]
 unsafe impl Send for MarshaledMediaType {}
 
@@ -1041,15 +993,11 @@ impl MarshaledMediaType {
             )
         })?;
         let media_type = unsafe { CoGetInterfaceAndReleaseStream(&stream) };
-        // CoGetInterfaceAndReleaseStream owns the Release even when it fails.
         std::mem::forget(stream);
         media_type.map_err(|error| crate::video::VideoError::Initialization(error.to_string()))
     }
 }
 
-/// What the pipeline knows about capture still being alive. Neither Windows
-/// Graphics Capture nor a Media Foundation encoder reports having given up: both
-/// simply stop, and only the absence of what they should be delivering shows it.
 #[cfg(target_os = "windows")]
 struct CaptureHealth {
     last_frame: std::time::Instant,
@@ -1096,8 +1044,6 @@ impl CaptureHealth {
         use crate::video::VideoError;
 
         let now = std::time::Instant::now();
-        // A driver reset, a GPU that was hot-swapped and a Windows driver update
-        // all leave every object built on this device permanently unusable.
         if let Err(error) = unsafe { runtime.device().GetDeviceRemovedReason() } {
             return Err(VideoError::Initialization(format!(
                 "the graphics device was lost: {error}"
@@ -1128,9 +1074,6 @@ impl CaptureHealth {
                 config.capture.frames_per_second,
                 config.capture.cursor,
             )?;
-        // The encoder, its surfaces and the buffered replay are all sized for the
-        // old geometry, so a display that came back different needs the rebuild
-        // an error asks for rather than a new session.
         if replacement_info.width != capture_info.width
             || replacement_info.height != capture_info.height
         {
@@ -1142,8 +1085,6 @@ impl CaptureHealth {
         *frames = replacement_frames;
         self.capture_started = now;
         self.silent_restarts = self.silent_restarts.saturating_add(1);
-        // Restarts stay quiet while they keep finding a screen that is simply
-        // not changing; the log is the only record a background recorder leaves.
         if self.silent_restarts.is_power_of_two() {
             wreath_core::diagnostic!(
                 "Wreath capture: no frame for {} seconds, capture session restarted ({} restarts without a frame so far)",
@@ -1234,7 +1175,6 @@ fn target_bitrate_kbps(config: &wreath_core::config::Config, width: u32, height:
     wreath_core::replay::ReplaySpec::from_config(config, &monitor).target_bitrate_kbps()
 }
 
-/// Headroom is added by `replay_memory_budget`; this stays on real need.
 #[cfg(any(target_os = "windows", test))]
 fn estimated_buffer_bytes(bitrate_kbps: u32, duration_seconds: u16) -> u64 {
     u64::from(bitrate_kbps)
@@ -1276,7 +1216,6 @@ mod tests {
         assert!(bytes < 100 * 1_048_576);
     }
 
-    /// A budget near the nominal average becomes the binding constraint.
     #[test]
     fn the_memory_budget_leaves_room_above_the_nominal_average() {
         let nominal = estimated_buffer_bytes(20_000, 30);
@@ -1294,14 +1233,10 @@ mod tests {
             .flat_map(|sample| sample.to_le_bytes())
             .collect::<Vec<_>>();
 
-        // 32_700 and -32_768 count; 32_699 sits just below the threshold.
         assert_eq!(clipped_samples(&samples), 2);
         assert_eq!(clipped_samples(&[]), 0);
     }
 
-    /// A capture that stopped delivering reports nothing, so the absence itself
-    /// has to be acted on; the buffer is otherwise emptied of video by audio
-    /// over a night and the shortcut has nothing left to save.
     #[test]
     fn a_capture_that_went_silent_is_restarted() {
         use std::time::Duration;
@@ -1322,8 +1257,6 @@ mod tests {
         );
     }
 
-    /// Restarting the session every tick would lose whatever the pipeline
-    /// managed to buffer between two of them.
     #[test]
     fn a_screen_that_stays_still_is_not_restarted_every_tick() {
         use std::time::Duration;
@@ -1350,9 +1283,6 @@ mod tests {
         );
     }
 
-    /// After a restart that produced no frames the encoder is idle because
-    /// nothing reaches it, and rebuilding the pipeline for that would repeat
-    /// every minute the screen is off.
     #[test]
     fn an_idle_encoder_without_frames_is_not_blamed() {
         use std::time::Duration;

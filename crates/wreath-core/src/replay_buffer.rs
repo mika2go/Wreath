@@ -4,8 +4,6 @@ use std::time::Duration;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackKind {
     Video,
-    /// The single mix of everything Wreath records. Separate stems made viewers
-    /// pick one arbitrary track, which is how clips ended up silent.
     Audio,
 }
 
@@ -28,9 +26,6 @@ impl EncodedPacket {
     }
 }
 
-/// The front of a non-empty buffer is always a video keyframe, so trimming
-/// advances by whole groups of pictures. A long GOP may exceed the duration
-/// target, never the byte budget.
 #[derive(Debug)]
 pub struct EncodedReplayBuffer {
     packets: VecDeque<EncodedPacket>,
@@ -55,7 +50,6 @@ impl EncodedReplayBuffer {
         })
     }
 
-    /// Adds one encoded packet. Returns false when the packet cannot be kept.
     pub fn push(&mut self, packet: EncodedPacket) -> bool {
         let packet_bytes = packet.payload.len();
         if packet_bytes > self.max_payload_bytes {
@@ -79,7 +73,6 @@ impl EncodedReplayBuffer {
         self.packets.iter()
     }
 
-    /// Payloads are reference-counted, so saving does not copy the video data.
     pub fn snapshot(&self) -> Vec<EncodedPacket> {
         self.packets.iter().cloned().collect()
     }
@@ -88,9 +81,6 @@ impl EncodedReplayBuffer {
         self.payload_bytes
     }
 
-    /// Video only, because it decides the saved clip length. Audio reaches the
-    /// buffer behind video, so measuring across both tracks made the span look
-    /// short and let the byte budget decide the length instead.
     pub fn duration(&self) -> Duration {
         let first = self
             .packets
@@ -111,7 +101,6 @@ impl EncodedReplayBuffer {
         self.packets.is_empty()
     }
 
-    /// Used after timestamp discontinuities such as pause/resume.
     pub fn reset(&mut self) {
         self.clear();
     }
@@ -128,7 +117,6 @@ impl EncodedReplayBuffer {
             }
         }
         if trimmed {
-            // This shortens the clip below its configured duration, so say it.
             self.byte_trims = self.byte_trims.saturating_add(1);
             if self.byte_trims.is_power_of_two() {
                 let seconds = self.duration().as_secs();
@@ -141,8 +129,6 @@ impl EncodedReplayBuffer {
         }
     }
 
-    /// A group is dropped only while what remains still covers the target;
-    /// dropping one unconditionally took a 30 second replay down to 24.
     fn trim_to_duration(&mut self) {
         while self.duration() > self.target_duration {
             match self.duration_without_leading_group() {
@@ -248,7 +234,6 @@ mod tests {
         buffer.push(video(2, true, 10));
         buffer.push(video(3, false, 10));
 
-        // Dropping the leading group still leaves the requested two seconds.
         assert_eq!(
             buffer.packets().next().unwrap().timestamp,
             Duration::from_secs(2)
@@ -256,15 +241,12 @@ mod tests {
         assert_eq!(buffer.duration(), Duration::from_secs(2));
     }
 
-    /// Measuring the span across both tracks made the buffer look shorter than it
-    /// was, which under-trimmed it and let the byte budget decide the length.
     #[test]
     fn the_span_follows_video_even_when_audio_lags_behind() {
         let mut buffer = EncodedReplayBuffer::new(Duration::from_secs(30), 1_000_000).unwrap();
 
         buffer.push(video(0, true, 10));
         buffer.push(video(5, false, 10));
-        // Audio for the second frame only arrives now, three seconds late.
         buffer.push(audio(2, 10));
 
         assert_eq!(buffer.duration(), Duration::from_secs(6));
@@ -280,7 +262,6 @@ mod tests {
         buffer.push(video(2, true, 10));
         buffer.push(video(3, false, 10));
 
-        // Advancing to the keyframe at two seconds would leave only two.
         assert_eq!(buffer.packets().next().unwrap().timestamp, Duration::ZERO);
         assert!(buffer.duration() >= Duration::from_secs(3));
     }

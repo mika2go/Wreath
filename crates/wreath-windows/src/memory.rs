@@ -1,4 +1,3 @@
-/// Private bytes committed, which is what Task Manager shows under Memory.
 #[cfg(target_os = "windows")]
 pub fn private_bytes() -> Option<u64> {
     use windows::Win32::System::ProcessStatus::{
@@ -24,7 +23,6 @@ pub fn private_bytes() -> Option<u64> {
     None
 }
 
-/// Logs a labelled footprint line, rounded to whole megabytes.
 pub fn report(component: &str, detail: &str) {
     let Some(bytes) = private_bytes() else {
         return;

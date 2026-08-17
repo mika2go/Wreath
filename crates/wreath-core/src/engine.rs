@@ -320,7 +320,6 @@ impl GpuScreenRecorder {
                 desktop_gain_source
                     .as_ref()
                     .map(|source| source.name.as_str())
-                    // Recorded directly when it needs no level change of its own.
                     .or(spec.desktop_device.as_deref()),
             ))
             .process_group(0)
@@ -564,8 +563,6 @@ mod tests {
         );
     }
 
-    /// A configured output is recorded instead of whatever PipeWire currently
-    /// calls the default sink.
     #[test]
     fn command_records_a_configured_output_directly() {
         let mut replay = spec();

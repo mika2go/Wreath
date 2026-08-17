@@ -1,14 +1,9 @@
-//! Append-only diagnostic log. The Windows binaries are GUI-subsystem, so they
-//! have no console and anything written to stderr is discarded.
-
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-/// Restarted rather than rotated: a capture problem reproduces in seconds, so
-/// history beyond the session is not worth the extra file.
 const MAX_LOG_BYTES: u64 = 1_048_576;
 
 struct Sink {
@@ -25,7 +20,6 @@ fn sink() -> &'static Sink {
             let epoch_seconds = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_secs());
-            // Ties the monotonic line offsets back to a wall-clock time.
             let _ = writeln!(
                 file,
                 "--- wreath {} session start, unix time {epoch_seconds} ---",
@@ -56,12 +50,10 @@ fn open_log() -> Option<File> {
         .ok()
 }
 
-/// Absolute path of the log file, for the UI to show and for support requests.
 pub fn log_file() -> Option<PathBuf> {
     Some(crate::paths::AppPaths::discover().log_file)
 }
 
-/// Never fails: a broken log must not take a recording down with it.
 pub fn record(message: &str) {
     let sink = sink();
     let elapsed = sink.started.elapsed();
