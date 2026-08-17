@@ -14,7 +14,6 @@ pub struct Microphone {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopOutput {
-    /// PulseAudio/PipeWire monitor source accepted by gpu-screen-recorder.
     pub name: String,
     pub label: String,
     pub is_default: bool,

@@ -3,9 +3,6 @@ use std::time::Duration;
 
 use crate::audio::{AudioError, Pcm16Chunk};
 
-/// Timestamp-aware PCM16 mixer. The desktop stream is the clock master; the
-/// microphone alignment is established once and held, because re-deriving it per
-/// packet stepped the waveform whenever the sub-sample phase crossed a frame.
 pub struct PcmMixer {
     sample_rate: u32,
     channels: u16,
@@ -13,11 +10,8 @@ pub struct PcmMixer {
     gain_percent: u16,
     microphone_converter: Option<PcmStreamConverter>,
     auxiliary: VecDeque<i16>,
-    /// Capture time of the frame the buffer started at.
     auxiliary_origin: Option<Duration>,
-    /// Frames dropped from the front since that origin.
     auxiliary_consumed: u64,
-    /// End of the most recently appended microphone packet.
     auxiliary_end: Option<Duration>,
     aligned: bool,
     fade_frames_remaining: u32,
@@ -25,9 +19,7 @@ pub struct PcmMixer {
 }
 
 impl PcmMixer {
-    /// Ordinary clock drift needs minutes to cover this.
     const ALIGNMENT_TOLERANCE: Duration = Duration::from_millis(10);
-    /// Longest microphone gap bridged with silence instead of restarting.
     const MAX_BRIDGE: Duration = Duration::from_millis(200);
 
     pub fn new(sample_rate: u32, channels: u16, gain_percent: u16) -> Result<Self, AudioError> {
@@ -87,7 +79,6 @@ impl PcmMixer {
         };
 
         match self.auxiliary_end {
-            // A hole would splice unrelated waveforms, so bridge it or start over.
             Some(end) if converted.timestamp > end => {
                 let gap = converted.timestamp.saturating_sub(end);
                 if gap > Self::MAX_BRIDGE {
@@ -118,8 +109,6 @@ impl PcmMixer {
 
     pub fn mix(&mut self, mut master: Pcm16Chunk) -> Result<Pcm16Chunk, AudioError> {
         validate_pcm16(&master, self.channels)?;
-        // Headroom comes from the whole master packet; scaling only the overlap
-        // jumped the desktop level at the edge of every microphone gap.
         let denominator = i64::from(self.master_gain_percent)
             .saturating_add(i64::from(self.gain_percent))
             .max(1);
@@ -156,7 +145,6 @@ impl PcmMixer {
         self.add_microphone(&mut master, master_offset, frames, denominator);
         self.drop_frames(u64::from(frames));
         if frames < wanted {
-            // Re-deriving drops the stale remainder instead of shifting the voice.
             self.aligned = false;
         }
         Ok(master)
@@ -193,7 +181,6 @@ impl PcmMixer {
         self.auxiliary_consumed = self.auxiliary_consumed.saturating_add(frames);
     }
 
-    /// One second; a consumer further behind has a problem the buffer cannot fix.
     fn max_buffered_frames(&self) -> u64 {
         u64::from(self.sample_rate)
     }
@@ -258,8 +245,6 @@ impl PcmMixer {
     }
 }
 
-/// Rounds rather than truncates: truncation is signal-correlated, so every
-/// attenuation in the chain added its own layer of harmonic distortion.
 fn rounded_ratio(value: i64, numerator: i64, denominator: i64) -> i64 {
     if denominator == 0 {
         return value;
@@ -273,8 +258,6 @@ fn rounded_ratio(value: i64, numerator: i64, denominator: i64) -> i64 {
     }
 }
 
-/// Band-limited polyphase kernel. Linear interpolation leaves everything above
-/// the target Nyquist in the signal, where it folds back as a gritty edge.
 struct SincResampler {
     taps: Box<[f32]>,
     taps_per_phase: usize,
@@ -282,21 +265,16 @@ struct SincResampler {
 }
 
 impl SincResampler {
-    /// 512 phases keep a full-scale 20 kHz tone's timing error near -52 dBFS.
     const PHASES: usize = 512;
-    /// In *output* frames, before widening for a downsampling cutoff.
     const BASE_HALF_TAPS: usize = 24;
     const MAX_HALF_TAPS: usize = 128;
 
     fn new(source_rate: u32, target_rate: u32) -> Self {
-        // Downsampling band-limits to the target Nyquist; upsampling reconstructs.
         let cutoff = if target_rate < source_rate {
             f64::from(target_rate) / f64::from(source_rate)
         } else {
             1.0
         };
-        // A lower cutoff needs a proportionally longer kernel or the transition
-        // band grows until unwanted content sits inside it.
         let half_taps = ((Self::BASE_HALF_TAPS as f64 / cutoff).ceil() as usize)
             .clamp(Self::BASE_HALF_TAPS, Self::MAX_HALF_TAPS);
         let taps_per_phase = half_taps * 2;
@@ -312,7 +290,6 @@ impl SincResampler {
                 sum += value;
                 row.push(value);
             }
-            // Unity DC gain per phase keeps a periodic level ripple out.
             let normalizer = if sum.abs() > f64::EPSILON { sum } else { 1.0 };
             taps.extend(row.into_iter().map(|value| (value / normalizer) as f32));
         }
@@ -323,12 +300,10 @@ impl SincResampler {
         }
     }
 
-    /// Source frames the kernel reads ahead of the interpolated position.
     fn lookahead_frames(&self) -> u64 {
         self.half_taps
     }
 
-    /// Source frames the kernel reads behind the interpolated position.
     fn history_frames(&self) -> u64 {
         self.half_taps.saturating_sub(1)
     }
@@ -360,7 +335,6 @@ fn sinc(value: f64) -> f64 {
     }
 }
 
-/// Blackman window over the normalised range [-1, 1].
 fn blackman(normalized: f64) -> f64 {
     if normalized.abs() >= 1.0 {
         return 0.0;
@@ -369,9 +343,6 @@ fn blackman(normalized: f64) -> f64 {
     0.42 + 0.5 * angle.cos() + 0.08 * (2.0 * angle).cos()
 }
 
-/// Carries the fractional source position and the surrounding frames across
-/// WASAPI packet boundaries, so no sample is repeated or skipped per callback.
-/// Voice mode selects one stable input instead of averaging array channels.
 pub struct PcmStreamConverter {
     source_rate: u32,
     source_channels: u16,
@@ -510,7 +481,6 @@ impl PcmStreamConverter {
             loop {
                 let source_position = emitted.saturating_mul(u64::from(self.source_rate));
                 let first_frame = source_position / u64::from(self.target_rate);
-                // The kernel is centred, so a frame waits for its trailing half.
                 if first_frame.saturating_add(lookahead) >= self.source_frames_received {
                     break;
                 }
@@ -605,8 +575,6 @@ impl PcmStreamConverter {
             .saturating_sub(frames_to_fade);
     }
 
-    /// Clamped to the stream edges: the kernel reaches past both ends at the
-    /// start of an epoch, where extending the edge sample is inaudible.
     fn buffered_sample(&self, frame: i64, channel: u16) -> i16 {
         let last_frame = self.source_frames_received.saturating_sub(1);
         let first_frame = self.source_start_frame.min(last_frame);
@@ -632,7 +600,6 @@ impl PcmStreamConverter {
         let next_position = self
             .output_frames_emitted
             .saturating_mul(u64::from(self.source_rate));
-        // Keep the frames the next output frame's kernel still reaches back to.
         let keep_from = (next_position / u64::from(self.target_rate)).saturating_sub(history);
         while self.source_start_frame < keep_from {
             for _ in 0..self.target_channels {
@@ -927,7 +894,6 @@ mod tests {
         (total / samples.len() as f64).sqrt()
     }
 
-    /// Linear interpolation folded 30 kHz back to 18 kHz at nearly full level.
     #[test]
     fn downsampling_removes_content_above_the_target_nyquist() {
         let mut converter = PcmStreamConverter::new_voice(96_000, 1, 48_000, 1).unwrap();
@@ -1072,13 +1038,11 @@ mod tests {
         let mixed = mixer.mix(chunk(0, 1, &[1_000, 10_000, 10_000])).unwrap();
         let mixed = samples(&mixed);
 
-        // Every frame carries the same headroom; the microphone only reaches its own.
         assert_eq!(mixed[0], 333);
         assert_eq!(mixed[1], 3_333);
         assert!(mixed[2] > 3_333, "the microphone reached the third frame");
     }
 
-    /// Headroom taken only from covered frames jumped the desktop level at gaps.
     #[test]
     fn desktop_level_does_not_step_at_a_microphone_gap() {
         let mut mixer = PcmMixer::new(1_000, 1, 100).unwrap();
@@ -1093,7 +1057,6 @@ mod tests {
     #[test]
     fn microphone_buffer_stays_bounded() {
         let mut mixer = PcmMixer::new(1_000, 1, 100).unwrap();
-        // Three seconds of microphone audio with nothing consuming it.
         for packet in 0..30 {
             mixer
                 .push_auxiliary(chunk(packet * 100, 1, &[0; 100]), 1_000, 1)
@@ -1103,8 +1066,6 @@ mod tests {
         assert_eq!(mixer.buffered_frame_count(), 1_000);
     }
 
-    /// Re-deriving the alignment from two truncated durations per packet repeated
-    /// or skipped a sample several times a second.
     #[test]
     fn a_drifting_master_clock_never_repeats_or_skips_a_microphone_sample() {
         let mut mixer = PcmMixer::new(48_000, 1, 100).unwrap();
@@ -1129,10 +1090,8 @@ mod tests {
                     1,
                 )
                 .unwrap();
-            // The master clock creeps forward a fraction of a sample per packet.
             let mixed = mixer
                 .mix(Pcm16Chunk {
-                    // 40 us of slip per packet crosses a frame boundary often.
                     timestamp: Duration::from_nanos(packet * 10_000_000 + packet * 40_000),
                     frames: 480,
                     discontinuous: false,
@@ -1142,7 +1101,6 @@ mod tests {
             heard.extend(samples(&mixed));
         }
 
-        // Past the first alignment every step must be the ramp's own step.
         let settled = &heard[480..];
         let steps = settled
             .windows(2)

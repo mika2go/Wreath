@@ -6,14 +6,15 @@ use windows::Win32::System::Registry::{
 use windows::core::w;
 
 const RUN_KEY: windows::core::PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-/// Task Manager's startup tab and the Settings startup page disable an entry
-/// here instead of deleting it, and an entry disabled this way never runs no
-/// matter how correct the `Run` value looks.
 const APPROVAL_KEY: windows::core::PCWSTR =
     w!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run");
 const VALUE_NAME: windows::core::PCWSTR = w!("Wreath");
 
 pub fn is_enabled() -> bool {
+    run_command().is_some_and(|command| command_is_enabled(&command)) && !approval_withdrawn()
+}
+
+fn run_command() -> Option<String> {
     unsafe {
         let mut byte_length = 0_u32;
         if RegGetValueW(
@@ -27,7 +28,7 @@ pub fn is_enabled() -> bool {
         ) != ERROR_SUCCESS
             || byte_length <= size_of::<u16>() as u32
         {
-            return false;
+            return None;
         }
         let mut command = vec![0_u16; byte_length.div_ceil(size_of::<u16>() as u32) as usize];
         if RegGetValueW(
@@ -40,10 +41,27 @@ pub fn is_enabled() -> bool {
             Some(&mut byte_length),
         ) != ERROR_SUCCESS
         {
-            return false;
+            return None;
         }
-        command_is_enabled(&command) && !approval_withdrawn()
+        let end = command
+            .iter()
+            .position(|unit| *unit == 0)
+            .unwrap_or(command.len());
+        Some(String::from_utf16_lossy(&command[..end]))
     }
+}
+
+pub fn repair() -> Result<bool, String> {
+    let Some(command) = run_command().filter(|command| command_is_enabled(command)) else {
+        return Ok(false);
+    };
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let expected = autostart_command(&tray_executable(&executable));
+    if commands_match(&command, &expected) {
+        return Ok(false);
+    }
+    write_run_command(&expected)?;
+    Ok(true)
 }
 
 fn approval_withdrawn() -> bool {
@@ -66,43 +84,45 @@ fn approval_withdrawn() -> bool {
     approval_is_disabled(&approval[..approval.len().min(byte_length as usize)])
 }
 
-/// Windows stores the state in the first byte and sets its low bit to disable.
 fn approval_is_disabled(approval: &[u8]) -> bool {
     approval.first().is_some_and(|state| state & 1 != 0)
 }
 
-fn command_is_enabled(command: &[u16]) -> bool {
-    let end = command
-        .iter()
-        .position(|unit| *unit == 0)
-        .unwrap_or(command.len());
-    !String::from_utf16_lossy(&command[..end]).trim().is_empty()
+fn command_is_enabled(command: &str) -> bool {
+    !command.trim().is_empty()
+}
+
+fn autostart_command(tray: &std::path::Path) -> String {
+    format!("\"{}\"", tray.display())
+}
+
+fn commands_match(current: &str, expected: &str) -> bool {
+    current.trim().eq_ignore_ascii_case(expected.trim())
+}
+
+fn write_run_command(command: &str) -> Result<(), String> {
+    let wide = command.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let byte_length = u32::try_from(wide.len().saturating_mul(size_of::<u16>()))
+        .map_err(|_| "autostart command is too long".to_owned())?;
+    let result = unsafe {
+        RegSetKeyValueW(
+            HKEY_CURRENT_USER,
+            RUN_KEY,
+            VALUE_NAME,
+            REG_SZ.0,
+            Some(wide.as_ptr().cast()),
+            byte_length,
+        )
+    };
+    result
+        .ok()
+        .map_err(|error| format!("cannot enable Wreath autostart: {error}"))
 }
 
 pub fn set_enabled(enabled: bool) -> Result<(), String> {
     if enabled {
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-        let tray = tray_executable(&executable);
-        let command = format!("\"{}\"", tray.display());
-        let wide = command.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-        let byte_length = u32::try_from(wide.len().saturating_mul(size_of::<u16>()))
-            .map_err(|_| "autostart command is too long".to_owned())?;
-        let result = unsafe {
-            RegSetKeyValueW(
-                HKEY_CURRENT_USER,
-                RUN_KEY,
-                VALUE_NAME,
-                REG_SZ.0,
-                Some(wide.as_ptr().cast()),
-                byte_length,
-            )
-        };
-        result
-            .ok()
-            .map_err(|error| format!("cannot enable Wreath autostart: {error}"))?;
-        // Without this the entry stays switched off and turning it on in Wreath
-        // looks like it worked while nothing starts at the next logon. Windows
-        // treats a missing value as approved.
+        write_run_command(&autostart_command(&tray_executable(&executable)))?;
         let _ = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, APPROVAL_KEY, VALUE_NAME) };
         Ok(())
     } else {
@@ -127,7 +147,10 @@ fn tray_executable(current_executable: &std::path::Path) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{approval_is_disabled, command_is_enabled, tray_executable};
+    use super::{
+        approval_is_disabled, autostart_command, command_is_enabled, commands_match,
+        tray_executable,
+    };
     use std::path::Path;
 
     #[test]
@@ -143,17 +166,31 @@ mod tests {
 
     #[test]
     fn installer_placeholder_does_not_enable_autostart() {
-        assert!(!command_is_enabled(&[0]));
-        assert!(!command_is_enabled(&[' ' as u16, 0]));
+        assert!(!command_is_enabled(""));
+        assert!(!command_is_enabled(" "));
     }
 
     #[test]
     fn executable_command_enables_autostart() {
-        let command = r#""C:\Program Files\Wreath\wreath-tray.exe""#
-            .encode_utf16()
-            .chain(Some(0))
-            .collect::<Vec<_>>();
-        assert!(command_is_enabled(&command));
+        assert!(command_is_enabled(
+            r#""C:\Program Files\Wreath\wreath-tray.exe""#
+        ));
+    }
+
+    #[test]
+    fn a_startup_entry_from_another_installation_is_rewritten() {
+        let current = autostart_command(&tray_executable(Path::new(
+            r"C:\Users\Mika\AppData\Local\Wreath\wreath-tray.exe",
+        )));
+
+        assert!(commands_match(
+            r#" "c:\users\mika\appdata\local\wreath\wreath-tray.exe" "#,
+            &current
+        ));
+        assert!(!commands_match(
+            r#""C:\Program Files\Wreath\wreath-tray.exe""#,
+            &current
+        ));
     }
 
     #[test]

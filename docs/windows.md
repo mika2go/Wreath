@@ -26,6 +26,14 @@ control channel is bounded at both ends: the daemon drops a client that stalls
 mid-request instead of blocking the loop, and a client stops waiting for an
 answer that is not coming.
 
+A capture that cannot be built does not end the recorder. The display, the GPU
+and the audio endpoint are regularly a few seconds behind an autostart at logon,
+and a daemon that exited over that left the shortcut dead until something else
+started a new one. Instead the control channel and the shortcut stay up, the
+status reports why there is no capture, and the daemon rebuilds the pipeline
+itself every thirty idle seconds until one holds — with no client, no tray and
+no logon needed for the retry.
+
 The shortcut does not use that channel at all: a press reaches the capture
 worker directly inside the daemon, so a busy pipe cannot swallow it, and a
 replay save that never returns stops blocking the shortcut after a minute. A
@@ -35,9 +43,25 @@ Windows still delivers it and registers it again once it does not, which is what
 a session switch or a locked screen can silently cause. As a second safety net,
 the daemon renews even an apparently healthy registration every five hours, so a
 machine that keeps stale registration state cannot leave the shortcut dead until
-the next restart. What no registration can repair is elevation: Windows withholds
+the next restart. Choosing the shortcut that is already configured is not a
+no-op either: it registers the combination again, so answering a dead shortcut
+the obvious way works instead of being acknowledged and ignored. What no
+registration can repair is elevation: Windows withholds
 the shortcut from an unelevated recorder while an elevated window is in the
 foreground, so the log records at startup which of the two the recorder is.
+
+Capture itself is watched the same way, because Windows Graphics Capture also
+stops without saying so. A display that went to sleep, a session switch, a
+driver that reset, a monitor whose mode changed: some of those close the session
+and some only end the frames, and from inside the recorder a dead session looks
+exactly like a screen that is holding still. A minute without a frame is
+therefore answered with a new capture session rather than an error — it costs
+milliseconds and delivers the current screen at once. Left alone, that silence
+is what a machine idling overnight comes back to: audio keeps filling the ring,
+the last video is pushed out of it, and the shortcut can only report that there
+is nothing to save. Two faults are not a stall and are reported as errors for
+the recovery path to rebuild: a graphics device that was lost, and an encoder
+that accepts frames for thirty seconds without returning one.
 
 The tray opens or focuses the full application and its menu saves a replay,
 pauses or resumes capture, opens clips or the configuration file, and enables
@@ -45,10 +69,14 @@ per-user startup. Enabling startup writes only `wreath-tray.exe` to
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`; it requires no service
 and no administrator rights. Windows can switch that entry off separately in its
 own startup list, which Wreath reports as disabled rather than claiming an
-autostart that never runs. The tray survives a logon that beats Explorer to the
-notification area and an Explorer restart afterwards: it keeps trying to place
-its icon instead of giving up, and starts the recorder later if it could not
-reach it at logon.
+autostart that never runs. An entry that points at an installation somewhere
+else is pointed back at the tray next to the running executable, because Windows
+starts nothing and says nothing when the path in it no longer exists while
+Wreath keeps reporting autostart as enabled; only an entry that is already there
+is rewritten, so this never switches autostart on by itself. The tray survives a
+logon that beats Explorer to the notification area and an Explorer restart
+afterwards: it keeps trying to place its icon instead of giving up, and starts
+the recorder later if it could not reach it at logon.
 
 The native application uses the same Wreath mark for its window, executable,
 installer, and notification-area icon. Its sidebar expands only when there is
@@ -200,6 +228,9 @@ exceed 512 MB is rejected explicitly instead of silently retaining a shorter
 clip. The tray checks health every five seconds and automatically attempts a
 failed pipeline recovery after sleep/resume or display-mode changes. Failed
 recovery attempts use a 30-second backoff to avoid a resource-heavy restart loop.
+The recorder no longer depends on that: it runs the same recovery on its own
+whenever the control channel has been idle for thirty seconds, so a capture that
+failed is rebuilt even with no tray and no application running.
 
 ## Build the NSIS installer
 

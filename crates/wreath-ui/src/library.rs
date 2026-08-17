@@ -95,7 +95,6 @@ impl ClipViews {
     }
 
     pub fn refresh(&self) {
-        // Navigation also calls this, so nested collection changes appear at once.
         self.refresh.emit_clicked();
     }
 

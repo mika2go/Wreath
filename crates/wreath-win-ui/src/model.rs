@@ -304,7 +304,6 @@ impl TextInput {
     }
 }
 
-/// The named quality steps, from the cheapest replay buffer to the largest.
 pub const QUALITY_PRESETS: [(u8, &str); 5] = [
     (50, "Low"),
     (65, "Medium"),
@@ -313,8 +312,6 @@ pub const QUALITY_PRESETS: [(u8, &str); 5] = [
     (100, "Insane"),
 ];
 
-/// A value set through `wreathctl config quality` keeps its percentage rather
-/// than borrowing a name it does not match.
 pub fn quality_label(quality: u8) -> String {
     QUALITY_PRESETS
         .iter()
@@ -469,7 +466,6 @@ pub struct UiModel {
     pub hotkey_error: Option<String>,
     pub displays: Vec<DisplayOption>,
     pub microphone_names: Vec<(String, String)>,
-    /// Active playback endpoints as (endpoint ID, friendly name).
     pub output_names: Vec<(String, String)>,
     pub player_ready: bool,
     pub player_playing: bool,
@@ -963,8 +959,6 @@ impl UiModel {
             .or_else(|| self.displays.first())
     }
 
-    /// Each choice carries a name and the size a full replay reaches on the
-    /// selected monitor, at the configured frame rate, codec and duration.
     pub fn quality_options(&self) -> Vec<QualityOption> {
         let (width, height) = self
             .selected_display()
@@ -1307,11 +1301,9 @@ mod tests {
         model.config.capture.monitor = Some("DISPLAY1".into());
         model.config.capture.frames_per_second = 50;
 
-        // Hardware encoders could not sustain 144, so it only dropped frames.
         assert_eq!(model.frame_rate_options(), vec![30, 48, 50, 60]);
     }
 
-    /// A bare percentage says nothing about what a setting costs.
     #[test]
     fn quality_choices_are_named_and_carry_their_clip_size() {
         let mut model = model();
@@ -1338,7 +1330,6 @@ mod tests {
         assert_eq!(option.megabytes, 98);
         assert_eq!(option.seconds, 30);
 
-        // A lower setting has to read as visibly cheaper.
         let cheaper = options
             .iter()
             .find(|option| option.value == 50)
@@ -1347,7 +1338,6 @@ mod tests {
         assert_eq!(cheaper.megabytes, 79);
     }
 
-    /// A quality set from the command line is not one of the steps.
     #[test]
     fn a_quality_outside_the_steps_keeps_its_percentage() {
         let mut model = model();

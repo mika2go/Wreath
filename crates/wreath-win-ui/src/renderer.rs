@@ -43,15 +43,6 @@ use crate::model::{
     quality_label,
 };
 
-// THESIS: one calm, local clipping workspace; refuse the old icon rail and
-// tabbed settings page in favor of the supplied full-height navigation shell.
-// OWN-WORLD: #0b0b0c canvas, #111113 panels, warm-white type, one-pixel
-// #2a2a2d contours, ten-pixel cards, compact Segoe UI controls.
-// STORY: save a replay, find it, organize it, and tune capture in one scan.
-// FIRST VIEWPORT: 244px sidebar, 40px content inset, page tools at the top,
-// dense four-column media grid; settings use a 2x2 panel matrix.
-// FORM: pinned reference reproduction, operate mode, seed key WREATH-REF-2026.
-// FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
 const CANVAS: u32 = 0x0b0b0c;
 const STAGE: u32 = 0x101011;
 const SURFACE: u32 = 0x121214;
@@ -339,8 +330,6 @@ fn home_girl_layout(
     (destination, text_right)
 }
 
-/// Decoration: it stays below the last settings row and is dropped rather than
-/// shrunk when a short window leaves no room.
 fn settings_sticker_layout(left: f32, right: f32, height: f32) -> Option<LogicalRect> {
     const MINIMUM_HEIGHT: f32 = 97.0;
     const MAXIMUM_HEIGHT: f32 = 190.0;
@@ -398,7 +387,6 @@ pub struct Renderer {
     settings_sticker: Option<ID2D1Bitmap>,
     thumbnails: HashMap<PathBuf, ID2D1Bitmap>,
     clip_durations: HashMap<PathBuf, Option<u64>>,
-    /// Least recently drawn first, so the cache can be bounded.
     thumbnail_order: VecDeque<PathBuf>,
     unavailable_thumbnails: HashSet<PathBuf>,
     consecutive_failures: u32,
@@ -408,8 +396,6 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    /// Bounded: an unbounded cache turned a large library into hundreds of
-    /// megabytes of bitmaps that were never drawn again.
     const MAX_THUMBNAILS: usize = 96;
 
     pub fn new() -> Result<Self, String> {
@@ -565,8 +551,6 @@ impl Renderer {
         self.unavailable_thumbnails.clear();
     }
 
-    /// Drops render-target-bound images while the window is hidden or the
-    /// target is being rebuilt. They are decoded again on the next paint.
     pub fn release_cached_images(&mut self) {
         self.home_girl = None;
         self.settings_sticker = None;
@@ -601,8 +585,6 @@ impl Renderer {
             .map(|hit| hit.action.clone())
     }
 
-    /// Starts the 120–140 ms Figma hover settle whenever the pointer crosses
-    /// into a different interactive region.
     pub fn update_hover(&mut self, x: f32, y: f32) -> bool {
         let next = self.hit_test(x, y);
         if next == self.hovered {
@@ -5717,7 +5699,6 @@ impl Renderer {
         Ok(())
     }
 
-    /// Only the glyph moves on hover; the hit target keeps its full size.
     fn floating_icon(
         &mut self,
         area: LogicalRect,
@@ -6668,7 +6649,6 @@ mod tests {
         assert!(area.contains(1_300.0, 384.0));
     }
 
-    /// Decoration: it disappears rather than overlap a control on a short window.
     #[test]
     fn the_settings_sticker_never_reaches_the_controls() {
         let rows_bottom = settings_row_top(2) + SETTINGS_ROW_HEIGHT;

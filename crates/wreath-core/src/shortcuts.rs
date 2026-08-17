@@ -67,7 +67,6 @@ pub fn install(
     replace(None, hotkey, control_executable)
 }
 
-/// Restores a runtime-only Hyprland bind after compositor reloads.
 pub fn ensure(hotkey: &HotkeyConfig, control_executable: &Path) -> Result<bool, ShortcutError> {
     if !hotkey.is_bound() {
         return Ok(false);

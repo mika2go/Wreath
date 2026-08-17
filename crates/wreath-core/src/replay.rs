@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use crate::config::{Codec, Config};
 use crate::display::Monitor;
 
-/// Platform-neutral description of the replay stream Wreath should keep resident.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplaySpec {
     pub monitor: String,
@@ -45,9 +44,6 @@ impl ReplaySpec {
         }
     }
 
-    /// Roughly 0.15 bits per pixel at the default quality: between the original
-    /// 0.2 and the 0.08-0.10 streaming services use, which was too far in one
-    /// step for a constant-bitrate encoder.
     pub fn target_bitrate_kbps(&self) -> u32 {
         let pixels_per_second =
             u64::from(self.width) * u64::from(self.height) * u64::from(self.frames_per_second);
@@ -76,7 +72,6 @@ impl ReplaySpec {
     }
 }
 
-/// An external Linux process or an in-process Windows capture pipeline.
 pub trait ReplayRecorder {
     type Error: Error;
 
@@ -85,7 +80,6 @@ pub trait ReplayRecorder {
     fn stop(&mut self) -> Result<(), Self::Error>;
 }
 
-/// Keeps the daemon lifecycle independent of the platform capture API.
 pub trait ReplayBackend {
     type Error: Error;
     type Recorder: ReplayRecorder<Error = Self::Error>;
@@ -125,7 +119,6 @@ mod tests {
         assert!(replay.estimated_buffer_megabytes() < 100);
     }
 
-    /// The defaults have to land at a shareable size, not the encoder ceiling.
     #[test]
     fn default_clips_stay_shareable_at_common_resolutions() {
         let sizes = [(1920, 1080, 60), (2560, 1440, 105), (3840, 2160, 230)];

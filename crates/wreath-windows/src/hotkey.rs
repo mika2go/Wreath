@@ -11,8 +11,6 @@ const MOD_NOREPEAT_VALUE: u32 = 0x4000;
 const VK_F1: u32 = 0x70;
 const VK_F24: u32 = 0x87;
 
-/// OEM keys keep their virtual-key number: the printed label depends on the
-/// active keyboard layout.
 pub fn key_name_from_virtual_key(virtual_key: u32) -> Option<String> {
     let name = match virtual_key {
         0x08 => "BACKSPACE",
@@ -188,7 +186,6 @@ pub fn default_windows_hotkey() -> HotkeyConfig {
     }
 }
 
-/// The original default used the OS-reserved Windows key.
 pub fn migrate_legacy_windows_hotkey(hotkey: &mut HotkeyConfig) -> bool {
     if (hotkey.modifiers == ["SUPER", "SHIFT"] || hotkey.modifiers == ["CTRL", "ALT"])
         && hotkey.key == "R"
@@ -200,8 +197,6 @@ pub fn migrate_legacy_windows_hotkey(hotkey: &mut HotkeyConfig) -> bool {
     }
 }
 
-/// Keeps two presses from starting two saves. It expires on its own, because a
-/// flag only the worker cleared left the shortcut dead once one never returned.
 #[derive(Debug)]
 pub struct SaveGuard {
     started: std::sync::Mutex<Option<std::time::Instant>>,
@@ -216,7 +211,6 @@ impl SaveGuard {
         }
     }
 
-    /// Also grants it when the running save outlived every timeout it can hit.
     pub fn acquire(&self, now: std::time::Instant) -> bool {
         let mut started = self.locked();
         match *started {
@@ -272,8 +266,6 @@ impl fmt::Display for HotkeyError {
 
 impl std::error::Error for HotkeyError {}
 
-/// Ctrl/Shift plus one key, or a standalone function/Print Screen key. Applied
-/// only when choosing a new key, so existing configs stay loadable.
 pub fn validate_hotkey_choice(hotkey: &HotkeyConfig) -> Result<(), HotkeyError> {
     if !hotkey.is_bound() {
         return Ok(());
@@ -316,10 +308,6 @@ impl TryFrom<&HotkeyConfig> for NativeHotkey {
     }
 }
 
-/// Windows delivers no `WM_HOTKEY` to a process running below the integrity
-/// level of the foreground window, so a shortcut that only dies while an
-/// elevated application is focused is not a broken registration. Recorded at
-/// startup, because the log is the only place that distinction is visible.
 #[cfg(target_os = "windows")]
 pub fn process_is_elevated() -> Option<bool> {
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -395,14 +383,9 @@ struct HotkeyRebind {
 const REBIND_MESSAGE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
 #[cfg(target_os = "windows")]
 const HOTKEY_WATCHDOG_INTERVAL_MS: u32 = 5_000;
-/// Even a registration that still looks healthy is renewed periodically. This
-/// gives machines whose session/desktop transition cannot be detected by the
-/// duplicate-registration probe a bounded recovery time.
 #[cfg(target_os = "windows")]
 const HOTKEY_FORCED_REFRESH_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(5 * 60 * 60);
-/// Held for the length of one liveness probe. Presses landing in that window
-/// arrive under this id, so the loop accepts it like the real one.
 #[cfg(target_os = "windows")]
 const HOTKEY_PROBE_ID: i32 = 0xBFFE;
 
@@ -430,9 +413,6 @@ impl HotkeyListener {
                 let mut current_hotkey = hotkey;
                 let mut registration = match register_optional(id, &current_hotkey) {
                     Ok(registration) => registration,
-                    // A shortcut another application holds must not take the
-                    // service down; the watchdog claims it once it is free. An
-                    // untranslatable one stays fatal, since no retry fixes it.
                     Err(error @ HotkeyError::Registration(_)) => {
                         wreath_core::diagnostic!(
                             "Wreath hotkey: {current_hotkey} is unavailable, watchdog will retry every {} seconds: {error}",
@@ -553,7 +533,6 @@ impl HotkeyListener {
         })
     }
 
-    /// A shortcut Windows rejects restores the previous registration.
     pub fn rebind(&self, hotkey: &HotkeyConfig) -> Result<(), HotkeyError> {
         use windows::Win32::Foundation::{LPARAM, WPARAM};
         use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
@@ -561,9 +540,6 @@ impl HotkeyListener {
         if hotkey.is_bound() {
             NativeHotkey::try_from(hotkey)?;
         }
-        // Rendezvous: a buffered reply could be accepted after this call gave up
-        // waiting, leaving the thread on the new shortcut and the caller on the
-        // old one.
         let (reply_sender, reply_receiver) = std::sync::mpsc::sync_channel(0);
         self.rebind
             .send(HotkeyRebind {
@@ -579,9 +555,6 @@ impl HotkeyListener {
     }
 }
 
-/// A working registration is never given up per tick: that lost presses in the
-/// gap and let another application claim the combination for good. It is only
-/// replaced once a probe shows Windows is no longer delivering it.
 #[cfg(target_os = "windows")]
 fn refresh_registration(
     id: i32,
@@ -632,9 +605,6 @@ enum RegistrationState {
     Unknown(String),
 }
 
-/// Windows refuses a combination that is already registered. Only that exact
-/// error proves that either our registration or another owner still holds it;
-/// every other error is inconclusive and must not be reported as healthy.
 #[cfg(target_os = "windows")]
 fn registration_state(hotkey: &HotkeyConfig) -> RegistrationState {
     use windows::Win32::Foundation::{ERROR_HOTKEY_ALREADY_REGISTERED, WIN32_ERROR};
@@ -875,7 +845,6 @@ mod tests {
         assert!(registration.is_some());
         assert!(HotkeyRegistration::register(99, &hotkey).is_err());
 
-        // No window in between for another application to take it.
         refresh_registration(44, &hotkey, &mut registration, false);
         assert!(registration.is_some());
         assert!(HotkeyRegistration::register(99, &hotkey).is_err());
@@ -894,8 +863,6 @@ mod tests {
         refresh_registration(45, &hotkey, &mut registration, false);
         assert!(registration.is_some());
 
-        // What a session switch does: the owner keeps a handle that delivers
-        // nothing, so only a probe can tell the shortcut is gone.
         unsafe { UnregisterHotKey(None, 45) }.unwrap();
         refresh_registration(45, &hotkey, &mut registration, false);
 

@@ -32,8 +32,6 @@ pub struct CaptureInfo {
     pub height: u32,
 }
 
-/// Two-frame handoff queue: when the encoder is busy, frames are dropped rather
-/// than queued into growing GPU memory.
 #[cfg(target_os = "windows")]
 pub struct MonitorCapture {
     frame_pool: Direct3D11CaptureFramePool,
@@ -90,8 +88,6 @@ impl MonitorCapture {
         let session = frame_pool
             .CreateCaptureSession(&item)
             .map_err(initialization_error)?;
-        // Drop the colored monitor outline. Builds without IGraphicsCaptureSession2
-        // keep their default.
         let _ = session.SetIsBorderRequired(false);
         session
             .SetIsCursorCaptureEnabled(capture_cursor)

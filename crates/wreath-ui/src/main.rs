@@ -311,8 +311,6 @@ fn install_responsive_layout(
         let width = window.width();
         let compact_sidebar = width < 1_080;
         let narrow_content = width < 1_080;
-        // The Windows layout keeps page headings and actions on one line for
-        // every supported window size (the Linux window minimum is 980 px).
         let compact_header = width < 900;
         let clip_columns = clip_columns_for_window(width);
         let collection_columns = collection_columns_for_window(width);

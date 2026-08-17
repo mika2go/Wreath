@@ -122,8 +122,6 @@ pub fn build() -> HomeView {
     mascot.set_size_request(356, 430);
     mascot.set_overflow(gtk::Overflow::Hidden);
     let mascot_picture = embedded_picture(HOME_GIRL_PNG);
-    // The source artwork is 1206×1693. GTK must be allowed to scale it into
-    // the Windows-sized destination instead of requesting its full source size.
     mascot_picture.set_can_shrink(true);
     mascot_picture.set_content_fit(ContentFit::Contain);
     mascot_picture.set_size_request(356, 500);
