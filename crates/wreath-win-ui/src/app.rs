@@ -1472,10 +1472,9 @@ fn poll_trim_updates(state: &mut AppState) -> bool {
 
 fn begin_hotkey_update(state: &mut AppState, hotkey: wreath_core::config::HotkeyConfig) {
     cancel_hotkey_capture(&mut state.model);
-    if hotkey == state.model.config.hotkey {
-        state.model.notice = None;
-        return;
-    }
+    // Pressing the configured shortcut again is not a no-op: it is how a
+    // shortcut Windows stopped delivering gets registered again, so the request
+    // goes to the recorder even when nothing about the choice changed.
     state.model.hotkey_pending = true;
     state.model.hotkey_deferred = false;
     state.model.hotkey_error = None;

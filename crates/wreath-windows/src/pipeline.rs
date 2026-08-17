@@ -14,6 +14,62 @@ const CONTROL_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// Too few and a hardware encoder cannot pipeline, so frames arriving while all
 /// are busy get dropped and the picture holds still.
 const ENCODER_SURFACE_COUNT: usize = 6;
+/// How long the loop waits for frames, audio or a command before it checks that
+/// capture is still alive. Nothing else wakes it, so without this a pipeline
+/// that stopped receiving anything would sit in the select forever.
+#[cfg(target_os = "windows")]
+const HEALTH_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+/// Windows Graphics Capture delivers nothing while the screen does not change,
+/// and it also stops for good after some display, session and driver
+/// transitions without closing the session or reporting anything at all. From
+/// the outside the two look identical, which is why a silent minute is answered
+/// with a fresh capture session instead of an error: recreating it costs
+/// milliseconds, immediately delivers the current screen, and keeps video in
+/// the replay. Left alone, the machine that idles overnight comes back to a
+/// buffer whose video was pushed out by audio and a shortcut that can only
+/// report that there is nothing to save.
+#[cfg(any(target_os = "windows", test))]
+const CAPTURE_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Frames going in with nothing coming back out is the hardware encoder itself
+/// wedged, which a new capture session cannot repair; only a rebuilt pipeline
+/// does, so this is reported as an error for the recovery path to pick up.
+#[cfg(any(target_os = "windows", test))]
+const ENCODER_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureVerdict {
+    Healthy,
+    /// Frames go in, nothing comes out.
+    EncoderStalled,
+    /// Nothing comes in, and whether that is a screen holding still or a
+    /// session Windows quietly dropped cannot be told apart from here.
+    RestartCapture,
+}
+
+/// `silent_for` is measured from the newer of the last frame and the current
+/// capture session, so a restart that changed nothing is not read as one more
+/// stall immediately, and a session that stays dead is still retried at a fixed
+/// interval. The encoder is only suspected while frames really are arriving:
+/// after a restart that produced none, an idle encoder is the consequence, not
+/// the cause.
+#[cfg(any(target_os = "windows", test))]
+fn capture_verdict(
+    since_frame: std::time::Duration,
+    since_packet: std::time::Duration,
+    silent_for: std::time::Duration,
+) -> CaptureVerdict {
+    if since_frame >= CAPTURE_STALL_TIMEOUT {
+        if silent_for >= CAPTURE_STALL_TIMEOUT {
+            return CaptureVerdict::RestartCapture;
+        }
+        return CaptureVerdict::Healthy;
+    }
+    if since_packet >= ENCODER_STALL_TIMEOUT {
+        return CaptureVerdict::EncoderStalled;
+    }
+    CaptureVerdict::Healthy
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PipelineRunState {
@@ -628,9 +684,9 @@ fn run_pipeline(
 
     let (
         runtime,
-        _capture,
+        mut capture,
         capture_info,
-        frames,
+        mut frames,
         converter,
         mut available_surfaces,
         encoder,
@@ -660,6 +716,7 @@ fn run_pipeline(
     let mut recording = true;
     let mut skipped_frames = 0_u64;
     let mut last_report = std::time::Instant::now();
+    let mut health = CaptureHealth::started(std::time::Instant::now());
     loop {
         drain_encoder_events(
             &encoder,
@@ -668,7 +725,11 @@ fn run_pipeline(
             &mut in_flight_surfaces,
             &mut available_surfaces,
             status,
+            &mut health,
         )?;
+        if recording {
+            health.check(&runtime, &config, &capture_info, &mut capture, &mut frames)?;
+        }
         if last_report.elapsed() >= std::time::Duration::from_secs(30) {
             last_report = std::time::Instant::now();
             crate::memory::report(
@@ -703,7 +764,11 @@ fn run_pipeline(
                     .expect("microphone presence checked"),
             )
         });
-        let operation = selector.select();
+        // A timeout is not an idle pipeline: it is the only moment a capture that
+        // went silent can be noticed, so it returns to the health check above.
+        let Ok(operation) = selector.select_timeout(HEALTH_CHECK_INTERVAL) else {
+            continue;
+        };
 
         if operation.index() == command_index {
             let command = operation
@@ -735,6 +800,9 @@ fn run_pipeline(
                     buffer.reset();
                     update_buffer_status(status, &buffer);
                     recording = true;
+                    // Nothing arrived while paused, and that must not read as a
+                    // stalled capture the moment recording continues.
+                    health = CaptureHealth::started(std::time::Instant::now());
                     update_status(status, |pipeline| {
                         pipeline.state = PipelineRunState::Recording
                     });
@@ -798,6 +866,7 @@ fn run_pipeline(
             let frame = operation
                 .recv(&frames)
                 .map_err(|error| VideoError::Initialization(error.to_string()))?;
+            health.note_frame(std::time::Instant::now());
             drain_encoder_events(
                 &encoder,
                 &mut input_requests,
@@ -805,6 +874,7 @@ fn run_pipeline(
                 &mut in_flight_surfaces,
                 &mut available_surfaces,
                 status,
+                &mut health,
             )?;
             if input_requests == 0 || available_surfaces.is_empty() {
                 // The frame never reaches the clip and the picture holds.
@@ -977,6 +1047,114 @@ impl MarshaledMediaType {
     }
 }
 
+/// What the pipeline knows about capture still being alive. Neither Windows
+/// Graphics Capture nor a Media Foundation encoder reports having given up: both
+/// simply stop, and only the absence of what they should be delivering shows it.
+#[cfg(target_os = "windows")]
+struct CaptureHealth {
+    last_frame: std::time::Instant,
+    last_packet: std::time::Instant,
+    capture_started: std::time::Instant,
+    silent_restarts: u64,
+}
+
+#[cfg(target_os = "windows")]
+impl CaptureHealth {
+    fn started(now: std::time::Instant) -> Self {
+        Self {
+            last_frame: now,
+            last_packet: now,
+            capture_started: now,
+            silent_restarts: 0,
+        }
+    }
+
+    fn note_frame(&mut self, now: std::time::Instant) {
+        self.last_frame = now;
+    }
+
+    fn note_packet(&mut self, now: std::time::Instant) {
+        self.last_packet = now;
+    }
+
+    fn verdict(&self, now: std::time::Instant) -> CaptureVerdict {
+        capture_verdict(
+            now.saturating_duration_since(self.last_frame),
+            now.saturating_duration_since(self.last_packet),
+            now.saturating_duration_since(self.last_frame.max(self.capture_started)),
+        )
+    }
+
+    fn check(
+        &mut self,
+        runtime: &crate::video::VideoRuntime,
+        config: &wreath_core::config::Config,
+        capture_info: &crate::capture::CaptureInfo,
+        capture: &mut crate::capture::MonitorCapture,
+        frames: &mut crossbeam_channel::Receiver<crate::capture::CapturedFrame>,
+    ) -> Result<(), crate::video::VideoError> {
+        use crate::video::VideoError;
+
+        let now = std::time::Instant::now();
+        // A driver reset, a GPU that was hot-swapped and a Windows driver update
+        // all leave every object built on this device permanently unusable.
+        if let Err(error) = unsafe { runtime.device().GetDeviceRemovedReason() } {
+            return Err(VideoError::Initialization(format!(
+                "the graphics device was lost: {error}"
+            )));
+        }
+        match self.verdict(now) {
+            CaptureVerdict::Healthy => {
+                if now.saturating_duration_since(self.last_frame) < CAPTURE_STALL_TIMEOUT {
+                    self.silent_restarts = 0;
+                }
+                return Ok(());
+            }
+            CaptureVerdict::EncoderStalled => {
+                return Err(VideoError::Initialization(format!(
+                    "the hardware encoder accepted frames but returned none for {} seconds",
+                    ENCODER_STALL_TIMEOUT.as_secs()
+                )));
+            }
+            CaptureVerdict::RestartCapture => {}
+        }
+
+        let display = crate::display::select_display(config.capture.monitor.as_deref())?;
+        let (replacement, replacement_info, replacement_frames) =
+            crate::capture::MonitorCapture::start_primary(
+                runtime.device(),
+                display.handle,
+                &display.target.name,
+                config.capture.frames_per_second,
+                config.capture.cursor,
+            )?;
+        // The encoder, its surfaces and the buffered replay are all sized for the
+        // old geometry, so a display that came back different needs the rebuild
+        // an error asks for rather than a new session.
+        if replacement_info.width != capture_info.width
+            || replacement_info.height != capture_info.height
+        {
+            return Err(VideoError::Initialization(
+                "display resolution changed; reload Wreath to recreate the GPU pipeline".into(),
+            ));
+        }
+        *capture = replacement;
+        *frames = replacement_frames;
+        self.capture_started = now;
+        self.silent_restarts = self.silent_restarts.saturating_add(1);
+        // Restarts stay quiet while they keep finding a screen that is simply
+        // not changing; the log is the only record a background recorder leaves.
+        if self.silent_restarts.is_power_of_two() {
+            wreath_core::diagnostic!(
+                "Wreath capture: no frame for {} seconds, capture session restarted ({} restarts without a frame so far)",
+                now.saturating_duration_since(self.last_frame).as_secs(),
+                self.silent_restarts
+            );
+        }
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn drain_encoder_events(
     encoder: &crate::encoder::HardwareVideoEncoder,
@@ -985,6 +1163,7 @@ fn drain_encoder_events(
     in_flight: &mut std::collections::VecDeque<crate::conversion::Nv12Surface>,
     available: &mut Vec<crate::conversion::Nv12Surface>,
     status: &std::sync::Arc<std::sync::RwLock<PipelineStatus>>,
+    health: &mut CaptureHealth,
 ) -> Result<(), crate::video::VideoError> {
     use crate::encoder::EncoderEvent;
 
@@ -993,6 +1172,7 @@ fn drain_encoder_events(
             EncoderEvent::NeedInput => *input_requests = input_requests.saturating_add(1),
             EncoderEvent::HaveOutput => {
                 if let Some(packet) = encoder.take_packet()? {
+                    health.note_packet(std::time::Instant::now());
                     buffer.push(packet);
                     if let Some(surface) = in_flight.pop_front() {
                         available.push(surface);
@@ -1117,6 +1297,72 @@ mod tests {
         // 32_700 and -32_768 count; 32_699 sits just below the threshold.
         assert_eq!(clipped_samples(&samples), 2);
         assert_eq!(clipped_samples(&[]), 0);
+    }
+
+    /// A capture that stopped delivering reports nothing, so the absence itself
+    /// has to be acted on; the buffer is otherwise emptied of video by audio
+    /// over a night and the shortcut has nothing left to save.
+    #[test]
+    fn a_capture_that_went_silent_is_restarted() {
+        use std::time::Duration;
+
+        let recent = Duration::from_secs(1);
+
+        assert_eq!(
+            capture_verdict(recent, recent, recent),
+            CaptureVerdict::Healthy
+        );
+        assert_eq!(
+            capture_verdict(
+                CAPTURE_STALL_TIMEOUT,
+                CAPTURE_STALL_TIMEOUT,
+                CAPTURE_STALL_TIMEOUT
+            ),
+            CaptureVerdict::RestartCapture
+        );
+    }
+
+    /// Restarting the session every tick would lose whatever the pipeline
+    /// managed to buffer between two of them.
+    #[test]
+    fn a_screen_that_stays_still_is_not_restarted_every_tick() {
+        use std::time::Duration;
+
+        let silent_all_day = Duration::from_secs(60 * 60 * 8);
+
+        assert_eq!(
+            capture_verdict(silent_all_day, silent_all_day, Duration::from_secs(5)),
+            CaptureVerdict::Healthy
+        );
+    }
+
+    #[test]
+    fn frames_going_in_with_nothing_coming_out_is_a_wedged_encoder() {
+        use std::time::Duration;
+
+        assert_eq!(
+            capture_verdict(
+                Duration::from_millis(20),
+                ENCODER_STALL_TIMEOUT,
+                Duration::from_millis(20)
+            ),
+            CaptureVerdict::EncoderStalled
+        );
+    }
+
+    /// After a restart that produced no frames the encoder is idle because
+    /// nothing reaches it, and rebuilding the pipeline for that would repeat
+    /// every minute the screen is off.
+    #[test]
+    fn an_idle_encoder_without_frames_is_not_blamed() {
+        use std::time::Duration;
+
+        let silent = Duration::from_secs(60 * 60);
+
+        assert_eq!(
+            capture_verdict(silent, silent, Duration::from_secs(1)),
+            CaptureVerdict::Healthy
+        );
     }
 
     #[test]

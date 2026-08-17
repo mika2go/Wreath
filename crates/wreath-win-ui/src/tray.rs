@@ -61,6 +61,15 @@ pub fn run() -> Result<(), String> {
         let _ = unsafe { CloseHandle(single_instance) };
         return Ok(());
     }
+    match crate::autostart::repair() {
+        Ok(true) => wreath_core::diagnostic!(
+            "Wreath tray: the Windows startup entry pointed at another installation and now points here"
+        ),
+        Ok(false) => {}
+        Err(error) => wreath_core::diagnostic!(
+            "Wreath tray: cannot repair the Windows startup entry: {error}"
+        ),
+    }
     // A recorder that cannot be started at logon must not cost the tray icon as
     // well; the status timer keeps trying and the tooltip reports the state.
     if let Err(error) = ensure_daemon() {
