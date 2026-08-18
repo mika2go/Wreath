@@ -35,6 +35,10 @@ and decorative artwork are out of scope.
 | Secondary text | `#99999f` | Labels and inactive navigation |
 | Muted text | `#6f6f75` | Metadata, uppercase captions, chevrons |
 
+Icons are drawn as Direct2D paths with round caps and joins on a centred
+square inside their box, so a non-square target cannot stretch them. One
+stroke weight scales with the icon size and stays between 1.4 and 2.1 px.
+
 Windows uses Segoe UI Variable when available and Segoe UI as the fallback:
 
 - 25 px / semibold page title;
@@ -48,8 +52,10 @@ Corner radii stay between 4 and 8 px.
 ## Layout contract
 
 - Default client size 1440 × 900, minimum 980 × 680 logical pixels.
-- Sidebar: fixed 165 px with logo, three navigation entries at 40 px height,
-  and a pinned folder action plus version line.
+- Sidebar: 165 px expanded, 60 px collapsed through the chevron next to the
+  wordmark. Navigation is Clips, Collections, Ordner öffnen at 40 px height;
+  Einstellungen is pinned above the version line. Toolbar, status bar, pages
+  and the player follow the current rail width.
 - Content padding: 24 px on both sides of the main area.
 - Recording toolbar: one continuous 96 px surface holding replay status, clip
   length, display, quality, audio, the primary save action, and settings. Its
@@ -59,10 +65,12 @@ Corner radii stay between 4 and 8 px.
   with a top border, carrying replay state, storage use, hotkey, and a live
   microphone meter.
 - Clips page: page title, tab row with a thin underline on the active tab,
-  search plus filter/grid/list buttons, a separator, a 200 px filter column,
-  and a scrolling clip area.
-- Clip grid: 4/3/2/1 columns at 900/660/440 px of clip-area width, 18 px
-  column gap, 24 px row gap, 16:9 thumbnails.
+  search plus filter/grid/list buttons, a separator, and a scrolling clip area
+  over the full content width. The filter button opens a 272 px popover under
+  itself; it closes on an outside click or Escape.
+- Clip grid: 5/4/3/2/1 columns at 1460/1080/700/480 px of clip-area width,
+  16 px column gap, 18 px row gap, 16:9 thumbnails inside a card that carries a
+  hairline border and a 46 px metadata strip.
 - The clips page scrolls with the mouse wheel; day sections stay in view order
   and the library never paginates.
 - The player and editor pages replace the toolbar and status bar with their own
@@ -102,10 +110,13 @@ Corner radii stay between 4 and 8 px.
 
 ### Collections
 
-- All-clips entry and one entry per collection with clip counts.
+- A 236 px folder column in Explorer order: an all-clips entry, then one 34 px
+  row per collection with a folder icon, name and clip count, plus an A–Z
+  toggle.
+- The selected folder is shown on the right with its name, Umbenennen and
+  Löschen, above the same day-grouped clip grid the clips page uses.
 - Create and confirmed delete actions.
-- Filtered clip grid for the active collection.
-- Drag-and-drop of clips onto collection entries.
+- Clips dragged onto a folder row move into that collection.
 
 ### Player
 
