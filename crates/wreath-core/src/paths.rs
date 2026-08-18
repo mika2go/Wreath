@@ -12,6 +12,7 @@ pub enum ControlEndpoint {
 pub struct AppPaths {
     pub config_dir: PathBuf,
     pub config_file: PathBuf,
+    pub favorites_file: PathBuf,
     pub legacy_config_files: Vec<PathBuf>,
     pub cache_dir: PathBuf,
     pub thumbnail_dir: PathBuf,
@@ -54,6 +55,7 @@ impl AppPaths {
         let cache_dir = cache_root.join("wreath");
         Self {
             config_file: config_dir.join("config.toml"),
+            favorites_file: config_dir.join("favorites.json"),
             legacy_config_files: ["trace", "riftclip"]
                 .map(|name| config_root.join(name).join("config.toml"))
                 .into(),
@@ -77,6 +79,7 @@ impl AppPaths {
         let cache_dir = config_dir.join("Cache");
         Self {
             config_file: config_dir.join("config.toml"),
+            favorites_file: config_dir.join("favorites.json"),
             legacy_config_files: ["Trace", "Riftclip"]
                 .map(|name| local_app_data.join(name).join("config.toml"))
                 .into(),
@@ -93,6 +96,7 @@ impl AppPaths {
         let root = std::env::temp_dir().join("wreath");
         Self {
             config_file: root.join("config.toml"),
+            favorites_file: root.join("favorites.json"),
             legacy_config_files: Vec::new(),
             thumbnail_dir: root.join("cache").join("thumbnails"),
             cache_dir: root.join("cache"),

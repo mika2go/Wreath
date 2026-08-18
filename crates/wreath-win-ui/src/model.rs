@@ -3,17 +3,165 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use wreath_core::clips::{self, Clip, Collection};
-use wreath_core::config::Config;
+use wreath_core::config::{Config, HoverStrength, HoverStyle, Language, Theme};
+use wreath_core::favorites::Favorites;
+use wreath_core::ipc::DaemonState;
 use wreath_core::paths::AppPaths;
+
+use crate::clock::{self, Civil};
+use crate::text::{self, Strings};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
-    Home,
     Library,
     Collections,
     Settings,
     Player,
     Editor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipTab {
+    All,
+    Favorites,
+}
+
+impl ClipTab {
+    pub const fn label(self, text: &Strings) -> &'static str {
+        match self {
+            Self::All => text.tab_all_clips,
+            Self::Favorites => text.tab_favorites,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeFilter {
+    All,
+    Today,
+    Week,
+    Month,
+}
+
+impl TimeFilter {
+    pub const OPTIONS: [Self; 4] = [Self::All, Self::Today, Self::Week, Self::Month];
+
+    pub const fn label(self, text: &Strings) -> &'static str {
+        match self {
+            Self::All => text.all_time,
+            Self::Today => text.today,
+            Self::Week => text.this_week,
+            Self::Month => text.this_month,
+        }
+    }
+
+    fn keeps(self, clip: Civil, today: Civil) -> bool {
+        match self {
+            Self::All => true,
+            Self::Today => clock::within_days(clip, today, 1),
+            Self::Week => clock::within_days(clip, today, 7),
+            Self::Month => clock::same_month(clip, today),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeFilter {
+    All,
+    Replay,
+    Cut,
+}
+
+impl TypeFilter {
+    pub const OPTIONS: [Self; 3] = [Self::All, Self::Replay, Self::Cut];
+
+    pub const fn label(self, text: &Strings) -> &'static str {
+        match self {
+            Self::All => text.all,
+            Self::Replay => text.type_replays,
+            Self::Cut => text.type_cuts,
+        }
+    }
+
+    fn keeps(self, clip: &Clip) -> bool {
+        let is_cut = clip.title.contains("(cut)");
+        match self {
+            Self::All => true,
+            Self::Replay => !is_cut,
+            Self::Cut => is_cut,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizeFilter {
+    All,
+    Small,
+    Medium,
+    Large,
+}
+
+impl SizeFilter {
+    pub const OPTIONS: [Self; 4] = [Self::All, Self::Small, Self::Medium, Self::Large];
+
+    pub const fn label(self, text: &Strings) -> &'static str {
+        match self {
+            Self::All => text.all,
+            Self::Small => text.size_small,
+            Self::Medium => text.size_medium,
+            Self::Large => text.size_large,
+        }
+    }
+
+    fn keeps(self, size_bytes: u64) -> bool {
+        const SMALL: u64 = 25 * 1_048_576;
+        const LARGE: u64 = 100 * 1_048_576;
+        match self {
+            Self::All => true,
+            Self::Small => size_bytes < SMALL,
+            Self::Medium => (SMALL..=LARGE).contains(&size_bytes),
+            Self::Large => size_bytes > LARGE,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DaemonSnapshot {
+    pub state: Option<DaemonState>,
+    pub buffered_seconds: u16,
+    pub error: Option<String>,
+}
+
+impl DaemonSnapshot {
+    pub fn is_recording(&self) -> bool {
+        self.state == Some(DaemonState::Recording)
+    }
+
+    pub const fn toolbar_headline(&self, text: &Strings) -> &'static str {
+        match self.state {
+            Some(DaemonState::Recording) => text.replay_active,
+            Some(DaemonState::Starting) => text.replay_starting,
+            Some(DaemonState::Paused) => text.replay_paused,
+            Some(DaemonState::Error) => text.replay_error,
+            None => text.recorder_offline,
+        }
+    }
+
+    pub const fn status_headline(&self, text: &Strings) -> &'static str {
+        match self.state {
+            Some(DaemonState::Recording) => text.replay_running,
+            Some(DaemonState::Starting) => text.replay_starting,
+            Some(DaemonState::Paused) => text.replay_paused,
+            Some(DaemonState::Error) => text.replay_error,
+            None => text.recorder_offline,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipGroup {
+    pub label: String,
+    pub indices: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +176,6 @@ pub enum SettingsSection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Navigate(Page),
-    OpenAllClips,
     SettingsSection(SettingsSection),
     CancelPrompt,
     ConfirmPrompt,
@@ -36,18 +183,25 @@ pub enum Action {
     OpenClipMenu(usize),
     Back,
     Refresh,
-    SetLibraryPage(usize),
-    SetCollectionCardsPage(usize),
-    SetCollectionClipsPage(usize),
-    ToggleClipSort,
     SetLibraryGrid(bool),
+    SetClipTab(ClipTab),
+    Ignore,
+    ToggleFilterPanel,
+    ToggleSidebar,
+    ToggleMicrophoneTest,
+    ChooseTimeFilter,
+    ChooseCollectionFilter,
+    ChooseTypeFilter,
+    ChooseSizeFilter,
+    ChooseClipSort,
+    ResetFilters,
+    ChooseTheme,
+    ChooseLanguage,
+    ChooseHoverStyle,
+    ChooseHoverStrength,
     ToggleCollectionSort,
-    SetCollectionsGrid(bool),
     SaveReplay,
     OpenClipsFolder,
-    QuickSaveReplay,
-    QuickOpenClipsFolder,
-    QuickOpenSettings,
     Search,
     ClearSearch,
     PlaceSearchCaret(usize),
@@ -55,6 +209,8 @@ pub enum Action {
     DismissContextMenu,
     EditClip(usize),
     RenameClip(usize),
+    ToggleFavorite(usize),
+    OpenClipExternally(usize),
     RenameActiveClip,
     MoveClipToCollection { clip: usize, collection: usize },
     ToggleSelectionMode,
@@ -64,7 +220,6 @@ pub enum Action {
     MoveSelectedToCollection(usize),
     DeleteClip(usize),
     DismissNotice,
-    ToggleSidebar,
     MinimizeWindow,
     ToggleMaximizeWindow,
     CloseWindow,
@@ -312,6 +467,39 @@ pub const QUALITY_PRESETS: [(u8, &str); 5] = [
     (100, "Insane"),
 ];
 
+pub const fn theme_label(theme: Theme, text: &Strings) -> &'static str {
+    match theme {
+        Theme::Dark => text.theme_dark,
+        Theme::Light => text.theme_light,
+        Theme::Cafe => text.theme_cafe,
+    }
+}
+
+pub const fn hover_style_label(style: HoverStyle, text: &Strings) -> &'static str {
+    match style {
+        HoverStyle::Surface => text.hover_surface,
+        HoverStyle::Outline => text.hover_outline,
+        HoverStyle::Both => text.hover_both,
+    }
+}
+
+pub const fn hover_strength_label(strength: HoverStrength, text: &Strings) -> &'static str {
+    match strength {
+        HoverStrength::Off => text.strength_off,
+        HoverStrength::Subtle => text.strength_subtle,
+        HoverStrength::Normal => text.strength_normal,
+        HoverStrength::Strong => text.strength_strong,
+    }
+}
+
+pub const fn language_label(language: Language, text: &Strings) -> &'static str {
+    match language {
+        Language::System => text.language_system,
+        Language::German => text.language_german,
+        Language::English => text.language_english,
+    }
+}
+
 pub fn quality_label(quality: u8) -> String {
     QUALITY_PRESETS
         .iter()
@@ -321,6 +509,15 @@ pub fn quality_label(quality: u8) -> String {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsMenuKind {
+    Theme,
+    Language,
+    HoverStyle,
+    HoverStrength,
+    TimeFilter,
+    CollectionFilter,
+    TypeFilter,
+    SizeFilter,
+    ClipSort,
     Display,
     FrameRate,
     Duration,
@@ -399,26 +596,27 @@ impl Prompt {
         }
     }
 
-    pub fn title(&self) -> &'static str {
+    pub fn title(&self, text: &Strings) -> &'static str {
         match self.kind {
-            PromptKind::RenameClip(_) => "Clip umbenennen",
-            PromptKind::RenameCollection(_) => "Sammlung umbenennen",
-            PromptKind::NewCollection => "Neue Sammlung",
+            PromptKind::RenameClip(_) => text.rename_clip_title,
+            PromptKind::RenameCollection(_) => text.rename_collection_title,
+            PromptKind::NewCollection => text.new_collection_title,
         }
     }
 
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self, text: &Strings) -> &'static str {
         match self.kind {
-            PromptKind::RenameClip(_) => "Clip-Name",
-            PromptKind::RenameCollection(_) => "Name der Sammlung",
-            PromptKind::NewCollection => "Name der Sammlung",
+            PromptKind::RenameClip(_) => text.clip_name_label,
+            PromptKind::RenameCollection(_) | PromptKind::NewCollection => {
+                text.collection_name_label
+            }
         }
     }
 
-    pub fn confirm(&self) -> &'static str {
+    pub fn confirm(&self, text: &Strings) -> &'static str {
         match self.kind {
-            PromptKind::RenameClip(_) | PromptKind::RenameCollection(_) => "Umbenennen",
-            PromptKind::NewCollection => "Erstellen",
+            PromptKind::RenameClip(_) | PromptKind::RenameCollection(_) => text.rename,
+            PromptKind::NewCollection => text.create,
         }
     }
 }
@@ -427,6 +625,7 @@ impl Prompt {
 pub struct DisplayOption {
     pub name: String,
     pub label: String,
+    pub short_label: String,
     pub refresh_rate: f64,
     pub width: u32,
     pub height: u32,
@@ -443,13 +642,25 @@ pub struct UiModel {
     pub settings_menu: Option<SettingsMenu>,
     pub search: TextInput,
     pub search_focused: bool,
-    pub library_page: usize,
-    pub collection_cards_page: usize,
-    pub collection_clips_page: usize,
     pub clips_oldest_first: bool,
     pub library_grid: bool,
+    pub clip_tab: ClipTab,
+    pub sidebar_collapsed: bool,
+    pub filter_panel_open: bool,
+    pub filter_time: TimeFilter,
+    pub filter_collection: Option<PathBuf>,
+    pub filter_type: TypeFilter,
+    pub filter_size: SizeFilter,
+    pub library_scroll: f32,
+    pub folder_scroll: f32,
+    pub favorites: Favorites,
+    pub daemon: DaemonSnapshot,
+    pub language: Language,
+    pub microphone_level: u8,
+    pub microphone_peak_hold: u8,
+    pub microphone_test: bool,
+    pub microphone_signal: bool,
     pub collections_descending: bool,
-    pub collections_grid: bool,
     pub context_menu: Option<ClipContextMenu>,
     pub active_collection: Option<PathBuf>,
     pub active_clip: Option<usize>,
@@ -478,7 +689,6 @@ pub struct UiModel {
     pub player_last_audible_percent: u8,
     pub pending_delete: Option<DeleteTarget>,
     pub prompt: Option<Prompt>,
-    pub sidebar_expanded: bool,
     pub editor_timing: Option<wreath_core::trim::ClipTiming>,
     pub editor_source: Option<PathBuf>,
     pub editor_start: Duration,
@@ -510,24 +720,38 @@ impl UiModel {
     pub fn load() -> Result<Self, String> {
         let paths = AppPaths::discover();
         let config = Config::load(&paths).map_err(|error| error.to_string())?;
+        let favorites = Favorites::load(&paths.favorites_file, &config.storage.directory);
+        let language = text::resolve(config.appearance.language);
         let mut model = Self {
             paths,
             config,
             clips: Vec::new(),
             collections: Vec::new(),
-            page: Page::Home,
+            page: Page::Library,
             previous_page: Page::Library,
             settings_section: SettingsSection::Display,
             settings_menu: None,
             search: TextInput::new(String::new(), PROMPT_MAX_CHARACTERS),
             search_focused: false,
-            library_page: 0,
-            collection_cards_page: 0,
-            collection_clips_page: 0,
             clips_oldest_first: false,
             library_grid: true,
+            clip_tab: ClipTab::All,
+            sidebar_collapsed: false,
+            filter_panel_open: false,
+            filter_time: TimeFilter::All,
+            filter_collection: None,
+            filter_type: TypeFilter::All,
+            filter_size: SizeFilter::All,
+            library_scroll: 0.0,
+            folder_scroll: 0.0,
+            favorites,
+            daemon: DaemonSnapshot::default(),
+            language,
+            microphone_level: 0,
+            microphone_peak_hold: 0,
+            microphone_test: false,
+            microphone_signal: false,
             collections_descending: false,
-            collections_grid: true,
             context_menu: None,
             active_collection: None,
             active_clip: None,
@@ -556,7 +780,6 @@ impl UiModel {
             player_last_audible_percent: 100,
             pending_delete: None,
             prompt: None,
-            sidebar_expanded: true,
             editor_timing: None,
             editor_source: None,
             editor_start: Duration::ZERO,
@@ -583,6 +806,28 @@ impl UiModel {
         }
         self.selected_clips
             .retain(|path| self.clips.iter().any(|clip| &clip.path == path));
+        self.favorites.set_root(&self.config.storage.directory);
+        // an unavailable clip folder scans as empty; pruning then would wipe the
+        // whole list, so only prune what a readable folder tells us
+        if self.config.storage.directory.is_dir() {
+            let stored = self.favorites.len();
+            let paths = self
+                .clips
+                .iter()
+                .map(|clip| clip.path.clone())
+                .collect::<Vec<_>>();
+            self.favorites.retain_existing(&paths);
+            if self.favorites.len() != stored {
+                let _ = self.favorites.save();
+            }
+        }
+        if self
+            .filter_collection
+            .as_ref()
+            .is_some_and(|filter| !self.collections.iter().any(|item| &item.path == filter))
+        {
+            self.filter_collection = None;
+        }
         Ok(())
     }
 
@@ -592,9 +837,7 @@ impl UiModel {
             && self.page != page
         {
             self.search.clear();
-            self.library_page = 0;
-            self.collection_cards_page = 0;
-            self.collection_clips_page = 0;
+            self.library_scroll = 0.0;
         }
         self.search_focused = false;
         self.context_menu = None;
@@ -881,6 +1124,10 @@ impl UiModel {
     }
 
     pub fn visible_clip_indices(&self, limit: usize) -> Vec<usize> {
+        self.visible_clip_indices_at(limit, clock::now())
+    }
+
+    pub fn visible_clip_indices_at(&self, limit: usize, today: Civil) -> Vec<usize> {
         let library_scope = self.page == Page::Library
             || (matches!(self.page, Page::Player | Page::Editor)
                 && self.previous_page == Page::Library);
@@ -906,7 +1153,8 @@ impl UiModel {
                         || clip.path.file_name().is_some_and(|name| {
                             name.to_string_lossy().to_ascii_lowercase().contains(&query)
                         });
-                    in_collection && matches_query
+                    let matches_filters = !library_scope || self.passes_clip_filters(clip, today);
+                    in_collection && matches_query && matches_filters
                 })
                 .map(|(index, _)| index)
                 .collect::<Vec<_>>();
@@ -938,6 +1186,195 @@ impl UiModel {
             visible.reverse();
         }
         visible
+    }
+
+    fn passes_clip_filters(&self, clip: &Clip, today: Civil) -> bool {
+        if self.clip_tab == ClipTab::Favorites && !self.favorites.contains(&clip.path) {
+            return false;
+        }
+        if let Some(collection) = &self.filter_collection
+            && clip.path.parent() != Some(collection.as_path())
+        {
+            return false;
+        }
+        self.filter_time.keeps(clock::local(clip.modified), today)
+            && self.filter_type.keeps(clip)
+            && self.filter_size.keeps(clip.size_bytes)
+    }
+
+    pub fn clip_day_groups(&self, indices: &[usize], today: Civil) -> Vec<ClipGroup> {
+        let mut groups: Vec<ClipGroup> = Vec::new();
+        let mut current_day = None;
+        for index in indices {
+            let Some(clip) = self.clips.get(*index) else {
+                continue;
+            };
+            let civil = clock::local(clip.modified);
+            let day = civil.day_index();
+            if current_day != Some(day) {
+                groups.push(ClipGroup {
+                    label: clock::day_label(civil, today, self.strings()),
+                    indices: Vec::new(),
+                });
+                current_day = Some(day);
+            }
+            if let Some(group) = groups.last_mut() {
+                group.indices.push(*index);
+            }
+        }
+        groups
+    }
+
+    pub fn strings(&self) -> &'static Strings {
+        text::strings(self.language)
+    }
+
+    pub fn refresh_language(&mut self) {
+        self.language = text::resolve(self.config.appearance.language);
+    }
+
+    pub fn toggle_microphone_test(&mut self) {
+        self.microphone_test = !self.microphone_test;
+        self.microphone_signal = false;
+        self.microphone_level = 0;
+        self.microphone_peak_hold = 0;
+    }
+
+    pub fn stop_microphone_test(&mut self) -> bool {
+        if !self.microphone_test {
+            return false;
+        }
+        self.microphone_test = false;
+        self.microphone_signal = false;
+        self.microphone_level = 0;
+        self.microphone_peak_hold = 0;
+        true
+    }
+
+    /// Applies a fresh peak with a fast fall for the bars and a slower fall for
+    /// the hold marker, the way a classic level meter behaves.
+    pub fn apply_microphone_peak(&mut self, peak: u8) -> bool {
+        let decayed = (f32::from(self.microphone_level) * 0.72) as u8;
+        let level = peak.max(decayed);
+        let hold = peak.max(self.microphone_peak_hold.saturating_sub(2));
+        if peak >= 2 {
+            self.microphone_signal = true;
+        }
+        let changed = level.abs_diff(self.microphone_level) >= 2
+            || hold.abs_diff(self.microphone_peak_hold) >= 2;
+        self.microphone_level = level;
+        self.microphone_peak_hold = hold;
+        changed
+    }
+
+    pub fn microphone_readout(&self) -> String {
+        let text = self.strings();
+        if !self.microphone_test {
+            return if self.config.audio.microphone {
+                text.microphone_test.to_owned()
+            } else {
+                text.microphone_off.to_owned()
+            };
+        }
+        if self.microphone_signal {
+            format!("{} %", self.microphone_level)
+        } else {
+            text.no_signal.to_owned()
+        }
+    }
+
+    pub fn toggle_sidebar(&mut self) {
+        self.sidebar_collapsed = !self.sidebar_collapsed;
+    }
+
+    pub fn set_clip_tab(&mut self, tab: ClipTab) {
+        if self.clip_tab == tab {
+            return;
+        }
+        self.clip_tab = tab;
+        self.library_scroll = 0.0;
+        self.clear_clip_selection();
+    }
+
+    pub fn filters_are_active(&self) -> bool {
+        self.filter_time != TimeFilter::All
+            || self.filter_type != TypeFilter::All
+            || self.filter_size != SizeFilter::All
+            || self.filter_collection.is_some()
+            || self.clips_oldest_first
+    }
+
+    pub fn close_filter_panel(&mut self) -> bool {
+        if !self.filter_panel_open {
+            return false;
+        }
+        self.filter_panel_open = false;
+        true
+    }
+
+    pub fn reset_filters(&mut self) {
+        self.filter_time = TimeFilter::All;
+        self.filter_type = TypeFilter::All;
+        self.filter_size = SizeFilter::All;
+        self.filter_collection = None;
+        self.clips_oldest_first = false;
+        self.library_scroll = 0.0;
+    }
+
+    pub fn filter_collection_label(&self) -> &str {
+        self.filter_collection
+            .as_ref()
+            .and_then(|path| {
+                self.collections
+                    .iter()
+                    .find(|collection| &collection.path == path)
+            })
+            .map_or(self.strings().all, |collection| collection.name.as_str())
+    }
+
+    pub fn sort_label(&self) -> &'static str {
+        let text = self.strings();
+        if self.clips_oldest_first {
+            text.sort_oldest
+        } else {
+            text.sort_newest
+        }
+    }
+
+    pub fn is_favorite(&self, index: usize) -> bool {
+        self.clips
+            .get(index)
+            .is_some_and(|clip| self.favorites.contains(&clip.path))
+    }
+
+    pub fn toggle_favorite(&mut self, index: usize) -> Result<(), String> {
+        let Some(path) = self.clips.get(index).map(|clip| clip.path.clone()) else {
+            return Err("Clip is no longer available".into());
+        };
+        self.favorites.toggle(&path);
+        self.favorites.save().map_err(|error| error.to_string())
+    }
+
+    pub fn scroll_folders_by(&mut self, delta: f32, overflow: f32) -> bool {
+        let target = (self.folder_scroll + delta).clamp(0.0, overflow.max(0.0));
+        if (target - self.folder_scroll).abs() < 0.5 {
+            return false;
+        }
+        self.folder_scroll = target;
+        true
+    }
+
+    pub fn scroll_library_by(&mut self, delta: f32, overflow: f32) -> bool {
+        let target = (self.library_scroll + delta).clamp(0.0, overflow.max(0.0));
+        if (target - self.library_scroll).abs() < 0.5 {
+            return false;
+        }
+        self.library_scroll = target;
+        true
+    }
+
+    pub fn clamp_library_scroll(&mut self, overflow: f32) {
+        self.library_scroll = self.library_scroll.clamp(0.0, overflow.max(0.0));
     }
 
     pub fn total_size_bytes(&self) -> u64 {
@@ -1068,18 +1505,33 @@ mod tests {
             ],
             collections: Vec::new(),
             page: Page::Library,
-            previous_page: Page::Home,
+            previous_page: Page::Library,
             settings_section: SettingsSection::Display,
             settings_menu: None,
             search: TextInput::new(String::new(), PROMPT_MAX_CHARACTERS),
             search_focused: false,
-            library_page: 0,
-            collection_cards_page: 0,
-            collection_clips_page: 0,
             clips_oldest_first: false,
             library_grid: true,
+            clip_tab: ClipTab::All,
+            sidebar_collapsed: false,
+            filter_panel_open: false,
+            filter_time: TimeFilter::All,
+            filter_collection: None,
+            filter_type: TypeFilter::All,
+            filter_size: SizeFilter::All,
+            library_scroll: 0.0,
+            folder_scroll: 0.0,
+            favorites: Favorites::load(
+                std::env::temp_dir().join("wreath-model-test-favorites.json"),
+                PathBuf::from("/clips"),
+            ),
+            daemon: DaemonSnapshot::default(),
+            language: Language::German,
+            microphone_level: 0,
+            microphone_peak_hold: 0,
+            microphone_test: false,
+            microphone_signal: false,
             collections_descending: false,
-            collections_grid: true,
             context_menu: None,
             active_collection: None,
             active_clip: None,
@@ -1108,7 +1560,6 @@ mod tests {
             player_last_audible_percent: 100,
             pending_delete: None,
             prompt: None,
-            sidebar_expanded: true,
             editor_timing: None,
             editor_source: None,
             editor_start: Duration::ZERO,
@@ -1119,11 +1570,6 @@ mod tests {
             editor_working: false,
             trim_replace_original: false,
         }
-    }
-
-    #[test]
-    fn home_clips_link_has_an_independent_hover_action() {
-        assert_ne!(Action::OpenAllClips, Action::Navigate(Page::Library));
     }
 
     #[test]
@@ -1294,6 +1740,7 @@ mod tests {
         model.displays.push(DisplayOption {
             name: "DISPLAY1".into(),
             label: "DISPLAY1 · 2560×1440 · 144 Hz".into(),
+            short_label: "Display 1".into(),
             refresh_rate: 144.0,
             width: 2560,
             height: 1440,
@@ -1310,6 +1757,7 @@ mod tests {
         model.displays.push(DisplayOption {
             name: "DISPLAY1".into(),
             label: "DISPLAY1 · 2560×1440 · 60 Hz".into(),
+            short_label: "Display 1".into(),
             refresh_rate: 60.0,
             width: 2560,
             height: 1440,
@@ -1377,6 +1825,7 @@ mod tests {
         model.displays.push(DisplayOption {
             name: "DISPLAY1".into(),
             label: "DISPLAY1 · 1920×1080 · 30 Hz".into(),
+            short_label: "Display 1".into(),
             refresh_rate: 30.0,
             width: 1920,
             height: 1080,
@@ -1580,5 +2029,254 @@ mod tests {
         assert!(model.redo_editor_trim());
         assert_eq!(model.editor_start, Duration::from_secs(2));
         assert_eq!(model.editor_end, Duration::from_secs(8));
+    }
+
+    fn library_model() -> UiModel {
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_755_527_700);
+        let mut model = model();
+        model.clips = vec![
+            Clip {
+                path: PathBuf::from("/clips/Night Drive.mp4"),
+                title: "Night Drive".into(),
+                size_bytes: 12 * 1_048_576,
+                modified: base,
+            },
+            Clip {
+                path: PathBuf::from("/clips/Mountain Clutch (cut).mp4"),
+                title: "Mountain Clutch (cut)".into(),
+                size_bytes: 140 * 1_048_576,
+                modified: base - Duration::from_secs(86_400),
+            },
+            Clip {
+                path: PathBuf::from("/clips/Valorant/ACE.mp4"),
+                title: "ACE".into(),
+                size_bytes: 60 * 1_048_576,
+                modified: base - Duration::from_secs(10 * 86_400),
+            },
+        ];
+        model.collections = vec![Collection {
+            path: PathBuf::from("/clips/Valorant"),
+            name: "Valorant".into(),
+            clip_count: 1,
+        }];
+        model
+    }
+
+    fn today_of(model: &UiModel) -> Civil {
+        clock::local(model.clips[0].modified)
+    }
+
+    #[test]
+    fn the_favourites_tab_lists_only_starred_clips() {
+        let mut model = library_model();
+        let today = today_of(&model);
+        model.favorites = Favorites::load(
+            std::env::temp_dir().join("wreath-model-favourites-tab.json"),
+            PathBuf::from("/clips"),
+        );
+        model.favorites.toggle(&model.clips[1].path.clone());
+
+        model.set_clip_tab(ClipTab::Favorites);
+        assert_eq!(model.visible_clip_indices_at(usize::MAX, today), vec![1]);
+        assert!(model.is_favorite(1));
+
+        model.set_clip_tab(ClipTab::All);
+        assert_eq!(
+            model.visible_clip_indices_at(usize::MAX, today),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn each_filter_narrows_the_library_on_its_own_axis() {
+        let mut model = library_model();
+        let today = today_of(&model);
+
+        model.filter_time = TimeFilter::Today;
+        assert_eq!(model.visible_clip_indices_at(usize::MAX, today), vec![0]);
+
+        model.filter_time = TimeFilter::Week;
+        assert_eq!(model.visible_clip_indices_at(usize::MAX, today), vec![0, 1]);
+
+        model.filter_time = TimeFilter::All;
+        model.filter_type = TypeFilter::Cut;
+        assert_eq!(model.visible_clip_indices_at(usize::MAX, today), vec![1]);
+
+        model.filter_type = TypeFilter::Replay;
+        assert_eq!(model.visible_clip_indices_at(usize::MAX, today), vec![0, 2]);
+
+        model.filter_type = TypeFilter::All;
+        model.filter_size = SizeFilter::Small;
+        assert_eq!(model.visible_clip_indices_at(usize::MAX, today), vec![0]);
+
+        model.filter_size = SizeFilter::Large;
+        assert_eq!(model.visible_clip_indices_at(usize::MAX, today), vec![1]);
+
+        model.filter_size = SizeFilter::All;
+        model.filter_collection = Some(PathBuf::from("/clips/Valorant"));
+        assert_eq!(model.visible_clip_indices_at(usize::MAX, today), vec![2]);
+        assert_eq!(model.filter_collection_label(), "Valorant");
+    }
+
+    #[test]
+    fn resetting_the_filters_restores_the_whole_library() {
+        let mut model = library_model();
+        let today = today_of(&model);
+        model.filter_time = TimeFilter::Today;
+        model.filter_size = SizeFilter::Large;
+        model.clips_oldest_first = true;
+        assert!(model.filters_are_active());
+
+        model.reset_filters();
+
+        assert!(!model.filters_are_active());
+        assert_eq!(model.filter_collection_label(), "Alle");
+        assert_eq!(
+            model.visible_clip_indices_at(usize::MAX, today),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn the_library_is_grouped_by_local_day_in_view_order() {
+        let mut model = library_model();
+        let today = today_of(&model);
+
+        let indices = model.visible_clip_indices_at(usize::MAX, today);
+        let groups = model.clip_day_groups(&indices, today);
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].label, "Heute");
+        assert_eq!(groups[0].indices, vec![0]);
+        assert_eq!(groups[1].label, "Gestern");
+        assert_eq!(groups[1].indices, vec![1]);
+        assert_ne!(groups[2].label, "Gestern");
+
+        model.clips_oldest_first = true;
+        let reversed = model.visible_clip_indices_at(usize::MAX, today);
+        let groups = model.clip_day_groups(&reversed, today);
+        assert_eq!(groups[0].indices, vec![2]);
+        assert_eq!(groups[2].label, "Heute");
+    }
+
+    #[test]
+    fn clips_of_the_same_day_share_one_section() {
+        let mut model = library_model();
+        let today = today_of(&model);
+        model.clips.insert(
+            1,
+            Clip {
+                path: PathBuf::from("/clips/Sunset.mp4"),
+                title: "Sunset".into(),
+                size_bytes: 8 * 1_048_576,
+                modified: model.clips[0].modified - Duration::from_secs(600),
+            },
+        );
+
+        let indices = model.visible_clip_indices_at(usize::MAX, today);
+        let groups = model.clip_day_groups(&indices, today);
+
+        assert_eq!(groups[0].label, "Heute");
+        assert_eq!(groups[0].indices, vec![0, 1]);
+    }
+
+    #[test]
+    fn clip_filters_stay_out_of_the_collections_page() {
+        let mut model = library_model();
+        let today = today_of(&model);
+        model.filter_size = SizeFilter::Small;
+        model.page = Page::Collections;
+        model.active_collection = Some(PathBuf::from("/clips/Valorant"));
+
+        assert_eq!(model.visible_clip_indices_at(usize::MAX, today), vec![2]);
+    }
+
+    #[test]
+    fn library_scrolling_is_clamped_to_the_overflow() {
+        let mut model = library_model();
+
+        assert!(model.scroll_library_by(120.0, 300.0));
+        assert_eq!(model.library_scroll, 120.0);
+        assert!(model.scroll_library_by(400.0, 300.0));
+        assert_eq!(model.library_scroll, 300.0);
+        assert!(!model.scroll_library_by(50.0, 300.0));
+        assert!(model.scroll_library_by(-1_000.0, 300.0));
+        assert_eq!(model.library_scroll, 0.0);
+
+        model.library_scroll = 250.0;
+        model.clamp_library_scroll(0.0);
+        assert_eq!(model.library_scroll, 0.0);
+    }
+
+    #[test]
+    fn the_recorder_state_drives_both_replay_labels() {
+        let mut model = library_model();
+        let text = model.strings();
+        assert_eq!(model.daemon.toolbar_headline(text), "RECORDER OFFLINE");
+
+        model.daemon.state = Some(DaemonState::Recording);
+        model.daemon.buffered_seconds = 30;
+        assert!(model.daemon.is_recording());
+        assert_eq!(model.daemon.toolbar_headline(text), "REPLAY AKTIV");
+        assert_eq!(model.daemon.status_headline(text), "REPLAY LÄUFT");
+
+        model.daemon.state = Some(DaemonState::Paused);
+        assert!(!model.daemon.is_recording());
+        assert_eq!(model.daemon.status_headline(text), "REPLAY PAUSIERT");
+    }
+
+    #[test]
+    fn favourites_survive_a_clip_folder_that_is_not_there() {
+        let mut model = library_model();
+        model.config.storage.directory = std::env::temp_dir().join("wreath-absent-clip-folder");
+        model.favorites = Favorites::load(
+            std::env::temp_dir().join("wreath-model-favourites-offline.json"),
+            &model.config.storage.directory,
+        );
+        model
+            .favorites
+            .toggle(&model.config.storage.directory.join("Kept.mp4"));
+
+        model.refresh().expect("a missing folder scans as empty");
+
+        assert_eq!(model.favorites.len(), 1);
+    }
+
+    #[test]
+    fn the_microphone_test_reports_a_level_and_falls_back_to_no_signal() {
+        let mut model = library_model();
+        assert_eq!(model.microphone_readout(), "Mikrofon aus");
+        model.config.audio.microphone = true;
+        assert_eq!(model.microphone_readout(), "Testen");
+
+        model.toggle_microphone_test();
+        assert!(model.microphone_test);
+        assert_eq!(model.microphone_readout(), "Kein Signal");
+
+        assert!(model.apply_microphone_peak(40));
+        assert_eq!(model.microphone_level, 40);
+        assert_eq!(model.microphone_peak_hold, 40);
+        assert_eq!(model.microphone_readout(), "40 %");
+
+        assert!(model.apply_microphone_peak(0));
+        assert_eq!(model.microphone_level, 28);
+        assert_eq!(model.microphone_peak_hold, 38);
+        assert_eq!(model.microphone_readout(), "28 %");
+
+        assert!(model.stop_microphone_test());
+        assert!(!model.stop_microphone_test());
+        assert_eq!(model.microphone_level, 0);
+        assert_eq!(model.microphone_peak_hold, 0);
+        assert_eq!(model.microphone_readout(), "Testen");
+    }
+
+    #[test]
+    fn near_silence_does_not_count_as_a_microphone_signal() {
+        let mut model = library_model();
+        model.toggle_microphone_test();
+
+        model.apply_microphone_peak(1);
+
+        assert!(!model.microphone_signal);
+        assert_eq!(model.microphone_readout(), "Kein Signal");
     }
 }

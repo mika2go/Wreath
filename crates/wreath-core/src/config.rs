@@ -16,6 +16,89 @@ pub struct Config {
     pub hotkey: HotkeyConfig,
     pub audio: AudioConfig,
     pub storage: StorageConfig,
+    pub appearance: AppearanceConfig,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AppearanceConfig {
+    pub theme: Theme,
+    pub hover: HoverStyle,
+    pub hover_strength: HoverStrength,
+    pub language: Language,
+}
+
+/// Interface language. `System` follows the Windows display language.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Language {
+    #[default]
+    System,
+    German,
+    English,
+}
+
+impl Language {
+    pub const OPTIONS: [Self; 3] = [Self::System, Self::German, Self::English];
+}
+
+/// Interface palettes. The recorded video always carries the colour; the theme
+/// only decides how the frame around it reads.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Theme {
+    #[default]
+    Dark,
+    Light,
+    Cafe,
+}
+
+impl Theme {
+    pub const OPTIONS: [Self; 3] = [Self::Dark, Self::Light, Self::Cafe];
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum HoverStyle {
+    #[default]
+    Surface,
+    Outline,
+    Both,
+}
+
+impl HoverStyle {
+    pub const OPTIONS: [Self; 3] = [Self::Surface, Self::Outline, Self::Both];
+
+    pub const fn fills(self) -> bool {
+        matches!(self, Self::Surface | Self::Both)
+    }
+
+    pub const fn outlines(self) -> bool {
+        matches!(self, Self::Outline | Self::Both)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum HoverStrength {
+    Off,
+    Subtle,
+    #[default]
+    Normal,
+    Strong,
+}
+
+impl HoverStrength {
+    pub const OPTIONS: [Self; 4] = [Self::Off, Self::Subtle, Self::Normal, Self::Strong];
+
+    pub const fn factor(self) -> f32 {
+        match self {
+            Self::Off => 0.0,
+            Self::Subtle => 0.55,
+            Self::Normal => 1.0,
+            Self::Strong => 1.6,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -307,6 +390,45 @@ mod tests {
     #[test]
     fn default_config_is_valid() {
         Config::default().validate().unwrap();
+    }
+
+    #[test]
+    fn appearance_defaults_to_the_dark_theme_with_a_normal_hover() {
+        let appearance = Config::default().appearance;
+
+        assert_eq!(appearance.theme, Theme::Dark);
+        assert_eq!(appearance.hover, HoverStyle::Surface);
+        assert_eq!(appearance.hover_strength, HoverStrength::Normal);
+        assert_eq!(HoverStrength::Off.factor(), 0.0);
+        assert!(HoverStyle::Surface.fills() && !HoverStyle::Surface.outlines());
+        assert!(HoverStyle::Both.fills() && HoverStyle::Both.outlines());
+    }
+
+    #[test]
+    fn a_configuration_without_an_appearance_section_keeps_the_defaults() {
+        let config: Config = toml::from_str(
+            r#"
+[capture]
+duration_seconds = 30
+"#,
+        )
+        .expect("legacy configuration still parses");
+
+        assert_eq!(config.appearance, AppearanceConfig::default());
+    }
+
+    #[test]
+    fn the_appearance_section_round_trips_through_toml() {
+        let mut config = Config::default();
+        config.appearance.theme = Theme::Cafe;
+        config.appearance.hover = HoverStyle::Outline;
+        config.appearance.hover_strength = HoverStrength::Strong;
+
+        let encoded = toml::to_string_pretty(&config).expect("configuration encodes");
+        assert!(encoded.contains("theme = \"cafe\""));
+        let decoded: Config = toml::from_str(&encoded).expect("configuration decodes");
+
+        assert_eq!(decoded.appearance, config.appearance);
     }
 
     #[test]
