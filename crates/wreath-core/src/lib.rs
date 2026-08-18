@@ -5,6 +5,7 @@ pub mod diagnostics;
 pub mod display;
 #[cfg(target_os = "linux")]
 pub mod engine;
+pub mod favorites;
 #[cfg(target_os = "linux")]
 pub mod hyprland;
 pub mod ipc;
