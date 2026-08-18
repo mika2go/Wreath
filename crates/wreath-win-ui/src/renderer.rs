@@ -1529,7 +1529,26 @@ impl Renderer {
                     )?;
                 }
                 _ => {
+                    let action = Action::ToggleMicrophoneTest;
+                    let hovered = self.is_hovered(&action);
                     self.status_entry(area, 0.0, "MIKROFON", "")?;
+                    self.text(
+                        &model.microphone_readout(),
+                        rect(
+                            area.left + 80.0,
+                            area.top + 22.0,
+                            area.right - 12.0,
+                            area.top + 42.0,
+                        ),
+                        &self.small_right.clone(),
+                        if model.microphone_test {
+                            PRIMARY
+                        } else if hovered {
+                            SECONDARY
+                        } else {
+                            MUTED
+                        },
+                    )?;
                     self.glyph(
                         Glyph::Microphone,
                         rect(
@@ -1538,7 +1557,9 @@ impl Renderer {
                             area.left + 16.0,
                             area.top + 60.0,
                         ),
-                        if model.config.audio.microphone {
+                        if model.microphone_test {
+                            PRIMARY
+                        } else if model.config.audio.microphone {
                             SECONDARY
                         } else {
                             MUTED
@@ -1551,9 +1572,19 @@ impl Renderer {
                             (area.left + 26.0 + METER_WIDTH).min(area.right - 12.0),
                             area.top + 60.0,
                         ),
-                        model.config.audio.microphone,
+                        model.config.audio.microphone || model.microphone_test,
                         model.microphone_level,
+                        model.microphone_peak_hold,
                     )?;
+                    self.hits.push(HitRegion {
+                        rect: rect(
+                            area.left,
+                            area.top + 14.0,
+                            area.right - 12.0,
+                            area.bottom - 14.0,
+                        ),
+                        action,
+                    });
                 }
             }
             x += width;
@@ -1595,14 +1626,18 @@ impl Renderer {
         )
     }
 
-    fn level_meter(&self, area: LogicalRect, enabled: bool, level: u8) -> Result<(), String> {
+    fn level_meter(
+        &self,
+        area: LogicalRect,
+        enabled: bool,
+        level: u8,
+        hold: u8,
+    ) -> Result<(), String> {
         const BARS: usize = 16;
         let pitch = (area.right - area.left) / BARS as f32;
-        let lit = if enabled {
-            (f32::from(level) / 100.0 * BARS as f32).round() as usize
-        } else {
-            0
-        };
+        let bars = |value: u8| (f32::from(value) / 100.0 * BARS as f32).round() as usize;
+        let lit = if enabled { bars(level) } else { 0 };
+        let marker = if enabled { bars(hold) } else { 0 };
         for index in 0..BARS {
             let x = area.left + index as f32 * pitch;
             let scale = 0.45 + 0.55 * (index as f32 / (BARS - 1) as f32);
@@ -1617,6 +1652,8 @@ impl Renderer {
                 bar,
                 if index < lit {
                     PRIMARY
+                } else if marker > 0 && index + 1 == marker {
+                    SECONDARY
                 } else if enabled {
                     BORDER
                 } else {

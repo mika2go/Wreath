@@ -186,6 +186,7 @@ pub enum Action {
     SetClipTab(ClipTab),
     ToggleFilterPanel,
     ToggleSidebar,
+    ToggleMicrophoneTest,
     ChooseTimeFilter,
     ChooseCollectionFilter,
     ChooseTypeFilter,
@@ -610,6 +611,9 @@ pub struct UiModel {
     pub favorites: Favorites,
     pub daemon: DaemonSnapshot,
     pub microphone_level: u8,
+    pub microphone_peak_hold: u8,
+    pub microphone_test: bool,
+    pub microphone_signal: bool,
     pub collections_descending: bool,
     pub context_menu: Option<ClipContextMenu>,
     pub active_collection: Option<PathBuf>,
@@ -695,6 +699,9 @@ impl UiModel {
             favorites,
             daemon: DaemonSnapshot::default(),
             microphone_level: 0,
+            microphone_peak_hold: 0,
+            microphone_test: false,
+            microphone_signal: false,
             collections_descending: false,
             context_menu: None,
             active_collection: None,
@@ -1165,6 +1172,55 @@ impl UiModel {
         groups
     }
 
+    pub fn toggle_microphone_test(&mut self) {
+        self.microphone_test = !self.microphone_test;
+        self.microphone_signal = false;
+        self.microphone_level = 0;
+        self.microphone_peak_hold = 0;
+    }
+
+    pub fn stop_microphone_test(&mut self) -> bool {
+        if !self.microphone_test {
+            return false;
+        }
+        self.microphone_test = false;
+        self.microphone_signal = false;
+        self.microphone_level = 0;
+        self.microphone_peak_hold = 0;
+        true
+    }
+
+    /// Applies a fresh peak with a fast fall for the bars and a slower fall for
+    /// the hold marker, the way a classic level meter behaves.
+    pub fn apply_microphone_peak(&mut self, peak: u8) -> bool {
+        let decayed = (f32::from(self.microphone_level) * 0.72) as u8;
+        let level = peak.max(decayed);
+        let hold = peak.max(self.microphone_peak_hold.saturating_sub(2));
+        if peak >= 2 {
+            self.microphone_signal = true;
+        }
+        let changed = level.abs_diff(self.microphone_level) >= 2
+            || hold.abs_diff(self.microphone_peak_hold) >= 2;
+        self.microphone_level = level;
+        self.microphone_peak_hold = hold;
+        changed
+    }
+
+    pub fn microphone_readout(&self) -> String {
+        if !self.microphone_test {
+            return if self.config.audio.microphone {
+                "Testen".to_owned()
+            } else {
+                "Mikrofon aus".to_owned()
+            };
+        }
+        if self.microphone_signal {
+            format!("{} %", self.microphone_level)
+        } else {
+            "Kein Signal".to_owned()
+        }
+    }
+
     pub fn toggle_sidebar(&mut self) {
         self.sidebar_collapsed = !self.sidebar_collapsed;
     }
@@ -1398,6 +1454,9 @@ mod tests {
             ),
             daemon: DaemonSnapshot::default(),
             microphone_level: 0,
+            microphone_peak_hold: 0,
+            microphone_test: false,
+            microphone_signal: false,
             collections_descending: false,
             context_menu: None,
             active_collection: None,
@@ -2088,5 +2147,44 @@ mod tests {
         model.daemon.state = Some(DaemonState::Paused);
         assert!(!model.daemon.is_recording());
         assert_eq!(model.daemon.status_headline(), "REPLAY PAUSIERT");
+    }
+
+    #[test]
+    fn the_microphone_test_reports_a_level_and_falls_back_to_no_signal() {
+        let mut model = library_model();
+        assert_eq!(model.microphone_readout(), "Mikrofon aus");
+        model.config.audio.microphone = true;
+        assert_eq!(model.microphone_readout(), "Testen");
+
+        model.toggle_microphone_test();
+        assert!(model.microphone_test);
+        assert_eq!(model.microphone_readout(), "Kein Signal");
+
+        assert!(model.apply_microphone_peak(40));
+        assert_eq!(model.microphone_level, 40);
+        assert_eq!(model.microphone_peak_hold, 40);
+        assert_eq!(model.microphone_readout(), "40 %");
+
+        assert!(model.apply_microphone_peak(0));
+        assert_eq!(model.microphone_level, 28);
+        assert_eq!(model.microphone_peak_hold, 38);
+        assert_eq!(model.microphone_readout(), "28 %");
+
+        assert!(model.stop_microphone_test());
+        assert!(!model.stop_microphone_test());
+        assert_eq!(model.microphone_level, 0);
+        assert_eq!(model.microphone_peak_hold, 0);
+        assert_eq!(model.microphone_readout(), "Testen");
+    }
+
+    #[test]
+    fn near_silence_does_not_count_as_a_microphone_signal() {
+        let mut model = library_model();
+        model.toggle_microphone_test();
+
+        model.apply_microphone_peak(1);
+
+        assert!(!model.microphone_signal);
+        assert_eq!(model.microphone_readout(), "Kein Signal");
     }
 }

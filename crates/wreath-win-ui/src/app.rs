@@ -56,7 +56,7 @@ use crate::renderer::{
     fullscreen_timeline_rail, fullscreen_volume_rail, player_bounds, player_timeline_rail,
     player_volume_rail, settings_audio_gain_rail, settings_gain_percent,
 };
-use wreath_windows::meter::MicrophoneMeter;
+use wreath_windows::meter::{MicrophoneMeter, MicrophoneProbe};
 
 const WINDOW_CLASS: windows::core::PCWSTR = w!("WreathApplicationWindow");
 const FULLSCREEN_CONTROLS_CLASS: windows::core::PCWSTR = w!("WreathFullscreenControls");
@@ -95,6 +95,7 @@ struct AppState {
     status_pending: bool,
     status_due: Instant,
     microphone_meter: MicrophoneMeter,
+    microphone_probe: Option<MicrophoneProbe>,
     microphone_due: Instant,
     editor_drag: Option<EditorDrag>,
     editor_drag_origin: Option<(Duration, Duration)>,
@@ -246,6 +247,7 @@ fn run_initialized() -> Result<(), String> {
         status_pending: false,
         status_due: Instant::now(),
         microphone_meter: MicrophoneMeter::closed(),
+        microphone_probe: None,
         microphone_due: Instant::now(),
         editor_drag: None,
         editor_drag_origin: None,
@@ -898,6 +900,13 @@ unsafe extern "system" fn window_proc(
                 let trim_changed = poll_trim_updates(state);
                 let hotkey_changed = poll_hotkey_updates(state);
                 let recorder_changed = poll_recorder_status(window, state);
+                let test_stopped = matches!(
+                    state.model.page,
+                    crate::model::Page::Player | crate::model::Page::Editor
+                ) && state.model.stop_microphone_test();
+                if test_stopped {
+                    state.microphone_probe = None;
+                }
                 let notice_changed = expire_notice(state);
                 let motion_changed = state.renderer.advance_motion();
                 let fullscreen_motion_changed = state.fullscreen_renderer.advance_motion();
@@ -906,6 +915,7 @@ unsafe extern "system" fn window_proc(
                 if trim_changed
                     || hotkey_changed
                     || recorder_changed
+                    || test_stopped
                     || notice_changed
                     || motion_changed
                     || matches!(
@@ -1198,6 +1208,15 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         Action::ToggleSidebar => {
             state.model.toggle_sidebar();
             update_player_window(state);
+        }
+        Action::ToggleMicrophoneTest => {
+            state.model.toggle_microphone_test();
+            if state.model.microphone_test {
+                start_microphone_test(state);
+            } else {
+                state.microphone_probe = None;
+            }
+            state.microphone_due = Instant::now();
         }
         Action::ChooseTimeFilter => choose_time_filter(&mut state.model),
         Action::ChooseCollectionFilter => choose_collection_filter(&mut state.model),
@@ -1653,8 +1672,48 @@ fn read_daemon_status() -> DaemonSnapshot {
     }
 }
 
+/// Opens the configured input, falling back to the Windows default so the test
+/// still answers the question when the saved device disappeared.
+fn start_microphone_test(state: &mut AppState) -> bool {
+    let device = state.model.config.audio.microphone_device.clone();
+    match MicrophoneProbe::open_with_fallback(device.as_deref()) {
+        Ok((probe, fell_back)) => {
+            state.microphone_probe = Some(probe);
+            if fell_back {
+                state.model.notice = Some(
+                    "Gespeichertes Mikrofon nicht verfügbar; Windows-Standard wird getestet".into(),
+                );
+            }
+            true
+        }
+        Err(error) => {
+            state.model.microphone_test = false;
+            state.microphone_probe = None;
+            state.model.notice = Some(format!("Mikrofontest: {error}"));
+            false
+        }
+    }
+}
+
 fn poll_microphone_level(state: &mut AppState, now: Instant) -> bool {
     state.microphone_due = now + METER_INTERVAL;
+    if state.model.microphone_test {
+        let device = state.model.config.audio.microphone_device.clone();
+        let stale = state
+            .microphone_probe
+            .as_ref()
+            .is_none_or(|probe| !probe.matches(device.as_deref()));
+        if stale && !start_microphone_test(state) {
+            return true;
+        }
+        let peak = state
+            .microphone_probe
+            .as_ref()
+            .and_then(MicrophoneProbe::peak_percent)
+            .unwrap_or(0);
+        return state.model.apply_microphone_peak(peak);
+    }
+    state.microphone_probe = None;
     if !state.model.config.audio.microphone {
         state.microphone_meter = MicrophoneMeter::closed();
         return std::mem::take(&mut state.model.microphone_level) != 0;
@@ -1671,13 +1730,7 @@ fn poll_microphone_level(state: &mut AppState, now: Instant) -> bool {
         state.microphone_due = now + METER_RETRY;
         return std::mem::take(&mut state.model.microphone_level) != 0;
     };
-    let decayed = (f32::from(state.model.microphone_level) * 0.72) as u8;
-    let level = peak.max(decayed);
-    if level.abs_diff(state.model.microphone_level) < 2 {
-        return false;
-    }
-    state.model.microphone_level = level;
-    true
+    state.model.apply_microphone_peak(peak)
 }
 
 fn refresh_hover_after_scroll(window: HWND, state: &mut AppState) -> bool {
