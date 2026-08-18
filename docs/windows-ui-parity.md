@@ -1,10 +1,10 @@
 # Windows UI parity contract
 
-The Windows edition is complete only when it exposes the same application
-surface and clip-management workflow as the Linux GTK edition while preserving
-the low-overhead background recorder. The Linux UI is the visual and behavioral
-reference; Windows platform conventions are used only where the operating
-system supplies the interaction, such as folder selection and window chrome.
+The Windows edition is complete only when it exposes the full clip-management
+workflow while preserving the low-overhead background recorder. The live
+implementation in `crates/wreath-win-ui/src/renderer.rs` is the visual
+reference; Windows platform conventions are used where the operating system
+supplies the interaction, such as folder selection and window chrome.
 
 ## Process boundary
 
@@ -19,71 +19,86 @@ system supplies the interaction, such as folder selection and window chrome.
 
 ## Visual system
 
-The implementation uses the existing Wreath design rather than a native-widget
-restyle.
+The interface is a monochrome desktop utility: the video thumbnails carry all
+colour, everything around them stays grey. Gradients, coloured accents, glow,
+and decorative artwork are out of scope.
 
 | Token | Value | Purpose |
 | --- | --- | --- |
-| Canvas | `#0d0d0f` | Window and sidebar background |
-| Stage | `#101012` | Video and thumbnail stages |
-| Surface | `#17171a` | Menus, dialogs, and raised controls |
-| Primary text | `#f4f5f9` | Page titles and strong values |
-| Secondary text | `#777e8e` | Descriptions and metadata |
-| Success | `#76d9a3` | Recording and saved states |
-| Danger | `#e58b8b` | Destructive actions and errors |
+| Canvas | `#0a0a0b` | Window background and status bar |
+| Rail | `#0d0d0e` | Navigation sidebar |
+| Stage | `#0e0e0f` | Video and thumbnail beds |
+| Surface | `#111113` | Toolbar, dropdowns, search field |
+| Surface hover | `#171719` | Hover and active states |
+| Border | `#242426` | Separators and control outlines |
+| Primary text | `#f2f2f2` | Titles, values, primary button fill |
+| Secondary text | `#99999f` | Labels and inactive navigation |
+| Muted text | `#6f6f75` | Metadata, uppercase captions, chevrons |
 
-Windows uses Segoe UI Variable when available and Segoe UI as the fallback.
-The size and weight hierarchy follows `crates/wreath-ui/src/style.css`:
+Windows uses Segoe UI Variable when available and Segoe UI as the fallback:
 
-- 31 px / semibold greeting;
 - 25 px / semibold page title;
-- 14–18 px section and player titles;
-- 11–12 px controls and body copy;
-- 8–10 px uppercase metadata and captions.
+- 16 px / semibold day and panel headings;
+- 14 px / semibold clip titles and toolbar values;
+- 13 px body copy and controls;
+- 11–11.5 px uppercase labels and metadata.
 
-The signature is the quiet replay workspace: a narrow icon rail, broad dark
-canvas, restrained local-status green, and media cards that carry the only
-substantial surfaces. Extra nested cards, gradients, and decorative motion are
-out of scope.
+Corner radii stay between 4 and 8 px.
 
 ## Layout contract
 
-- Default client size: 1280 × 760 logical pixels.
-- Navigation rail: 62 px, compacted to 54 px below 760 px.
-- Content becomes narrow below 980 px and compact below 820 px.
-- Clip grids use 6/4/3/2/1 columns at 1500/1100/820/620 px breakpoints.
-- Page padding follows the GTK reference: 28–48 px normally, 24 px when narrow,
-  and 16 px when compact.
-- Page changes cross-fade in 120–140 ms and respect reduced-motion settings.
-- Every interactive element exposes visible keyboard focus and a UI Automation
+- Default client size 1440 × 900, minimum 980 × 680 logical pixels.
+- Sidebar: fixed 165 px with logo, three navigation entries at 40 px height,
+  and a pinned folder action plus version line.
+- Content padding: 24 px on both sides of the main area.
+- Recording toolbar: one continuous 96 px surface holding replay status, clip
+  length, display, quality, audio, the primary save action, and settings. Its
+  setting sections grow to fill the bar and are dropped from the right when the
+  window is too narrow for a legible width.
+- Status bar: persistent 84 px strip attached to the bottom of the main area
+  with a top border, carrying replay state, storage use, hotkey, and a live
+  microphone meter.
+- Clips page: page title, tab row with a thin underline on the active tab,
+  search plus filter/grid/list buttons, a separator, a 200 px filter column,
+  and a scrolling clip area.
+- Clip grid: 4/3/2/1 columns at 900/660/440 px of clip-area width, 18 px
+  column gap, 24 px row gap, 16:9 thumbnails.
+- The clips page scrolls with the mouse wheel; day sections stay in view order
+  and the library never paginates.
+- The player and editor pages replace the toolbar and status bar with their own
+  full-height layout.
+- Page changes respect reduced-motion settings.
+- Every interactive element exposes visible hover state and a UI Automation
   name matching its visible label.
 
 ## Screen and interaction matrix
 
 ### Shell and tray
 
-- Navigation: Home, Library, Collections, Settings.
+- Navigation: Clips, Collections, Einstellungen. There is no dashboard page;
+  the clips library is the default view.
 - Tray: Open Wreath, Save replay, Pause, Resume, Open clips, Open settings file,
   Reload settings, toggle start with Windows, and Exit Wreath.
 - A normal tray click opens or focuses the full application.
 - Closing the application window leaves tray and recorder running.
 
-### Home
+### Clips
 
-- Time-sensitive greeting and Windows user display name.
-- Clip count, collection count, and configured replay duration.
-- Quick links to Library and Collections.
-- Up to eight recent clips with thumbnail, title, age, and size.
-
-### Library
-
-- Local-replay heading, search field, refresh action, total clip count, and
-  storage use.
-- Responsive grid capped at 200 clips.
-- Asynchronous thumbnail and duration loading with two bounded workers.
-- Empty-library and empty-search states matching the GTK copy.
-- Clip actions: play, rename, move to Library or a collection, and confirmed
-  deletion.
+- Tabs for all clips and favourites; favourites persist in
+  `favorites.json` next to the configuration and follow renames and moves.
+- Filter column: time range, collection, type, size, and sort order, plus a
+  reset action that is inert while no filter is set.
+- Day sections labelled Heute, Gestern, or the local date, each with its clip
+  count on the right.
+- Clip cards: 16:9 thumbnail, duration badge, title, local timestamp and size,
+  a context-menu button, a persistent favourite marker, and hover actions for
+  play, favourite, and reveal in Explorer.
+- Grid and list views share the day sections, the scroll position, and the
+  filters.
+- Empty states for an empty library, an empty search, an empty favourites tab,
+  and a filter selection without matches.
+- Clip actions: play, favourite, reveal, trim, rename, multi-select, move to a
+  collection, and confirmed deletion.
 
 ### Collections
 

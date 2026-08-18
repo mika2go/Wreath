@@ -16,20 +16,19 @@ platform control.
 The live implementation in `crates/wreath-win-ui/src/renderer.rs` wins over old
 screenshots and earlier parity notes. The shared baseline is:
 
-- canvas `#09090b`, stage `#131316`, surface `#1c1c20`;
-- primary text `#f5f5f7`, secondary text `#a3a3ad`;
-- ready `#35d07f`, warning `#f0b849`, danger `#f15b68`;
-- 84 logical-pixel top bar;
-- 88 logical-pixel navigation rail, reduced to 72 below 1080 pixels;
+- canvas `#0a0a0b`, rail `#0d0d0e`, stage `#0e0e0f`, surface `#111113`;
+- primary text `#f2f2f2`, secondary text `#99999f`, muted text `#6f6f75`;
+- no coloured accents: thumbnails carry all colour, the shell stays grey;
+- 165 logical-pixel navigation sidebar;
+- 96 logical-pixel recording toolbar and 84 logical-pixel status bar;
 - 1440 × 900 default and 980 × 680 minimum client size.
 
 ## Delivery matrix
 
 | Surface | Required states | Status |
 | --- | --- | --- |
-| Shell | expanded rail, compact rail, keyboard focus, Library search | Implemented |
-| Home | ready, missing shortcut, compact, mascot overflow | Implemented |
-| Library | populated, empty, search empty, selection, context menu | Implemented |
+| Shell | sidebar, recording toolbar, status bar, Clips search | Implemented |
+| Clips | populated, empty, search empty, favourites, filters, scroll, selection, context menu | Implemented |
 | Collections | all clips, folder selected, empty, drag target, bulk move | Implemented |
 | Player | loading, playing, paused, scrub, volume, mute, fullscreen | Implemented |
 | Editor | timing load, preview, handle drag, save, replace, error | Implemented |
