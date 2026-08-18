@@ -5,21 +5,24 @@ use std::time::{Duration, SystemTime};
 
 use windows::Win32::Foundation::{HWND, PROPERTYKEY};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D_SIZE_U, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED,
+    D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U, D2D1_COLOR_F, D2D1_FIGURE_BEGIN, D2D1_FIGURE_BEGIN_FILLED,
+    D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_ANTIALIAS_MODE_ALIASED, D2D1_BITMAP_BRUSH_PROPERTIES,
-    D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_ELLIPSE,
-    D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
-    D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap, ID2D1Factory,
-    ID2D1HwndRenderTarget,
+    D2D1_ANTIALIAS_MODE_ALIASED, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL,
+    D2D1_BITMAP_BRUSH_PROPERTIES, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_CAP_STYLE_ROUND,
+    D2D1_DASH_STYLE_SOLID, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_LINE_JOIN_ROUND,
+    D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES,
+    D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1CreateFactory, ID2D1Bitmap, ID2D1Factory,
+    ID2D1HwndRenderTarget, ID2D1PathGeometry, ID2D1SolidColorBrush, ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
-    DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory,
-    IDWriteFontCollection, IDWriteTextFormat,
+    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Gdi::{DeleteObject, HPALETTE};
 use windows::Win32::Graphics::Imaging::{
@@ -50,6 +53,8 @@ const SURFACE: u32 = 0x111113;
 const SURFACE_RAISED: u32 = 0x141416;
 const SURFACE_HOVER: u32 = 0x171719;
 const BORDER: u32 = 0x242426;
+const HAIRLINE: u32 = 0x1b1b1d;
+const CARD: u32 = 0x0e0e0f;
 const PRIMARY: u32 = 0xf2f2f2;
 const SECONDARY: u32 = 0x99999f;
 const MUTED: u32 = 0x6f6f75;
@@ -62,20 +67,23 @@ const RADIUS: f32 = 6.0;
 const RADIUS_SMALL: f32 = 4.0;
 const RADIUS_LARGE: f32 = 8.0;
 const SIDEBAR_WIDTH: f32 = 165.0;
+const SIDEBAR_COLLAPSED_WIDTH: f32 = 60.0;
 const CONTENT_PADDING: f32 = 24.0;
 const TOOLBAR_HEIGHT: f32 = 96.0;
 const TOOLBAR_TOP: f32 = 18.0;
 const STATUS_BAR_HEIGHT: f32 = 84.0;
-const FILTER_PANEL_WIDTH: f32 = 200.0;
-const FILTER_PANEL_GAP: f32 = 24.0;
-const CLIP_COLUMN_GAP: f32 = 18.0;
-const CLIP_ROW_GAP: f32 = 24.0;
-const CLIP_META_HEIGHT: f32 = 52.0;
-const CLIP_SECTION_HEADER: f32 = 44.0;
+const FILTER_PANEL_WIDTH: f32 = 272.0;
+const CLIP_COLUMN_GAP: f32 = 16.0;
+const CLIP_ROW_GAP: f32 = 18.0;
+const CLIP_META_HEIGHT: f32 = 46.0;
+const CLIP_SECTION_HEADER: f32 = 38.0;
 const CLIP_LIST_ROW_HEIGHT: f32 = 62.0;
-const CLIP_GROUP_GAP: f32 = 28.0;
+const CLIP_GROUP_GAP: f32 = 22.0;
 const CLIP_SCROLL_RESERVE: f32 = 14.0;
 const FILTER_ROW_PITCH: f32 = 62.0;
+const FOLDER_COLUMN_WIDTH: f32 = 236.0;
+const FOLDER_COLUMN_GAP: f32 = 24.0;
+const FOLDER_ROW_HEIGHT: f32 = 34.0;
 const METER_WIDTH: f32 = 112.0;
 const LEGACY_PAGE_TOP: f32 = 56.0;
 const NAVIGATION_TOP: f32 = 86.0;
@@ -94,7 +102,6 @@ enum Glyph {
     Grid,
     List,
     More,
-    Plus,
     Clock,
     Monitor,
     Audio,
@@ -119,12 +126,6 @@ enum SettingControl {
     Button,
     Dropdown,
     Toggle,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum PaginationKind {
-    CollectionCards,
-    CollectionClips,
 }
 
 #[derive(Clone, Copy)]
@@ -163,9 +164,10 @@ impl LogicalRect {
     }
 }
 
-pub fn player_bounds(width: u32, height: u32, aspect_ratio: f32) -> LogicalRect {
+pub fn player_bounds(model: &UiModel, width: u32, height: u32) -> LogicalRect {
+    let aspect_ratio = model.player_aspect_ratio;
     let width = width as f32;
-    let left = SIDEBAR_WIDTH + CONTENT_PADDING;
+    let left = sidebar_width(model.sidebar_collapsed) + CONTENT_PADDING;
     let right = width - CONTENT_PADDING;
     let detail = if right - left >= 960.0 { 300.0 } else { 0.0 };
     fit_aspect(
@@ -179,9 +181,10 @@ pub fn player_bounds(width: u32, height: u32, aspect_ratio: f32) -> LogicalRect 
     )
 }
 
-pub fn editor_player_bounds(width: u32, height: u32, aspect_ratio: f32) -> LogicalRect {
+pub fn editor_player_bounds(model: &UiModel, width: u32, height: u32) -> LogicalRect {
+    let aspect_ratio = model.player_aspect_ratio;
     let width = width as f32;
-    let left = SIDEBAR_WIDTH + CONTENT_PADDING;
+    let left = sidebar_width(model.sidebar_collapsed) + CONTENT_PADDING;
     let right = width - CONTENT_PADDING;
     let detail = if right - left >= 960.0 { 300.0 } else { 0.0 };
     fit_aspect(
@@ -195,10 +198,10 @@ pub fn editor_player_bounds(width: u32, height: u32, aspect_ratio: f32) -> Logic
     )
 }
 
-pub fn editor_timeline_rail(width: u32, height: u32, aspect_ratio: f32) -> LogicalRect {
-    let left = SIDEBAR_WIDTH + CONTENT_PADDING;
+pub fn editor_timeline_rail(model: &UiModel, width: u32, height: u32) -> LogicalRect {
+    let left = sidebar_width(model.sidebar_collapsed) + CONTENT_PADDING;
     let right = width as f32 - CONTENT_PADDING;
-    let stage = editor_player_bounds(width, height, aspect_ratio);
+    let stage = editor_player_bounds(model, width, height);
     let timeline_top = stage.bottom + 92.0;
     rect(
         left + 24.0,
@@ -212,8 +215,8 @@ pub fn editor_timeline_fraction(rail: LogicalRect, x: f32) -> u16 {
     (((x - rail.left) / (rail.right - rail.left).max(1.0)).clamp(0.0, 1.0) * 1000.0).round() as u16
 }
 
-pub fn player_timeline_rail(width: u32, height: u32, aspect_ratio: f32) -> LogicalRect {
-    let stage = player_bounds(width, height, aspect_ratio);
+pub fn player_timeline_rail(model: &UiModel, width: u32, height: u32) -> LogicalRect {
+    let stage = player_bounds(model, width, height);
     rect(
         stage.left + 260.0,
         stage.bottom + 35.0,
@@ -222,8 +225,8 @@ pub fn player_timeline_rail(width: u32, height: u32, aspect_ratio: f32) -> Logic
     )
 }
 
-pub fn player_volume_rail(width: u32, height: u32, aspect_ratio: f32) -> LogicalRect {
-    let stage = player_bounds(width, height, aspect_ratio);
+pub fn player_volume_rail(model: &UiModel, width: u32, height: u32) -> LogicalRect {
+    let stage = player_bounds(model, width, height);
     let switch_top = (stage.top + stage.bottom) / 2.0 - 22.0;
     let volume_x = stage.right + 78.0;
     let volume_top = switch_top - 76.0;
@@ -247,8 +250,13 @@ pub fn fullscreen_volume_rail(width: u32, height: u32) -> LogicalRect {
     rect(204.0, height - 34.0, width.min(334.0), height - 28.0)
 }
 
-pub fn settings_audio_gain_rail(width: u32, height: u32, row: usize) -> LogicalRect {
-    let left = SIDEBAR_WIDTH + CONTENT_PADDING;
+pub fn settings_audio_gain_rail(
+    model: &UiModel,
+    width: u32,
+    height: u32,
+    row: usize,
+) -> LogicalRect {
+    let left = sidebar_width(model.sidebar_collapsed) + CONTENT_PADDING;
     let right = width as f32 - CONTENT_PADDING;
     let offset = content_top() - LEGACY_PAGE_TOP;
     let virtual_height = content_bottom(height as f32, true) - offset + 22.0;
@@ -292,6 +300,7 @@ struct HitRegion {
 
 pub struct Renderer {
     d2d_factory: ID2D1Factory,
+    round_stroke: ID2D1StrokeStyle,
     write_factory: IDWriteFactory,
     target: Option<ID2D1HwndRenderTarget>,
     page_title: IDWriteTextFormat,
@@ -301,6 +310,8 @@ pub struct Renderer {
     body: IDWriteTextFormat,
     small: IDWriteTextFormat,
     label: IDWriteTextFormat,
+    small_center: IDWriteTextFormat,
+    small_right: IDWriteTextFormat,
     body_center: IDWriteTextFormat,
     strong_center: IDWriteTextFormat,
     button: IDWriteTextFormat,
@@ -378,6 +389,14 @@ impl Renderer {
             true,
             false,
         )?;
+        let small_center = text_format(
+            &write_factory,
+            w!("Segoe UI Variable Text"),
+            11.0,
+            true,
+            true,
+        )?;
+        let small_right = text_format_trailing(&write_factory, w!("Segoe UI Variable Text"), 11.5)?;
         let body_center = text_format(
             &write_factory,
             w!("Segoe UI Variable Text"),
@@ -420,6 +439,21 @@ impl Renderer {
             true,
             true,
         )?;
+        let round_stroke = unsafe {
+            d2d_factory.CreateStrokeStyle(
+                &D2D1_STROKE_STYLE_PROPERTIES {
+                    startCap: D2D1_CAP_STYLE_ROUND,
+                    endCap: D2D1_CAP_STYLE_ROUND,
+                    dashCap: D2D1_CAP_STYLE_ROUND,
+                    lineJoin: D2D1_LINE_JOIN_ROUND,
+                    miterLimit: 10.0,
+                    dashStyle: D2D1_DASH_STYLE_SOLID,
+                    dashOffset: 0.0,
+                },
+                None,
+            )
+        }
+        .map_err(|error| error.to_string())?;
         let wic_factory =
             unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
                 .map_err(|error| error.to_string())?;
@@ -435,6 +469,7 @@ impl Renderer {
         .is_ok();
         Ok(Self {
             d2d_factory,
+            round_stroke,
             write_factory,
             target: None,
             page_title,
@@ -444,6 +479,8 @@ impl Renderer {
             body,
             small,
             label,
+            small_center,
+            small_right,
             body_center,
             strong_center,
             button,
@@ -620,6 +657,33 @@ impl Renderer {
             return 0.0;
         }
         metrics.widthIncludingTrailingWhitespace
+    }
+
+    fn shorten(&self, value: &str, format: &IDWriteTextFormat, max_width: f32) -> String {
+        if max_width <= 0.0 || self.measure(value, format) <= max_width {
+            return value.to_owned();
+        }
+        let characters = value.chars().count();
+        let mut fits = 0;
+        let mut too_long = characters;
+        while too_long - fits > 1 {
+            let middle = (fits + too_long) / 2;
+            let candidate = value
+                .chars()
+                .take(middle)
+                .chain(std::iter::once('…'))
+                .collect::<String>();
+            if self.measure(&candidate, format) <= max_width {
+                fits = middle;
+            } else {
+                too_long = middle;
+            }
+        }
+        value
+            .chars()
+            .take(fits)
+            .chain(std::iter::once('…'))
+            .collect()
     }
 
     fn discard_target(&mut self) {
@@ -918,7 +982,7 @@ impl Renderer {
 
     fn render_shell(&mut self, model: &UiModel, width: f32, height: f32) -> Result<(), String> {
         self.render_sidebar(model, height)?;
-        let left = SIDEBAR_WIDTH + CONTENT_PADDING;
+        let left = sidebar_width(model.sidebar_collapsed) + CONTENT_PADDING;
         let right = width - CONTENT_PADDING;
         let chrome = page_has_chrome(model.page);
         let top = if chrome { content_top() } else { 0.0 };
@@ -928,12 +992,7 @@ impl Renderer {
         }
         match model.page {
             Page::Library => self.render_library(model, left, right, top, bottom)?,
-            Page::Collections => {
-                let offset = top - LEGACY_PAGE_TOP;
-                self.with_offset(offset, |renderer| {
-                    renderer.render_collections(model, left, right, bottom - offset + 22.0)
-                })?;
-            }
+            Page::Collections => self.render_collections(model, left, right, top, bottom)?,
             Page::Settings => {
                 let offset = top - LEGACY_PAGE_TOP;
                 self.with_offset(offset, |renderer| {
@@ -950,84 +1009,161 @@ impl Renderer {
     }
 
     fn render_sidebar(&mut self, model: &UiModel, height: f32) -> Result<(), String> {
-        self.fill(rect(0.0, 0.0, SIDEBAR_WIDTH, height), RAIL, 0.0)?;
-        self.fill(
-            rect(SIDEBAR_WIDTH - 1.0, 0.0, SIDEBAR_WIDTH, height),
-            BORDER,
-            0.0,
-        )?;
-        self.draw_wreath_logo(rect(20.0, 26.0, 44.0, 50.0), PRIMARY)?;
-        self.text(
-            "wreath",
-            rect(52.0, 26.0, SIDEBAR_WIDTH - 12.0, 50.0),
-            &self.brand.clone(),
-            PRIMARY,
-        )?;
+        let rail = sidebar_width(model.sidebar_collapsed);
+        let collapsed = model.sidebar_collapsed;
+        self.fill(rect(0.0, 0.0, rail, height), RAIL, 0.0)?;
+        self.fill(rect(rail - 1.0, 0.0, rail, height), BORDER, 0.0)?;
+
+        if collapsed {
+            self.draw_wreath_logo(
+                rect(rail / 2.0 - 12.0, 26.0, rail / 2.0 + 12.0, 50.0),
+                PRIMARY,
+            )?;
+            self.rail_button(
+                rect(rail / 2.0 - 14.0, 60.0, rail / 2.0 + 14.0, 88.0),
+                Glyph::ChevronRight,
+                Action::ToggleSidebar,
+            )?;
+        } else {
+            self.draw_wreath_logo(rect(20.0, 26.0, 44.0, 50.0), PRIMARY)?;
+            self.text(
+                "wreath",
+                rect(52.0, 26.0, rail - 42.0, 50.0),
+                &self.brand.clone(),
+                PRIMARY,
+            )?;
+            self.rail_button(
+                rect(rail - 38.0, 24.0, rail - 10.0, 52.0),
+                Glyph::ChevronLeft,
+                Action::ToggleSidebar,
+            )?;
+        }
 
         let navigation = [
-            (Page::Library, Glyph::Library, "Clips"),
-            (Page::Collections, Glyph::Collections, "Collections"),
-            (Page::Settings, Glyph::Settings, "Einstellungen"),
+            (Some(Page::Library), Glyph::Library, "Clips"),
+            (Some(Page::Collections), Glyph::Collections, "Collections"),
+            (None, Glyph::Folder, "Ordner öffnen"),
         ];
+        let navigation_top = if collapsed {
+            NAVIGATION_TOP + 18.0
+        } else {
+            NAVIGATION_TOP
+        };
         for (offset, (page, glyph, label)) in navigation.iter().enumerate() {
-            let active = model.page == *page
-                || (matches!(model.page, Page::Player | Page::Editor)
-                    && model.previous_page == *page);
+            let active = page.is_some_and(|page| {
+                model.page == page
+                    || (matches!(model.page, Page::Player | Page::Editor)
+                        && model.previous_page == page)
+            });
+            let action = page.map_or(Action::OpenClipsFolder, Action::Navigate);
             self.sidebar_item(
-                NAVIGATION_TOP + offset as f32 * NAVIGATION_PITCH,
+                rail,
+                navigation_top + offset as f32 * NAVIGATION_PITCH,
                 *glyph,
                 label,
                 active,
-                Action::Navigate(*page),
+                collapsed,
+                action,
             )?;
         }
 
         self.sidebar_item(
+            rail,
             height - 92.0,
-            Glyph::Folder,
-            "Ordner öffnen",
-            false,
-            Action::OpenClipsFolder,
+            Glyph::Settings,
+            "Einstellungen",
+            model.page == Page::Settings,
+            collapsed,
+            Action::Navigate(Page::Settings),
         )?;
-        self.text(
-            &format!("wreath v{}", env!("CARGO_PKG_VERSION")),
-            rect(22.0, height - 44.0, SIDEBAR_WIDTH - 12.0, height - 22.0),
-            &self.small.clone(),
-            MUTED,
-        )?;
+        if !collapsed {
+            self.text(
+                &format!("wreath v{}", env!("CARGO_PKG_VERSION")),
+                rect(22.0, height - 44.0, rail - 12.0, height - 22.0),
+                &self.small.clone(),
+                MUTED,
+            )?;
+        }
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn sidebar_item(
         &mut self,
+        rail: f32,
         top: f32,
         glyph: Glyph,
         label: &str,
         active: bool,
+        collapsed: bool,
         action: Action,
     ) -> Result<(), String> {
-        let area = rect(10.0, top, SIDEBAR_WIDTH - 10.0, top + NAVIGATION_HEIGHT);
+        let area = if collapsed {
+            rect(8.0, top, rail - 9.0, top + NAVIGATION_HEIGHT)
+        } else {
+            rect(10.0, top, rail - 10.0, top + NAVIGATION_HEIGHT)
+        };
         if active {
             self.fill(area, SURFACE_HOVER, RADIUS)?;
         } else if self.is_hovered(&action) {
             self.fill(area, mix(RAIL, SURFACE_HOVER, self.hover_progress), RADIUS)?;
         }
         let tone = if active { PRIMARY } else { SECONDARY };
+        let icon_left = if collapsed {
+            (area.left + area.right) / 2.0 - 9.0
+        } else {
+            area.left + 12.0
+        };
         self.glyph(
             glyph,
             rect(
-                area.left + 12.0,
+                icon_left,
                 area.top + 11.0,
-                area.left + 30.0,
+                icon_left + 18.0,
                 area.bottom - 11.0,
             ),
             tone,
         )?;
-        self.text(
-            label,
-            rect(area.left + 40.0, area.top, area.right - 8.0, area.bottom),
-            &self.body.clone(),
-            tone,
+        if !collapsed {
+            self.text(
+                label,
+                rect(area.left + 40.0, area.top, area.right - 8.0, area.bottom),
+                &self.body.clone(),
+                tone,
+            )?;
+        }
+        self.hits.push(HitRegion { rect: area, action });
+        Ok(())
+    }
+
+    fn rail_button(
+        &mut self,
+        area: LogicalRect,
+        glyph: Glyph,
+        action: Action,
+    ) -> Result<(), String> {
+        if self.is_hovered(&action) {
+            self.fill(
+                area,
+                mix(RAIL, SURFACE_HOVER, self.hover_progress),
+                RADIUS_SMALL,
+            )?;
+        }
+        let center_x = (area.left + area.right) / 2.0;
+        let center_y = (area.top + area.bottom) / 2.0;
+        self.glyph(
+            glyph,
+            rect(
+                center_x - 8.0,
+                center_y - 8.0,
+                center_x + 8.0,
+                center_y + 8.0,
+            ),
+            if self.is_hovered(&action) {
+                PRIMARY
+            } else {
+                MUTED
+            },
         )?;
         self.hits.push(HitRegion { rect: area, action });
         Ok(())
@@ -1043,10 +1179,11 @@ impl Renderer {
         self.fill(bar, SURFACE, RADIUS)?;
         self.stroke(bar, BORDER, RADIUS, 1.0)?;
 
+        let narrow = bar.right - bar.left < 900.0;
         let action_width = 152.0;
         let gear_width = 40.0;
-        let action_block = action_width + 14.0 + gear_width + 20.0;
-        let status_width = 244.0;
+        let action_block = action_width + 14.0 + gear_width + 20.0 + 28.0;
+        let status_width = if narrow { 214.0 } else { 244.0 };
         let display = model.selected_display().map_or_else(
             || "Automatisch".to_owned(),
             |display| display.short_label.clone(),
@@ -1070,37 +1207,38 @@ impl Renderer {
                 "CLIP-LÄNGE",
                 format!("{} Sekunden", model.config.capture.duration_seconds),
                 Action::ChooseDuration,
-                150.0,
+                160.0,
             ),
             (
                 Glyph::Monitor,
                 "BILDSCHIRM",
                 display,
                 Action::ChooseDisplay,
-                168.0,
+                164.0,
             ),
             (
                 Glyph::Quality,
                 "QUALITÄT",
                 quality,
                 Action::ChooseQuality,
-                168.0,
+                170.0,
             ),
             (
                 Glyph::Audio,
                 "AUDIO",
                 audio.to_owned(),
                 Action::ChooseAudioMode,
-                180.0,
+                200.0,
             ),
         ];
         let preferred = settings.iter().map(|entry| entry.4).collect::<Vec<_>>();
         let available = (bar.right - bar.left - status_width - action_block).max(0.0);
-        let widths = section_widths(available, &preferred, 118.0);
+        let widths = section_widths(available, &preferred, if narrow { 132.0 } else { 150.0 });
 
         self.replay_indicator(
             rect(bar.left, bar.top, bar.left + status_width, bar.bottom),
             model,
+            narrow,
         )?;
         let mut x = bar.left + status_width;
         for (index, width) in widths.iter().enumerate() {
@@ -1128,7 +1266,7 @@ impl Renderer {
             gear.left - 14.0,
             bar.top + 56.0,
         );
-        self.toolbar_separator(bar, button.left - 20.0)?;
+        self.toolbar_separator(bar, (x + 14.0).min(button.left - 20.0))?;
         self.action_button(button, "CLIP SPEICHERN", Action::SaveReplay)?;
         self.text(
             &wreath_windows::hotkey::localized_hotkey_label(&model.config.hotkey),
@@ -1153,7 +1291,12 @@ impl Renderer {
         )
     }
 
-    fn replay_indicator(&mut self, area: LogicalRect, model: &UiModel) -> Result<(), String> {
+    fn replay_indicator(
+        &mut self,
+        area: LogicalRect,
+        model: &UiModel,
+        narrow: bool,
+    ) -> Result<(), String> {
         let live = model.daemon.is_recording();
         self.status_dot(area.left + 20.0, area.top + 38.0, live)?;
         self.text(
@@ -1167,11 +1310,13 @@ impl Renderer {
             &self.label.clone(),
             if live { PRIMARY } else { SECONDARY },
         )?;
+        let seconds = model.config.capture.duration_seconds;
         self.text(
-            &format!(
-                "Speichert die letzten {} Sekunden",
-                model.config.capture.duration_seconds
-            ),
+            &if narrow {
+                format!("{seconds} Sekunden Puffer")
+            } else {
+                format!("Speichert die letzten {seconds} Sekunden")
+            },
             rect(
                 area.left + 36.0,
                 area.top + 48.0,
@@ -1223,20 +1368,26 @@ impl Renderer {
                 RADIUS,
             )?;
         }
-        self.glyph(
-            glyph,
-            rect(
-                area.left + 18.0,
-                area.top + 38.0,
-                area.left + 34.0,
-                area.top + 54.0,
-            ),
-            SECONDARY,
-        )?;
+        let compact = area.right - area.left < 152.0;
+        let text_left = if compact {
+            area.left + 14.0
+        } else {
+            self.glyph(
+                glyph,
+                rect(
+                    area.left + 18.0,
+                    area.top + 38.0,
+                    area.left + 34.0,
+                    area.top + 54.0,
+                ),
+                SECONDARY,
+            )?;
+            area.left + 44.0
+        };
         self.text(
             label,
             rect(
-                area.left + 44.0,
+                text_left,
                 area.top + 28.0,
                 area.right - 14.0,
                 area.top + 47.0,
@@ -1245,20 +1396,20 @@ impl Renderer {
             MUTED,
         )?;
         let chevron = rect(
-            area.right - 26.0,
+            area.right - 24.0,
             area.top + 52.0,
-            area.right - 14.0,
+            area.right - 12.0,
             area.top + 62.0,
         );
-        let characters = (((chevron.left - 8.0) - (area.left + 44.0)) / 7.0).max(6.0) as usize;
+        let value_area = rect(
+            text_left,
+            area.top + 47.0,
+            chevron.left - 6.0,
+            area.top + 70.0,
+        );
         self.text(
-            &ellipsize(value, characters),
-            rect(
-                area.left + 44.0,
-                area.top + 47.0,
-                chevron.left - 6.0,
-                area.top + 70.0,
-            ),
+            &self.shorten(value, &self.strong, value_area.right - value_area.left),
+            value_area,
             &self.strong.clone(),
             PRIMARY,
         )?;
@@ -1294,7 +1445,12 @@ impl Renderer {
         width: f32,
         height: f32,
     ) -> Result<(), String> {
-        let bar = rect(SIDEBAR_WIDTH, height - STATUS_BAR_HEIGHT, width, height);
+        let bar = rect(
+            sidebar_width(model.sidebar_collapsed),
+            height - STATUS_BAR_HEIGHT,
+            width,
+            height,
+        );
         self.fill(bar, CANVAS, 0.0)?;
         self.fill(
             rect(bar.left, bar.top, bar.right, bar.top + 1.0),
@@ -1320,7 +1476,7 @@ impl Renderer {
         let widths = section_widths(
             (bar.right - CONTENT_PADDING - inner_left).max(0.0),
             &preferred,
-            168.0,
+            176.0,
         );
 
         let mut x = inner_left;
@@ -1400,7 +1556,7 @@ impl Renderer {
                     )?;
                 }
             }
-            x += width + 24.0;
+            x += width;
         }
         Ok(())
     }
@@ -1540,7 +1696,7 @@ impl Renderer {
         self.view_button(
             filter,
             Glyph::Filter,
-            model.filter_panel_open,
+            model.filter_panel_open || model.filters_are_active(),
             Action::ToggleFilterPanel,
         )?;
         self.view_button(
@@ -1558,18 +1714,10 @@ impl Renderer {
 
         self.fill(rect(left, top + 88.0, right, top + 89.0), BORDER, 0.0)?;
 
-        let body_top = top + 105.0;
-        let mut clips_left = left;
-        if model.filter_panel_open {
-            self.render_filter_panel(
-                model,
-                rect(left, body_top, left + FILTER_PANEL_WIDTH, bottom),
-            )?;
-            clips_left = left + FILTER_PANEL_WIDTH + FILTER_PANEL_GAP;
-        }
+        let body_top = top + 100.0;
         let selecting = model.selection_mode && !model.selected_clips.is_empty();
         let area = rect(
-            clips_left,
+            left,
             body_top,
             right,
             if selecting { bottom - 60.0 } else { bottom },
@@ -1591,47 +1739,153 @@ impl Renderer {
                 area.right,
                 area.top + 8.0,
             )?;
-            if model.collection_picker_open {
-                self.render_collection_picker(model, right, top + 44.0)?;
+        } else {
+            let groups = model.clip_day_groups(&indices, today);
+            let counts = groups
+                .iter()
+                .map(|group| group.indices.len())
+                .collect::<Vec<_>>();
+            let layout = library_layout(
+                &counts,
+                area.right - area.left - CLIP_SCROLL_RESERVE,
+                model.library_grid,
+            );
+            let viewport_height = (area.bottom - area.top).max(0.0);
+            let overflow = (layout.height - viewport_height).max(0.0);
+            let scroll = model.library_scroll.clamp(0.0, overflow);
+
+            self.push_clip(area)?;
+            let painted = self.render_clip_sections(model, &groups, &layout, area, scroll, today);
+            self.pop_clip();
+            painted?;
+
+            if overflow > 0.0 {
+                let track = rect(area.right - 4.0, area.top, area.right - 1.0, area.bottom);
+                let visible = (viewport_height / layout.height).clamp(0.1, 1.0);
+                let thumb_height = viewport_height * visible;
+                let thumb_top = area.top + (viewport_height - thumb_height) * (scroll / overflow);
+                self.fill(
+                    rect(track.left, thumb_top, track.right, thumb_top + thumb_height),
+                    BORDER,
+                    1.5,
+                )?;
             }
-            return Ok(());
         }
 
-        let groups = model.clip_day_groups(&indices, today);
-        let counts = groups
-            .iter()
-            .map(|group| group.indices.len())
-            .collect::<Vec<_>>();
-        let layout = library_layout(
-            &counts,
-            area.right - area.left - CLIP_SCROLL_RESERVE,
-            model.library_grid,
-        );
-        let viewport_height = (area.bottom - area.top).max(0.0);
-        let overflow = (layout.height - viewport_height).max(0.0);
-        let scroll = model.library_scroll.clamp(0.0, overflow);
-
-        self.push_clip(area)?;
-        let painted = self.render_clip_sections(model, &groups, &layout, area, scroll, today);
-        self.pop_clip();
-        painted?;
-
-        if overflow > 0.0 {
-            let track = rect(area.right - 4.0, area.top, area.right - 1.0, area.bottom);
-            let visible = (viewport_height / layout.height).clamp(0.1, 1.0);
-            let thumb_height = viewport_height * visible;
-            let thumb_top = area.top + (viewport_height - thumb_height) * (scroll / overflow);
-            self.fill(
-                rect(track.left, thumb_top, track.right, thumb_top + thumb_height),
-                BORDER,
-                1.5,
-            )?;
-        }
         if selecting {
             self.selection_toolbar(model, area.left, area.right, bottom - 44.0)?;
         }
+        if model.filter_panel_open {
+            self.render_filter_panel(model, filter, bottom + STATUS_BAR_HEIGHT + 2.0)?;
+        }
         if model.collection_picker_open {
             self.render_collection_picker(model, right, top + 44.0)?;
+        }
+        Ok(())
+    }
+
+    fn render_filter_panel(
+        &mut self,
+        model: &UiModel,
+        anchor: LogicalRect,
+        bottom: f32,
+    ) -> Result<(), String> {
+        let entries: [(&str, String, Action); 5] = [
+            (
+                "Zeitraum",
+                model.filter_time.label().to_owned(),
+                Action::ChooseTimeFilter,
+            ),
+            (
+                "Spiel",
+                model.filter_collection_label().to_owned(),
+                Action::ChooseCollectionFilter,
+            ),
+            (
+                "Typ",
+                model.filter_type.label().to_owned(),
+                Action::ChooseTypeFilter,
+            ),
+            (
+                "Größe",
+                model.filter_size.label().to_owned(),
+                Action::ChooseSizeFilter,
+            ),
+            (
+                "Sortierung",
+                model.sort_label().to_owned(),
+                Action::ChooseClipSort,
+            ),
+        ];
+        let width = FILTER_PANEL_WIDTH;
+        let panel_height = (44.0 + entries.len() as f32 * FILTER_ROW_PITCH + 40.0)
+            .min((bottom - anchor.bottom - 16.0).max(200.0));
+        let panel = rect(
+            anchor.right - width,
+            anchor.bottom + 8.0,
+            anchor.right,
+            anchor.bottom + 8.0 + panel_height,
+        );
+        self.fill(panel, SURFACE_RAISED, RADIUS_LARGE)?;
+        self.stroke(panel, BORDER, RADIUS_LARGE, 1.0)?;
+        self.text(
+            "FILTER",
+            rect(
+                panel.left + 18.0,
+                panel.top + 12.0,
+                panel.right - 60.0,
+                panel.top + 34.0,
+            ),
+            &self.label.clone(),
+            MUTED,
+        )?;
+        let active = model.filters_are_active();
+        let reset = rect(
+            panel.right - 130.0,
+            panel.top + 10.0,
+            panel.right - 16.0,
+            panel.top + 34.0,
+        );
+        self.text(
+            "Zurücksetzen",
+            reset,
+            &self.small_right.clone(),
+            if !active {
+                MUTED
+            } else if self.is_hovered(&Action::ResetFilters) {
+                PRIMARY
+            } else {
+                SECONDARY
+            },
+        )?;
+        if active {
+            self.hits.push(HitRegion {
+                rect: reset,
+                action: Action::ResetFilters,
+            });
+        }
+
+        for (index, (label, value, action)) in entries.into_iter().enumerate() {
+            let top = panel.top + 44.0 + index as f32 * FILTER_ROW_PITCH;
+            if top + FILTER_ROW_PITCH > panel.bottom {
+                break;
+            }
+            self.text(
+                label,
+                rect(panel.left + 18.0, top, panel.right - 18.0, top + 18.0),
+                &self.small.clone(),
+                SECONDARY,
+            )?;
+            self.dropdown(
+                rect(
+                    panel.left + 18.0,
+                    top + 20.0,
+                    panel.right - 18.0,
+                    top + 54.0,
+                ),
+                &value,
+                action,
+            )?;
         }
         Ok(())
     }
@@ -1654,7 +1908,7 @@ impl Renderer {
             if header_top + CLIP_SECTION_HEADER > area.top {
                 self.text(
                     &group.label,
-                    rect(area.left, header_top, area.left + 300.0, header_top + 28.0),
+                    rect(area.left, header_top, area.left + 300.0, header_top + 26.0),
                     &self.section.clone(),
                     PRIMARY,
                 )?;
@@ -1669,9 +1923,9 @@ impl Renderer {
                         area.right - 160.0 - CLIP_SCROLL_RESERVE,
                         header_top + 3.0,
                         area.right - CLIP_SCROLL_RESERVE,
-                        header_top + 26.0,
+                        header_top + 24.0,
                     ),
-                    &self.small.clone(),
+                    &self.small_right.clone(),
                     MUTED,
                 )?;
             }
@@ -1713,12 +1967,6 @@ impl Renderer {
         let Some(clip) = model.clips.get(index) else {
             return Ok(());
         };
-        let preview = rect(
-            card.left,
-            card.top,
-            card.right,
-            card.bottom - CLIP_META_HEIGHT,
-        );
         let open = if model.selection_mode {
             Action::ToggleClipSelection(index)
         } else {
@@ -1733,154 +1981,180 @@ impl Renderer {
             .into_iter()
             .any(|action| self.is_hovered(action));
 
+        // the pointer target for the card is registered first so the overlay
+        // buttons drawn on top of it keep their own targets
+        self.push_clipped_hit(card, viewport, open);
+
+        self.fill(
+            card,
+            if selected {
+                SURFACE_HOVER
+            } else if hovered {
+                mix(CARD, SURFACE_HOVER, self.hover_progress)
+            } else {
+                CARD
+            },
+            RADIUS,
+        )?;
+        self.stroke(
+            card,
+            if selected {
+                SECONDARY
+            } else if hovered {
+                mix(HAIRLINE, SECONDARY, self.hover_progress * 0.8)
+            } else {
+                HAIRLINE
+            },
+            RADIUS,
+            1.0,
+        )?;
+
+        let preview = rect(
+            card.left + 1.0,
+            card.top + 1.0,
+            card.right - 1.0,
+            card.bottom - CLIP_META_HEIGHT,
+        );
         self.fill(preview, STAGE, RADIUS_SMALL)?;
         if !self.draw_thumbnail(&clip.path, preview)? {
             self.glyph(
                 Glyph::Play,
                 rect(
-                    (preview.left + preview.right) / 2.0 - 11.0,
-                    (preview.top + preview.bottom) / 2.0 - 11.0,
-                    (preview.left + preview.right) / 2.0 + 11.0,
-                    (preview.top + preview.bottom) / 2.0 + 11.0,
+                    (preview.left + preview.right) / 2.0 - 10.0,
+                    (preview.top + preview.bottom) / 2.0 - 10.0,
+                    (preview.left + preview.right) / 2.0 + 10.0,
+                    (preview.top + preview.bottom) / 2.0 + 10.0,
                 ),
                 MUTED,
-            )?;
-        }
-        if selected {
-            self.stroke(preview, PRIMARY, RADIUS_SMALL, 2.0)?;
-        } else if hovered {
-            self.stroke(
-                preview,
-                mix(BORDER, PRIMARY, self.hover_progress * 0.7),
-                RADIUS_SMALL,
-                1.0,
             )?;
         }
 
         if let Some(duration) = self.clip_duration(&clip.path) {
             let label = format_clip_badge_duration(duration);
+            let badge_width = self.measure(&label, &self.small_center) + 14.0;
             let badge = rect(
-                preview.left + 8.0,
-                preview.bottom - 26.0,
-                preview.left + 20.0 + label.chars().count() as f32 * 6.5,
-                preview.bottom - 8.0,
+                preview.left + 7.0,
+                preview.bottom - 24.0,
+                preview.left + 7.0 + badge_width,
+                preview.bottom - 7.0,
             );
-            self.fill_alpha(badge, 0x000000, 0.72, RADIUS_SMALL)?;
-            self.text(&label, badge, &self.strong_center.clone(), PRIMARY)?;
+            self.fill_alpha(badge, 0x000000, 0.7, RADIUS_SMALL)?;
+            self.text(&label, badge, &self.small_center.clone(), PRIMARY)?;
         }
 
         if model.selection_mode {
             let check = rect(
-                preview.right - 32.0,
+                preview.right - 30.0,
                 preview.top + 8.0,
                 preview.right - 8.0,
-                preview.top + 32.0,
+                preview.top + 30.0,
             );
-            self.fill(check, if selected { ACCENT } else { SURFACE_RAISED }, 12.0)?;
-            self.stroke(check, if selected { ACCENT } else { BORDER }, 12.0, 1.0)?;
+            self.fill(check, if selected { ACCENT } else { SURFACE_RAISED }, 11.0)?;
+            self.stroke(check, if selected { ACCENT } else { BORDER }, 11.0, 1.0)?;
             if selected {
                 self.text("✓", check, &self.strong_center.clone(), ACCENT_TEXT)?;
             }
-        } else {
-            if starred && !hovered {
-                let star = rect(
-                    preview.right - 30.0,
-                    preview.top + 8.0,
-                    preview.right - 8.0,
-                    preview.top + 30.0,
-                );
-                self.fill_alpha(star, 0x000000, 0.55, RADIUS_SMALL)?;
-                self.glyph(
-                    Glyph::StarFilled,
-                    rect(
-                        star.left + 4.0,
-                        star.top + 4.0,
-                        star.right - 4.0,
-                        star.bottom - 4.0,
-                    ),
-                    PRIMARY,
-                )?;
-            }
-            if hovered {
-                self.fill_alpha(preview, CANVAS, 0.42 * self.hover_progress, RADIUS_SMALL)?;
-                let play = rect(
-                    (preview.left + preview.right) / 2.0 - 19.0,
-                    (preview.top + preview.bottom) / 2.0 - 19.0,
-                    (preview.left + preview.right) / 2.0 + 19.0,
-                    (preview.top + preview.bottom) / 2.0 + 19.0,
-                );
-                self.fill(play, ACCENT, RADIUS_SMALL)?;
-                self.glyph(
-                    Glyph::Play,
-                    rect(
-                        play.left + 10.0,
-                        play.top + 9.0,
-                        play.right - 9.0,
-                        play.bottom - 9.0,
-                    ),
-                    ACCENT_TEXT,
-                )?;
-                let star = rect(
-                    preview.right - 34.0,
-                    preview.top + 8.0,
-                    preview.right - 8.0,
-                    preview.top + 34.0,
-                );
-                self.overlay_button(
-                    star,
-                    if starred {
-                        Glyph::StarFilled
-                    } else {
-                        Glyph::Star
-                    },
-                    favorite.clone(),
-                    viewport,
-                )?;
-                let reveal = rect(
-                    star.left - 32.0,
-                    preview.top + 8.0,
-                    star.left - 6.0,
-                    preview.top + 34.0,
-                );
-                self.overlay_button(reveal, Glyph::External, external.clone(), viewport)?;
-            }
+        } else if hovered {
+            self.fill_alpha(preview, CANVAS, 0.4 * self.hover_progress, RADIUS_SMALL)?;
+            let play = rect(
+                (preview.left + preview.right) / 2.0 - 18.0,
+                (preview.top + preview.bottom) / 2.0 - 18.0,
+                (preview.left + preview.right) / 2.0 + 18.0,
+                (preview.top + preview.bottom) / 2.0 + 18.0,
+            );
+            self.fill(play, ACCENT, RADIUS_SMALL)?;
+            self.glyph(
+                Glyph::Play,
+                rect(
+                    play.left + 10.0,
+                    play.top + 9.0,
+                    play.right - 8.0,
+                    play.bottom - 9.0,
+                ),
+                ACCENT_TEXT,
+            )?;
+            let star = rect(
+                preview.right - 34.0,
+                preview.top + 7.0,
+                preview.right - 8.0,
+                preview.top + 33.0,
+            );
+            self.overlay_button(
+                star,
+                if starred {
+                    Glyph::StarFilled
+                } else {
+                    Glyph::Star
+                },
+                favorite,
+                viewport,
+            )?;
+            self.overlay_button(
+                rect(star.left - 32.0, star.top, star.left - 6.0, star.bottom),
+                Glyph::External,
+                external,
+                viewport,
+            )?;
+        } else if starred {
+            let star = rect(
+                preview.right - 30.0,
+                preview.top + 7.0,
+                preview.right - 8.0,
+                preview.top + 29.0,
+            );
+            self.fill_alpha(star, 0x000000, 0.5, RADIUS_SMALL)?;
+            self.glyph(
+                Glyph::StarFilled,
+                rect(
+                    star.left + 4.0,
+                    star.top + 4.0,
+                    star.right - 4.0,
+                    star.bottom - 4.0,
+                ),
+                PRIMARY,
+            )?;
         }
 
-        let title_top = preview.bottom + 8.0;
+        let text_left = card.left + 12.0;
+        let more = rect(
+            card.right - 34.0,
+            card.bottom - CLIP_META_HEIGHT + 10.0,
+            card.right - 8.0,
+            card.bottom - 10.0,
+        );
         self.text(
-            &clip.title,
-            rect(card.left, title_top, card.right - 30.0, title_top + 21.0),
+            &self.shorten(&clip.title, &self.strong, more.left - text_left - 8.0),
+            rect(
+                text_left,
+                card.bottom - CLIP_META_HEIGHT + 6.0,
+                more.left - 8.0,
+                card.bottom - CLIP_META_HEIGHT + 26.0,
+            ),
             &self.strong.clone(),
             PRIMARY,
         )?;
         self.text(
             &format!(
-                "{}  •  {}",
+                "{}  ·  {}",
                 crate::clock::stamp_label(crate::clock::local(clip.modified), today),
                 format_bytes(clip.size_bytes)
             ),
             rect(
-                card.left,
-                title_top + 21.0,
-                card.right - 30.0,
-                title_top + 41.0,
+                text_left,
+                card.bottom - CLIP_META_HEIGHT + 25.0,
+                more.left - 8.0,
+                card.bottom - 8.0,
             ),
             &self.small.clone(),
             MUTED,
         )?;
-        let more = rect(
-            card.right - 26.0,
-            title_top + 4.0,
-            card.right,
-            title_top + 30.0,
-        );
         self.glyph(
             Glyph::More,
             rect(
-                more.left + 3.0,
-                more.top + 7.0,
-                more.right - 3.0,
-                more.bottom - 7.0,
+                more.left + 4.0,
+                more.top + 8.0,
+                more.right - 4.0,
+                more.bottom - 8.0,
             ),
             if self.is_hovered(&menu) {
                 PRIMARY
@@ -1888,8 +2162,6 @@ impl Renderer {
                 MUTED
             },
         )?;
-
-        self.push_clipped_hit(preview, viewport, open);
         if !model.selection_mode {
             self.push_clipped_hit(more, viewport, menu);
         }
@@ -2052,85 +2324,6 @@ impl Renderer {
         Ok(())
     }
 
-    fn render_filter_panel(&mut self, model: &UiModel, area: LogicalRect) -> Result<(), String> {
-        self.text(
-            "FILTER",
-            rect(area.left, area.top, area.right, area.top + 20.0),
-            &self.label.clone(),
-            MUTED,
-        )?;
-        let entries: [(&str, String, Action); 5] = [
-            (
-                "Zeitraum",
-                model.filter_time.label().to_owned(),
-                Action::ChooseTimeFilter,
-            ),
-            (
-                "Spiel",
-                model.filter_collection_label().to_owned(),
-                Action::ChooseCollectionFilter,
-            ),
-            (
-                "Typ",
-                model.filter_type.label().to_owned(),
-                Action::ChooseTypeFilter,
-            ),
-            (
-                "Größe",
-                model.filter_size.label().to_owned(),
-                Action::ChooseSizeFilter,
-            ),
-            (
-                "Sortierung",
-                model.sort_label().to_owned(),
-                Action::ChooseClipSort,
-            ),
-        ];
-        for (index, (label, value, action)) in entries.into_iter().enumerate() {
-            let top = area.top + 34.0 + index as f32 * FILTER_ROW_PITCH;
-            if top + FILTER_ROW_PITCH > area.bottom {
-                return Ok(());
-            }
-            self.text(
-                label,
-                rect(area.left, top, area.right, top + 18.0),
-                &self.small.clone(),
-                SECONDARY,
-            )?;
-            self.dropdown(
-                rect(area.left, top + 20.0, area.right, top + 54.0),
-                &value,
-                action,
-            )?;
-        }
-        let reset_top = area.top + 34.0 + 5.0 * FILTER_ROW_PITCH + 8.0;
-        if reset_top + 26.0 > area.bottom {
-            return Ok(());
-        }
-        let reset = rect(area.left, reset_top, area.right, reset_top + 26.0);
-        let active = model.filters_are_active();
-        let hovered = active && self.is_hovered(&Action::ResetFilters);
-        self.text(
-            "Filter zurücksetzen",
-            rect(reset.left, reset.top, reset.right, reset.bottom),
-            &self.body.clone(),
-            if !active {
-                MUTED
-            } else if hovered {
-                PRIMARY
-            } else {
-                SECONDARY
-            },
-        )?;
-        if active {
-            self.hits.push(HitRegion {
-                rect: reset,
-                action: Action::ResetFilters,
-            });
-        }
-        Ok(())
-    }
-
     fn dropdown(&mut self, area: LogicalRect, value: &str, action: Action) -> Result<(), String> {
         let hovered = self.is_hovered(&action);
         self.fill(
@@ -2158,10 +2351,10 @@ impl Renderer {
             area.right - 14.0,
             (area.top + area.bottom) / 2.0 + 6.0,
         );
-        let characters = (((chevron.left - 6.0) - (area.left + 12.0)) / 6.6).max(6.0) as usize;
+        let value_area = rect(area.left + 12.0, area.top, chevron.left - 6.0, area.bottom);
         self.text(
-            &ellipsize(value, characters),
-            rect(area.left + 12.0, area.top, chevron.left - 6.0, area.bottom),
+            &self.shorten(value, &self.body, value_area.right - value_area.left),
+            value_area,
             &self.body.clone(),
             PRIMARY,
         )?;
@@ -2271,243 +2464,291 @@ impl Renderer {
         model: &UiModel,
         left: f32,
         right: f32,
-        height: f32,
+        top: f32,
+        bottom: f32,
     ) -> Result<(), String> {
-        self.page_heading(
-            "Collections",
-            "Organisiere deine Clips in Sammlungen.",
-            left,
-            right,
-        )?;
-        self.pill(
-            rect(right - 170.0, 86.0, right, 130.0),
-            ACCENT,
-            "+  Neue Sammlung",
-            CANVAS,
-            Some(Action::CreateCollection),
-        )?;
-        let detail_width = if right - left >= 1080.0 { 244.0 } else { 0.0 };
-        let content_right = right
-            - if detail_width > 0.0 {
-                detail_width + 40.0
-            } else {
-                0.0
-            };
-        self.search_field(
-            model,
-            rect(
-                left,
-                157.0,
-                (left + 576.0).min(content_right - 260.0),
-                204.0,
-            ),
-            "Sammlungen suchen...",
-        )?;
-        self.pill(
-            rect(content_right - 296.0, 157.0, content_right - 130.0, 204.0),
-            SURFACE,
-            if model.collections_descending {
-                "Sortieren: Z-A"
-            } else {
-                "Sortieren: A-Z"
-            },
-            PRIMARY,
-            Some(Action::ToggleCollectionSort),
-        )?;
-        self.icon_button(
-            rect(content_right - 112.0, 157.0, content_right - 62.0, 204.0),
-            Glyph::Grid,
-            Action::SetCollectionsGrid(true),
-        )?;
-        self.icon_button(
-            rect(content_right - 50.0, 157.0, content_right, 204.0),
-            Glyph::List,
-            Action::SetCollectionsGrid(false),
-        )?;
-
-        let card_top = 235.0;
-        let gap = 14.0;
-        let collection_indices = model.visible_collection_indices();
-        let cards_per_page = 2;
-        let card_pages = collection_indices.len().div_ceil(cards_per_page).max(1);
-        let card_page = model
-            .collection_cards_page
-            .min(card_pages.saturating_sub(1));
-        let card_start = card_page * cards_per_page;
-        let visible_cards = &collection_indices
-            [card_start..(card_start + cards_per_page).min(collection_indices.len())];
-        if model.collections_grid {
-            let column_count = (visible_cards.len() + 1).clamp(1, 4);
-            let card_width =
-                ((content_right - left) - gap * (column_count - 1) as f32) / column_count as f32;
-            let card_height = 116.0;
-            self.collection_card(
-                rect(left, card_top, left + card_width, card_top + card_height),
-                "Alle Clips",
-                "Lokale Bibliothek",
-                model.clips.len(),
-                Glyph::Library,
-                model.active_collection.is_none(),
-                Action::SelectCollection(None),
-            )?;
-            for (slot, collection_index) in visible_cards.iter().enumerate() {
-                let collection = &model.collections[*collection_index];
-                let x = left + (slot + 1) as f32 * (card_width + gap);
-                self.collection_card(
-                    rect(x, card_top, x + card_width, card_top + card_height),
-                    &collection.name,
-                    "Gespeicherte Sammlung",
-                    collection.clip_count,
-                    Glyph::Collections,
-                    model.active_collection.as_ref() == Some(&collection.path),
-                    Action::SelectCollection(Some(*collection_index)),
-                )?;
-            }
-            if collection_indices.len() < 2 && model.search.value.is_empty() && height >= 800.0 {
-                self.collection_card(
-                    rect(left, card_top + 138.0, left + card_width, card_top + 226.0),
-                    "Neue Sammlung",
-                    "Erstelle eine neue Sammlung",
-                    0,
-                    Glyph::Plus,
-                    false,
-                    Action::CreateCollection,
-                )?;
-            }
-        } else {
-            self.collection_row(
-                "Alle Clips",
-                model.clips.len(),
-                model.active_collection.is_none(),
-                rect(left, card_top, content_right, card_top + 44.0),
-                None,
-                false,
-            )?;
-            for (slot, collection_index) in visible_cards.iter().enumerate() {
-                let collection = &model.collections[*collection_index];
-                let y = card_top + 50.0 + slot as f32 * 50.0;
-                self.collection_row(
-                    &collection.name,
-                    collection.clip_count,
-                    model.active_collection.as_ref() == Some(&collection.path),
-                    rect(left, y, content_right, y + 44.0),
-                    Some(*collection_index),
-                    false,
-                )?;
-            }
-        }
-        self.pagination(
-            (left + content_right) / 2.0,
-            card_top + 128.0,
-            card_page,
-            card_pages,
-            PaginationKind::CollectionCards,
-        )?;
-
-        let title = model
-            .active_collection
-            .as_ref()
-            .and_then(|active| {
-                model
-                    .collections
-                    .iter()
-                    .find(|collection| &collection.path == active)
-            })
-            .map_or("Clips in „Alle Clips“", |collection| {
-                collection.name.as_str()
-            });
-        let table_top = (card_top + 185.0).min(height - 130.0);
+        let today = crate::clock::now();
         self.text(
-            title,
-            rect(left, table_top - 34.0, content_right, table_top),
+            "Collections",
+            rect(left, top, left + 320.0, top + 34.0),
+            &self.page_title.clone(),
+            PRIMARY,
+        )?;
+        self.text(
+            "Ordne deine Clips in lokalen Ordnern.",
+            rect(left, top + 44.0, left + 420.0, top + 68.0),
+            &self.body.clone(),
+            MUTED,
+        )?;
+
+        let create = rect(right - 176.0, top + 4.0, right, top + 38.0);
+        self.action_button(create, "NEUE SAMMLUNG", Action::CreateCollection)?;
+        let search = rect(
+            (create.left - 246.0).max(left + 340.0),
+            top + 4.0,
+            create.left - 12.0,
+            top + 38.0,
+        );
+        if search.right - search.left >= 120.0 {
+            self.search_field(model, search, "Sammlungen suchen...")?;
+        }
+        self.fill(rect(left, top + 88.0, right, top + 89.0), BORDER, 0.0)?;
+
+        let body_top = top + 100.0;
+        let column = rect(left, body_top, left + FOLDER_COLUMN_WIDTH, bottom);
+        self.render_folder_column(model, column)?;
+        self.fill(
+            rect(column.right + 12.0, body_top, column.right + 13.0, bottom),
+            BORDER,
+            0.0,
+        )?;
+
+        let area_left = column.right + 12.0 + FOLDER_COLUMN_GAP;
+        let active = model.active_collection.as_ref().and_then(|path| {
+            model
+                .collections
+                .iter()
+                .find(|collection| &collection.path == path)
+        });
+        let title = active.map_or("Alle Clips", |collection| collection.name.as_str());
+        self.text(
+            &self.shorten(title, &self.section, right - area_left - 240.0),
+            rect(area_left, body_top - 4.0, right - 240.0, body_top + 22.0),
             &self.section.clone(),
             PRIMARY,
         )?;
-        self.collection_table(model, left, content_right, table_top, height - 54.0)?;
-
-        if detail_width > 0.0 {
-            let detail = rect(content_right + 40.0, 157.0, right, 437.0);
-            self.fill(detail, SURFACE, RADIUS_LARGE)?;
-            self.stroke(detail, BORDER, RADIUS_LARGE, 1.0)?;
-            self.text(
-                title.trim_start_matches("Clips in „").trim_end_matches('“'),
-                rect(
-                    detail.left + 22.0,
-                    detail.top + 18.0,
-                    detail.right - 22.0,
-                    detail.top + 48.0,
-                ),
-                &self.section.clone(),
-                PRIMARY,
-            )?;
-            self.text(
-                "Lokale Clips und Aufnahmen",
-                rect(
-                    detail.left + 22.0,
-                    detail.top + 50.0,
-                    detail.right - 22.0,
-                    detail.top + 76.0,
-                ),
-                &self.small.clone(),
-                SECONDARY,
-            )?;
-            self.fill(
-                rect(
-                    detail.left + 22.0,
-                    detail.top + 90.0,
-                    detail.right - 22.0,
-                    detail.top + 91.0,
-                ),
-                BORDER,
-                0.0,
-            )?;
-            self.text(
-                &format!("{} Clips", model.visible_clip_indices(usize::MAX).len()),
-                rect(
-                    detail.left + 22.0,
-                    detail.top + 101.0,
-                    detail.right - 22.0,
-                    detail.top + 131.0,
-                ),
-                &self.body.clone(),
-                SECONDARY,
-            )?;
-            self.text(
-                "Aktionen",
-                rect(
-                    detail.left + 22.0,
-                    detail.top + 151.0,
-                    detail.right - 22.0,
-                    detail.top + 177.0,
-                ),
-                &self.small.clone(),
-                SECONDARY,
-            )?;
+        if active.is_some() {
+            let delete = rect(right - 84.0, body_top - 6.0, right, body_top + 22.0);
             let rename = rect(
-                detail.left + 22.0,
-                detail.top + 181.0,
-                detail.right - 22.0,
-                detail.top + 209.0,
+                delete.left - 116.0,
+                body_top - 6.0,
+                delete.left - 12.0,
+                body_top + 22.0,
             );
-            self.text("Umbenennen", rename, &self.body.clone(), PRIMARY)?;
-            if model.active_collection.is_some() {
-                self.hits.push(HitRegion {
-                    rect: rename,
-                    action: Action::RenameActiveCollection,
-                });
-                let delete = rect(
-                    detail.left + 22.0,
-                    detail.top + 217.0,
-                    detail.right - 22.0,
-                    detail.top + 245.0,
-                );
-                self.text("Löschen", delete, &self.body.clone(), DESTRUCTIVE)?;
-                self.hits.push(HitRegion {
-                    rect: delete,
-                    action: Action::DeleteActiveCollection,
-                });
+            for (area, label, action, destructive) in [
+                (rename, "Umbenennen", Action::RenameActiveCollection, false),
+                (delete, "Löschen", Action::DeleteActiveCollection, true),
+            ] {
+                let hovered = self.is_hovered(&action);
+                self.text(
+                    label,
+                    area,
+                    &self.small_right.clone(),
+                    if destructive && hovered {
+                        DESTRUCTIVE
+                    } else if hovered {
+                        PRIMARY
+                    } else {
+                        SECONDARY
+                    },
+                )?;
+                self.hits.push(HitRegion { rect: area, action });
             }
         }
+
+        let clips_top = body_top + 34.0;
+        let selecting = model.selection_mode && !model.selected_clips.is_empty();
+        let area = rect(
+            area_left,
+            clips_top,
+            right,
+            if selecting { bottom - 60.0 } else { bottom },
+        );
+        let indices = model.visible_clip_indices_at(usize::MAX, today);
+        if indices.is_empty() {
+            self.empty_state(
+                if active.is_some() {
+                    "Diese Sammlung ist leer"
+                } else {
+                    "Noch keine Clips"
+                },
+                area.left,
+                area.right,
+                area.top + 8.0,
+            )?;
+        } else {
+            let groups = model.clip_day_groups(&indices, today);
+            let counts = groups
+                .iter()
+                .map(|group| group.indices.len())
+                .collect::<Vec<_>>();
+            let layout = library_layout(
+                &counts,
+                area.right - area.left - CLIP_SCROLL_RESERVE,
+                model.library_grid,
+            );
+            let viewport_height = (area.bottom - area.top).max(0.0);
+            let overflow = (layout.height - viewport_height).max(0.0);
+            let scroll = model.library_scroll.clamp(0.0, overflow);
+            self.push_clip(area)?;
+            let painted = self.render_clip_sections(model, &groups, &layout, area, scroll, today);
+            self.pop_clip();
+            painted?;
+            if overflow > 0.0 {
+                let visible = (viewport_height / layout.height).clamp(0.1, 1.0);
+                let thumb_height = viewport_height * visible;
+                let thumb_top = area.top + (viewport_height - thumb_height) * (scroll / overflow);
+                self.fill(
+                    rect(
+                        area.right - 4.0,
+                        thumb_top,
+                        area.right - 1.0,
+                        thumb_top + thumb_height,
+                    ),
+                    BORDER,
+                    1.5,
+                )?;
+            }
+        }
+        if selecting {
+            self.selection_toolbar(model, area.left, area.right, bottom - 44.0)?;
+        }
+        if model.collection_picker_open {
+            self.render_collection_picker(model, right, top + 44.0)?;
+        }
+        Ok(())
+    }
+
+    fn render_folder_column(&mut self, model: &UiModel, area: LogicalRect) -> Result<(), String> {
+        self.text(
+            "ORDNER",
+            rect(
+                area.left + 4.0,
+                area.top - 4.0,
+                area.left + 140.0,
+                area.top + 18.0,
+            ),
+            &self.label.clone(),
+            MUTED,
+        )?;
+        let sort = Action::ToggleCollectionSort;
+        let sort_area = rect(
+            area.right - 70.0,
+            area.top - 6.0,
+            area.right,
+            area.top + 18.0,
+        );
+        self.text(
+            if model.collections_descending {
+                "Z–A"
+            } else {
+                "A–Z"
+            },
+            sort_area,
+            &self.small_right.clone(),
+            if self.is_hovered(&sort) {
+                PRIMARY
+            } else {
+                MUTED
+            },
+        )?;
+        self.hits.push(HitRegion {
+            rect: sort_area,
+            action: sort,
+        });
+
+        let dragging = model.clip_drag_preview.as_ref();
+        let mut row_top = area.top + 26.0;
+        self.folder_row(
+            rect(area.left, row_top, area.right, row_top + FOLDER_ROW_HEIGHT),
+            Glyph::Library,
+            "Alle Clips",
+            model.clips.len(),
+            model.active_collection.is_none(),
+            false,
+            Action::SelectCollection(None),
+        )?;
+        row_top += FOLDER_ROW_HEIGHT + 2.0;
+
+        for index in model.visible_collection_indices() {
+            if row_top + FOLDER_ROW_HEIGHT > area.bottom {
+                break;
+            }
+            let collection = &model.collections[index];
+            self.folder_row(
+                rect(area.left, row_top, area.right, row_top + FOLDER_ROW_HEIGHT),
+                Glyph::Folder,
+                &collection.name,
+                collection.clip_count,
+                model.active_collection.as_ref() == Some(&collection.path),
+                dragging.is_some_and(|drag| drag.target_collection == Some(index)),
+                Action::SelectCollection(Some(index)),
+            )?;
+            row_top += FOLDER_ROW_HEIGHT + 2.0;
+        }
+        if model.collections.is_empty() {
+            self.text(
+                "Noch keine Sammlungen",
+                rect(area.left + 4.0, row_top + 6.0, area.right, row_top + 30.0),
+                &self.small.clone(),
+                MUTED,
+            )?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn folder_row(
+        &mut self,
+        area: LogicalRect,
+        glyph: Glyph,
+        name: &str,
+        count: usize,
+        active: bool,
+        drop_target: bool,
+        action: Action,
+    ) -> Result<(), String> {
+        let hovered = self.is_hovered(&action);
+        if active {
+            self.fill(area, SURFACE_HOVER, RADIUS_SMALL)?;
+        } else if hovered || drop_target {
+            self.fill(
+                area,
+                mix(
+                    CANVAS,
+                    SURFACE_HOVER,
+                    if drop_target {
+                        1.0
+                    } else {
+                        self.hover_progress
+                    },
+                ),
+                RADIUS_SMALL,
+            )?;
+        }
+        if drop_target {
+            self.stroke(area, SECONDARY, RADIUS_SMALL, 1.0)?;
+        }
+        let center = (area.top + area.bottom) / 2.0;
+        self.glyph(
+            glyph,
+            rect(
+                area.left + 9.0,
+                center - 8.0,
+                area.left + 25.0,
+                center + 8.0,
+            ),
+            if active { PRIMARY } else { SECONDARY },
+        )?;
+        let count_area = rect(area.right - 48.0, area.top, area.right - 10.0, area.bottom);
+        self.text(
+            &self.shorten(name, &self.body, count_area.left - (area.left + 34.0) - 8.0),
+            rect(
+                area.left + 34.0,
+                area.top,
+                count_area.left - 8.0,
+                area.bottom,
+            ),
+            &self.body.clone(),
+            if active { PRIMARY } else { SECONDARY },
+        )?;
+        self.text(
+            &count.to_string(),
+            count_area,
+            &self.small_right.clone(),
+            MUTED,
+        )?;
+        self.hits.push(HitRegion { rect: area, action });
         Ok(())
     }
 
@@ -3024,18 +3265,19 @@ impl Renderer {
                 &self.small.clone(),
                 SECONDARY,
             )?;
+            let value_area = rect(
+                area.left + 20.0,
+                top + 19.0,
+                if has_title_action {
+                    area.right - 56.0
+                } else {
+                    area.right - 20.0
+                },
+                top + row_height,
+            );
             self.text(
-                &ellipsize(&value, 31),
-                rect(
-                    area.left + 20.0,
-                    top + 19.0,
-                    if has_title_action {
-                        area.right - 56.0
-                    } else {
-                        area.right - 20.0
-                    },
-                    top + row_height,
-                ),
+                &self.shorten(&value, &self.body, value_area.right - value_area.left),
+                value_area,
                 &self.body.clone(),
                 PRIMARY,
             )?;
@@ -3564,177 +3806,6 @@ impl Renderer {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn collection_card(
-        &mut self,
-        area: LogicalRect,
-        title: &str,
-        description: &str,
-        count: usize,
-        glyph: Glyph,
-        active: bool,
-        action: Action,
-    ) -> Result<(), String> {
-        self.fill(area, if active { SURFACE_RAISED } else { SURFACE }, RADIUS)?;
-        self.stroke(
-            area,
-            if active { PRIMARY } else { BORDER },
-            RADIUS,
-            if active { 1.5 } else { 1.0 },
-        )?;
-        let icon = rect(
-            area.left + 16.0,
-            area.top + 16.0,
-            area.left + 64.0,
-            area.top + 64.0,
-        );
-        self.fill(icon, STAGE, RADIUS)?;
-        self.stroke(icon, BORDER, RADIUS, 1.0)?;
-        self.glyph(
-            glyph,
-            rect(
-                icon.left + 13.0,
-                icon.top + 13.0,
-                icon.right - 13.0,
-                icon.bottom - 13.0,
-            ),
-            PRIMARY,
-        )?;
-        self.text(
-            title,
-            rect(
-                area.left + 78.0,
-                area.top + 14.0,
-                area.right - 18.0,
-                area.top + 42.0,
-            ),
-            &self.section.clone(),
-            PRIMARY,
-        )?;
-        self.text(
-            description,
-            rect(
-                area.left + 78.0,
-                area.top + 43.0,
-                area.right - 18.0,
-                area.top + 68.0,
-            ),
-            &self.small.clone(),
-            SECONDARY,
-        )?;
-        if count > 0 || title == "Alle Clips" {
-            self.text(
-                &format!("{count} Clips"),
-                rect(
-                    area.left + 16.0,
-                    area.bottom - 34.0,
-                    area.right - 45.0,
-                    area.bottom - 8.0,
-                ),
-                &self.small.clone(),
-                SECONDARY,
-            )?;
-            self.glyph(
-                Glyph::More,
-                rect(
-                    area.right - 36.0,
-                    area.bottom - 31.0,
-                    area.right - 16.0,
-                    area.bottom - 11.0,
-                ),
-                SECONDARY,
-            )?;
-        }
-        self.hits.push(HitRegion { rect: area, action });
-        Ok(())
-    }
-
-    fn collection_table(
-        &mut self,
-        model: &UiModel,
-        left: f32,
-        right: f32,
-        top: f32,
-        bottom: f32,
-    ) -> Result<(), String> {
-        let area = rect(left, top, right, bottom);
-        self.fill(area, SURFACE, RADIUS)?;
-        self.stroke(area, BORDER, RADIUS, 1.0)?;
-        self.text(
-            "VORSCHAU",
-            rect(left + 24.0, top + 4.0, left + 190.0, top + 47.0),
-            &self.small.clone(),
-            SECONDARY,
-        )?;
-        self.text(
-            "TITEL",
-            rect(left + 212.0, top + 4.0, right - 330.0, top + 47.0),
-            &self.small.clone(),
-            SECONDARY,
-        )?;
-        self.text(
-            "ERSTELLT",
-            rect(right - 258.0, top + 4.0, right - 70.0, top + 47.0),
-            &self.small.clone(),
-            SECONDARY,
-        )?;
-        self.fill(rect(left, top + 47.0, right, top + 48.0), BORDER, 0.0)?;
-        let indices = model.visible_clip_indices(usize::MAX);
-        let available_rows = (((bottom - top - 62.0) / 71.0).floor() as usize).max(1);
-        let total_pages = indices.len().div_ceil(available_rows).max(1);
-        let page = model
-            .collection_clips_page
-            .min(total_pages.saturating_sub(1));
-        let start = page * available_rows;
-        let page_indices = &indices[start..(start + available_rows).min(indices.len())];
-        for (row, index) in page_indices.iter().copied().enumerate() {
-            let row_top = top + 48.0 + row as f32 * 71.0;
-            if row_top + 71.0 > bottom {
-                break;
-            }
-            if row > 0 {
-                self.fill(rect(left, row_top, right, row_top + 1.0), BORDER, 0.0)?;
-            }
-            let clip = &model.clips[index];
-            let preview = rect(left + 24.0, row_top + 9.0, left + 154.0, row_top + 61.0);
-            self.fill(preview, STAGE, RADIUS_SMALL)?;
-            let _ = self.draw_thumbnail(&clip.path, preview)?;
-            self.text(
-                &clip.title,
-                rect(left + 212.0, row_top, right - 300.0, row_top + 71.0),
-                &self.body.clone(),
-                PRIMARY,
-            )?;
-            self.text(
-                &age(clip.modified),
-                rect(right - 258.0, row_top, right - 70.0, row_top + 71.0),
-                &self.small.clone(),
-                SECONDARY,
-            )?;
-            self.glyph(
-                Glyph::More,
-                rect(right - 46.0, row_top + 25.0, right - 24.0, row_top + 47.0),
-                SECONDARY,
-            )?;
-            self.hits.push(HitRegion {
-                rect: rect(left, row_top, right, row_top + 71.0),
-                action: Action::OpenClip(index),
-            });
-            self.hits.push(HitRegion {
-                rect: rect(right - 58.0, row_top + 12.0, right, row_top + 59.0),
-                action: Action::OpenClipMenu(index),
-            });
-        }
-        self.pagination(
-            (left + right) / 2.0,
-            bottom - 42.0,
-            page,
-            total_pages,
-            PaginationKind::CollectionClips,
-        )?;
-        Ok(())
-    }
-
     fn settings_panel(&self, area: LogicalRect, title: &str) -> Result<(), String> {
         self.fill(area, SURFACE, RADIUS_LARGE)?;
         self.stroke(area, BORDER, RADIUS_LARGE, 1.0)?;
@@ -3813,7 +3884,7 @@ impl Renderer {
             SettingControl::Dropdown => {
                 self.fill(control_area, STAGE, RADIUS_SMALL)?;
                 self.stroke(control_area, BORDER, RADIUS_SMALL, 1.0)?;
-                let clipped = ellipsize(value, ((control_width - 50.0) / 6.4) as usize);
+                let clipped = self.shorten(value, &self.small, control_width - 50.0);
                 self.text(
                     &clipped,
                     rect(
@@ -3839,7 +3910,7 @@ impl Renderer {
             SettingControl::Button => {
                 self.fill(control_area, STAGE, RADIUS_SMALL)?;
                 self.stroke(control_area, BORDER, RADIUS_SMALL, 1.0)?;
-                let clipped = ellipsize(value, ((control_width - 32.0) / 6.4) as usize);
+                let clipped = self.shorten(value, &self.small, control_width - 32.0);
                 self.text(
                     &clipped,
                     rect(
@@ -3957,117 +4028,6 @@ impl Renderer {
             &self.body.clone(),
             SECONDARY,
         )
-    }
-
-    fn pagination(
-        &mut self,
-        center: f32,
-        top: f32,
-        page: usize,
-        total_pages: usize,
-        kind: PaginationKind,
-    ) -> Result<(), String> {
-        if total_pages <= 1 {
-            return Ok(());
-        }
-        let previous = page.saturating_sub(1);
-        let next = (page + 1).min(total_pages - 1);
-        let action = |target| match kind {
-            PaginationKind::CollectionCards => Action::SetCollectionCardsPage(target),
-            PaginationKind::CollectionClips => Action::SetCollectionClipsPage(target),
-        };
-        let area = rect(center - 106.0, top, center + 106.0, top + 42.0);
-        self.fill(area, SURFACE, RADIUS)?;
-        self.stroke(area, BORDER, RADIUS, 1.0)?;
-        self.pill(
-            rect(
-                area.left + 7.0,
-                area.top + 6.0,
-                area.left + 43.0,
-                area.bottom - 6.0,
-            ),
-            if page > 0 { SURFACE_RAISED } else { SURFACE },
-            "‹",
-            if page > 0 { PRIMARY } else { SECONDARY },
-            (page > 0).then_some(action(previous)),
-        )?;
-        self.text(
-            &format!("{} / {}", page + 1, total_pages),
-            rect(area.left + 50.0, area.top, area.right - 50.0, area.bottom),
-            &self.body_center.clone(),
-            PRIMARY,
-        )?;
-        self.pill(
-            rect(
-                area.right - 43.0,
-                area.top + 6.0,
-                area.right - 7.0,
-                area.bottom - 6.0,
-            ),
-            if page + 1 < total_pages {
-                SURFACE_RAISED
-            } else {
-                SURFACE
-            },
-            "›",
-            if page + 1 < total_pages {
-                PRIMARY
-            } else {
-                SECONDARY
-            },
-            (page + 1 < total_pages).then_some(action(next)),
-        )
-    }
-
-    fn collection_row(
-        &mut self,
-        name: &str,
-        count: usize,
-        active: bool,
-        area: LogicalRect,
-        index: Option<usize>,
-        drop_target: bool,
-    ) -> Result<(), String> {
-        let action = Action::SelectCollection(index);
-        if active || drop_target || self.is_hovered(&action) {
-            self.fill(
-                area,
-                if drop_target {
-                    mix(SURFACE, PRIMARY, 0.10)
-                } else if active {
-                    SURFACE_HOVER
-                } else {
-                    mix(SURFACE, ACCENT, self.hover_progress * 0.10)
-                },
-                RADIUS,
-            )?;
-            self.stroke(
-                area,
-                if drop_target {
-                    PRIMARY
-                } else if active {
-                    ACCENT
-                } else {
-                    BORDER
-                },
-                RADIUS,
-                if drop_target { 2.0 } else { 1.0 },
-            )?;
-        }
-        self.text(
-            name,
-            rect(area.left + 12.0, area.top, area.right - 42.0, area.bottom),
-            &self.body.clone(),
-            if active { PRIMARY } else { SECONDARY },
-        )?;
-        self.text(
-            &count.to_string(),
-            rect(area.right - 32.0, area.top, area.right, area.bottom),
-            &self.small.clone(),
-            SECONDARY,
-        )?;
-        self.hits.push(HitRegion { rect: area, action });
-        Ok(())
     }
 
     fn selection_toolbar(
@@ -4944,333 +4904,346 @@ impl Renderer {
     }
 
     fn glyph(&self, glyph: Glyph, area: LogicalRect, fill: u32) -> Result<(), String> {
-        use windows::Win32::Graphics::Direct2D::ID2D1StrokeStyle;
-
         let target = self.target.as_ref().expect("render target exists");
         let brush = unsafe { target.CreateSolidColorBrush(&color(fill), None) }
             .map_err(|error| error.to_string())?;
-        let width = area.right - area.left;
-        let height = area.bottom - area.top;
-        let point = |x: f32, y: f32| Vector2 {
-            X: area.left + width * x / 24.0,
-            Y: area.top + height * y / 24.0,
+        // every icon is laid out on a centred square so a non-square area cannot
+        // stretch it out of shape
+        let span = (area.right - area.left).min(area.bottom - area.top);
+        let center_x = (area.left + area.right) / 2.0;
+        let center_y = (area.top + area.bottom) / 2.0;
+        let scale = span / 24.0;
+        let weight = (span * 0.088).clamp(1.4, 2.1);
+        let unit = |x: f32, y: f32| Vector2 {
+            X: center_x + (x - 12.0) * scale,
+            Y: center_y + (y - 12.0) * scale,
         };
-        let stroke = width.min(height).mul_add(0.085, 0.25).clamp(1.4, 2.2);
-        let line = |from_x: f32, from_y: f32, to_x: f32, to_y: f32| unsafe {
-            target.DrawLine(
-                point(from_x, from_y),
-                point(to_x, to_y),
-                &brush,
-                stroke,
-                None::<&ID2D1StrokeStyle>,
-            );
+        let path = |points: &[(f32, f32)], closed: bool| -> Result<(), String> {
+            let mapped = points.iter().map(|(x, y)| unit(*x, *y)).collect::<Vec<_>>();
+            self.stroke_path(&mapped, closed, &brush, weight)
         };
-        let rounded = |left: f32, top: f32, right: f32, bottom: f32, radius: f32| unsafe {
-            target.DrawRoundedRectangle(
-                &D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F {
-                        left: point(left, top).X,
-                        top: point(left, top).Y,
-                        right: point(right, bottom).X,
-                        bottom: point(right, bottom).Y,
+        let solid = |points: &[(f32, f32)]| -> Result<(), String> {
+            let mapped = points.iter().map(|(x, y)| unit(*x, *y)).collect::<Vec<_>>();
+            self.fill_path(&mapped, &brush)
+        };
+        let circle = |x: f32, y: f32, radius: f32| -> Result<(), String> {
+            unsafe {
+                target.DrawEllipse(
+                    &D2D1_ELLIPSE {
+                        point: unit(x, y),
+                        radiusX: radius * scale,
+                        radiusY: radius * scale,
                     },
-                    radiusX: radius,
-                    radiusY: radius,
-                },
-                &brush,
-                stroke,
-                None::<&ID2D1StrokeStyle>,
-            );
+                    &brush,
+                    weight,
+                    Some(&self.round_stroke),
+                );
+            }
+            Ok(())
         };
-        let dot = |x: f32, y: f32| unsafe {
-            target.FillRoundedRectangle(
-                &D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F {
-                        left: point(x - 1.0, y - 1.0).X,
-                        top: point(x - 1.0, y - 1.0).Y,
-                        right: point(x + 1.0, y + 1.0).X,
-                        bottom: point(x + 1.0, y + 1.0).Y,
+        let dot = |x: f32, y: f32, radius: f32| -> Result<(), String> {
+            unsafe {
+                target.FillEllipse(
+                    &D2D1_ELLIPSE {
+                        point: unit(x, y),
+                        radiusX: radius * scale,
+                        radiusY: radius * scale,
                     },
-                    radiusX: 0.7,
-                    radiusY: 0.7,
-                },
-                &brush,
-            );
+                    &brush,
+                );
+            }
+            Ok(())
         };
+        let rounded =
+            |left: f32, top: f32, right: f32, bottom: f32, radius: f32| -> Result<(), String> {
+                let start = unit(left, top);
+                let end = unit(right, bottom);
+                unsafe {
+                    target.DrawRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: start.X,
+                                top: start.Y,
+                                right: end.X,
+                                bottom: end.Y,
+                            },
+                            radiusX: radius * scale,
+                            radiusY: radius * scale,
+                        },
+                        &brush,
+                        weight,
+                        Some(&self.round_stroke),
+                    );
+                }
+                Ok(())
+            };
+        let bar = |left: f32, top: f32, right: f32, bottom: f32| -> Result<(), String> {
+            let start = unit(left, top);
+            let end = unit(right, bottom);
+            let radius = (end.X - start.X) / 2.0;
+            unsafe {
+                target.FillRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: start.X,
+                            top: start.Y,
+                            right: end.X,
+                            bottom: end.Y,
+                        },
+                        radiusX: radius,
+                        radiusY: radius,
+                    },
+                    &brush,
+                );
+            }
+            Ok(())
+        };
+        let arc = |from: (f32, f32), to: (f32, f32), radius: f32| -> Result<(), String> {
+            self.stroke_arc(
+                unit(from.0, from.1),
+                unit(to.0, to.1),
+                radius * scale,
+                &brush,
+                weight,
+            )
+        };
+
         match glyph {
             Glyph::Library => {
-                rounded(3.0, 4.0, 21.0, 20.0, 2.5);
-                line(7.5, 4.5, 7.5, 19.5);
-                line(16.5, 4.5, 16.5, 19.5);
-                for y in [7.0, 12.0, 17.0] {
-                    dot(5.25, y);
-                    dot(18.75, y);
-                }
+                rounded(3.2, 5.2, 20.8, 18.8, 3.2)?;
+                solid(&[(10.2, 8.8), (15.6, 12.0), (10.2, 15.2)])?;
             }
             Glyph::Collections => {
-                line(3.0, 7.0, 9.0, 7.0);
-                line(9.0, 7.0, 11.0, 4.5);
-                line(11.0, 4.5, 20.0, 4.5);
-                line(20.0, 4.5, 21.0, 19.5);
-                line(21.0, 19.5, 3.0, 19.5);
-                line(3.0, 19.5, 3.0, 7.0);
-                line(3.0, 9.5, 21.0, 9.5);
+                rounded(3.4, 8.6, 20.6, 20.0, 2.8)?;
+                path(&[(6.4, 5.8), (17.6, 5.8)], false)?;
+                path(&[(8.8, 3.2), (15.2, 3.2)], false)?;
             }
             Glyph::Settings => {
-                unsafe {
-                    target.DrawEllipse(
-                        &D2D1_ELLIPSE {
-                            point: point(12.0, 12.0),
-                            radiusX: width * 0.29,
-                            radiusY: height * 0.29,
-                        },
-                        &brush,
-                        stroke,
-                        None::<&ID2D1StrokeStyle>,
-                    );
-                    target.DrawEllipse(
-                        &D2D1_ELLIPSE {
-                            point: point(12.0, 12.0),
-                            radiusX: width * 0.095,
-                            radiusY: height * 0.095,
-                        },
-                        &brush,
-                        stroke,
-                        None::<&ID2D1StrokeStyle>,
-                    );
-                }
-                for (x1, y1, x2, y2) in [
-                    (12.0, 2.0, 12.0, 5.0),
-                    (12.0, 19.0, 12.0, 22.0),
-                    (2.0, 12.0, 5.0, 12.0),
-                    (19.0, 12.0, 22.0, 12.0),
-                    (4.9, 4.9, 7.0, 7.0),
-                    (17.0, 17.0, 19.1, 19.1),
-                    (19.1, 4.9, 17.0, 7.0),
-                    (7.0, 17.0, 4.9, 19.1),
-                ] {
-                    line(x1, y1, x2, y2);
+                for (y, knob) in [(6.6, 9.0), (12.0, 15.0), (17.4, 7.4)] {
+                    path(&[(4.4, y), (19.6, y)], false)?;
+                    dot(knob, y, 2.0)?;
                 }
             }
             Glyph::Folder => {
-                line(3.0, 8.0, 9.0, 8.0);
-                line(9.0, 8.0, 11.0, 5.0);
-                line(11.0, 5.0, 19.0, 5.0);
-                line(19.0, 5.0, 21.0, 8.0);
-                line(21.0, 8.0, 21.0, 19.0);
-                line(21.0, 19.0, 3.0, 19.0);
-                line(3.0, 19.0, 3.0, 8.0);
+                path(
+                    &[
+                        (3.6, 18.9),
+                        (3.6, 6.9),
+                        (9.3, 6.9),
+                        (11.3, 9.4),
+                        (20.4, 9.4),
+                        (20.4, 18.9),
+                    ],
+                    true,
+                )?;
             }
-            Glyph::Search => unsafe {
-                target.DrawEllipse(
-                    &D2D1_ELLIPSE {
-                        point: point(10.5, 10.5),
-                        radiusX: width * 0.27,
-                        radiusY: height * 0.27,
-                    },
-                    &brush,
-                    stroke,
-                    None::<&ID2D1StrokeStyle>,
-                );
-                line(15.0, 15.0, 21.0, 21.0);
-            },
+            Glyph::Search => {
+                circle(10.4, 10.4, 6.4)?;
+                path(&[(15.2, 15.2), (20.4, 20.4)], false)?;
+            }
             Glyph::Grid => {
-                for (x, y) in [(4.0, 4.0), (14.0, 4.0), (4.0, 14.0), (14.0, 14.0)] {
-                    unsafe {
-                        target.DrawRectangle(
-                            &rect(
-                                area.left + width * x / 24.0,
-                                area.top + height * y / 24.0,
-                                area.left + width * (x + 6.0) / 24.0,
-                                area.top + height * (y + 6.0) / 24.0,
-                            )
-                            .d2d(),
-                            &brush,
-                            stroke,
-                            None::<&ID2D1StrokeStyle>,
-                        );
-                    }
-                }
+                rounded(4.0, 4.0, 10.9, 10.9, 1.8)?;
+                rounded(13.1, 4.0, 20.0, 10.9, 1.8)?;
+                rounded(4.0, 13.1, 10.9, 20.0, 1.8)?;
+                rounded(13.1, 13.1, 20.0, 20.0, 1.8)?;
             }
             Glyph::List => {
-                for y in [6.0, 12.0, 18.0] {
-                    line(4.0, y, 20.0, y);
+                for y in [6.6, 12.0, 17.4] {
+                    path(&[(4.6, y), (19.4, y)], false)?;
                 }
             }
-            Glyph::More => unsafe {
-                for x in [6.0, 12.0, 18.0] {
-                    target.FillEllipse(
-                        &D2D1_ELLIPSE {
-                            point: point(x, 12.0),
-                            radiusX: 1.3,
-                            radiusY: 1.3,
-                        },
-                        &brush,
-                    );
+            Glyph::More => {
+                for x in [6.2, 12.0, 17.8] {
+                    dot(x, 12.0, 1.35)?;
                 }
-            },
-            Glyph::Plus => {
-                line(12.0, 4.0, 12.0, 20.0);
-                line(4.0, 12.0, 20.0, 12.0);
             }
-            Glyph::Play => {
-                line(8.0, 5.0, 18.0, 12.0);
-                line(18.0, 12.0, 8.0, 19.0);
-                line(8.0, 19.0, 8.0, 5.0);
+            Glyph::Clock => {
+                circle(12.0, 12.0, 8.2)?;
+                path(&[(12.0, 7.4), (12.0, 12.0), (15.6, 14.1)], false)?;
             }
-            Glyph::Pause => unsafe {
-                target.FillRectangle(
-                    &rect(
-                        area.left + width * 7.0 / 24.0,
-                        area.top + height * 5.0 / 24.0,
-                        area.left + width * 10.0 / 24.0,
-                        area.top + height * 19.0 / 24.0,
-                    )
-                    .d2d(),
-                    &brush,
-                );
-                target.FillRectangle(
-                    &rect(
-                        area.left + width * 14.0 / 24.0,
-                        area.top + height * 5.0 / 24.0,
-                        area.left + width * 17.0 / 24.0,
-                        area.top + height * 19.0 / 24.0,
-                    )
-                    .d2d(),
-                    &brush,
-                );
-            },
-            Glyph::ChevronLeft => {
-                line(15.0, 5.0, 8.0, 12.0);
-                line(8.0, 12.0, 15.0, 19.0);
-            }
-            Glyph::ChevronRight => {
-                line(9.0, 5.0, 16.0, 12.0);
-                line(16.0, 12.0, 9.0, 19.0);
-            }
-            Glyph::Fullscreen => {
-                line(4.0, 9.0, 4.0, 4.0);
-                line(4.0, 4.0, 9.0, 4.0);
-                line(15.0, 4.0, 20.0, 4.0);
-                line(20.0, 4.0, 20.0, 9.0);
-                line(20.0, 15.0, 20.0, 20.0);
-                line(20.0, 20.0, 15.0, 20.0);
-                line(9.0, 20.0, 4.0, 20.0);
-                line(4.0, 20.0, 4.0, 15.0);
-            }
-            Glyph::Clock => unsafe {
-                target.DrawEllipse(
-                    &D2D1_ELLIPSE {
-                        point: point(12.0, 12.0),
-                        radiusX: width * 0.36,
-                        radiusY: height * 0.36,
-                    },
-                    &brush,
-                    stroke,
-                    None::<&ID2D1StrokeStyle>,
-                );
-                line(12.0, 12.0, 12.0, 6.0);
-                line(12.0, 12.0, 17.0, 15.0);
-            },
             Glyph::Monitor => {
-                line(3.0, 4.0, 21.0, 4.0);
-                line(21.0, 4.0, 21.0, 17.0);
-                line(21.0, 17.0, 3.0, 17.0);
-                line(3.0, 17.0, 3.0, 4.0);
-                line(12.0, 17.0, 12.0, 21.0);
-                line(8.0, 21.0, 16.0, 21.0);
+                rounded(3.2, 4.6, 20.8, 16.4, 2.6)?;
+                path(&[(12.0, 16.4), (12.0, 19.6)], false)?;
+                path(&[(8.6, 19.8), (15.4, 19.8)], false)?;
             }
             Glyph::Audio => {
-                line(4.0, 10.0, 8.0, 10.0);
-                line(8.0, 10.0, 13.0, 5.0);
-                line(13.0, 5.0, 13.0, 19.0);
-                line(13.0, 19.0, 8.0, 14.0);
-                line(8.0, 14.0, 4.0, 14.0);
-                line(4.0, 14.0, 4.0, 10.0);
-                line(16.0, 9.0, 18.0, 11.0);
-                line(18.0, 11.0, 18.0, 13.0);
-                line(18.0, 13.0, 16.0, 15.0);
-            }
-            Glyph::Pencil => {
-                line(5.0, 18.0, 7.0, 13.0);
-                line(7.0, 13.0, 16.5, 3.5);
-                line(16.5, 3.5, 20.5, 7.5);
-                line(20.5, 7.5, 11.0, 17.0);
-                line(11.0, 17.0, 5.0, 18.0);
-                line(7.0, 13.0, 11.0, 17.0);
-            }
-            Glyph::ChevronDown => {
-                line(5.0, 9.0, 12.0, 16.0);
-                line(12.0, 16.0, 19.0, 9.0);
-            }
-            Glyph::Close => {
-                line(8.5, 8.5, 15.5, 15.5);
-                line(15.5, 8.5, 8.5, 15.5);
+                path(
+                    &[
+                        (3.6, 9.6),
+                        (7.4, 9.6),
+                        (11.8, 5.4),
+                        (11.8, 18.6),
+                        (7.4, 14.4),
+                        (3.6, 14.4),
+                    ],
+                    true,
+                )?;
+                arc((15.0, 9.6), (15.0, 14.4), 2.6)?;
+                arc((17.6, 7.2), (17.6, 16.8), 5.2)?;
             }
             Glyph::Quality => {
-                for (x, top) in [(5.0, 16.0), (10.0, 12.0), (15.0, 8.0), (20.0, 4.5)] {
-                    line(x, 19.5, x, top);
+                for (x, top) in [(5.6, 16.4), (10.0, 12.8), (14.4, 9.2), (18.8, 5.6)] {
+                    path(&[(x, 18.6), (x, top)], false)?;
                 }
             }
             Glyph::Filter => {
-                line(3.5, 5.5, 20.5, 5.5);
-                line(3.5, 5.5, 10.0, 12.5);
-                line(20.5, 5.5, 14.0, 12.5);
-                line(10.0, 12.5, 10.0, 19.5);
-                line(14.0, 12.5, 14.0, 16.5);
-                line(10.0, 19.5, 14.0, 16.5);
+                path(&[(4.4, 7.0), (19.6, 7.0)], false)?;
+                path(&[(7.2, 12.0), (16.8, 12.0)], false)?;
+                path(&[(10.0, 17.0), (14.0, 17.0)], false)?;
             }
             Glyph::Microphone => {
-                rounded(9.5, 3.0, 14.5, 13.5, 2.5);
-                line(6.5, 11.0, 6.5, 13.0);
-                line(17.5, 11.0, 17.5, 13.0);
-                line(6.5, 13.0, 12.0, 17.0);
-                line(17.5, 13.0, 12.0, 17.0);
-                line(12.0, 17.0, 12.0, 20.5);
-                line(8.5, 20.5, 15.5, 20.5);
+                bar(10.1, 3.4, 13.9, 12.6)?;
+                arc((7.2, 10.6), (16.8, 10.6), 4.8)?;
+                path(&[(12.0, 16.6), (12.0, 20.4)], false)?;
             }
             Glyph::Star | Glyph::StarFilled => {
-                let corner = |step: usize| {
-                    let radius = if step % 2 == 0 { 8.6 } else { 3.9 };
-                    let angle =
-                        -std::f32::consts::FRAC_PI_2 + step as f32 * std::f32::consts::PI / 5.0;
-                    (12.0 + radius * angle.cos(), 12.4 + radius * angle.sin())
-                };
+                let corners = (0..10)
+                    .map(|step| {
+                        let radius = if step % 2 == 0 { 8.8 } else { 4.0 };
+                        let angle =
+                            -std::f32::consts::FRAC_PI_2 + step as f32 * std::f32::consts::PI / 5.0;
+                        (12.0 + radius * angle.cos(), 12.4 + radius * angle.sin())
+                    })
+                    .collect::<Vec<_>>();
                 if matches!(glyph, Glyph::StarFilled) {
-                    let geometry = unsafe { self.d2d_factory.CreatePathGeometry() }
-                        .map_err(|error| error.to_string())?;
-                    let sink = unsafe { geometry.Open() }.map_err(|error| error.to_string())?;
-                    let corners = (0..10)
-                        .map(|step| {
-                            let (x, y) = corner(step);
-                            point(x, y)
-                        })
-                        .collect::<Vec<_>>();
-                    unsafe {
-                        sink.BeginFigure(corners[0], D2D1_FIGURE_BEGIN_FILLED);
-                        sink.AddLines(&corners[1..]);
-                        sink.EndFigure(D2D1_FIGURE_END_CLOSED);
-                    }
-                    unsafe { sink.Close() }.map_err(|error| error.to_string())?;
-                    unsafe { target.FillGeometry(&geometry, &brush, None) };
+                    solid(&corners)?;
                 } else {
-                    for step in 0..10 {
-                        let (from_x, from_y) = corner(step);
-                        let (to_x, to_y) = corner((step + 1) % 10);
-                        line(from_x, from_y, to_x, to_y);
-                    }
+                    path(&corners, true)?;
                 }
             }
             Glyph::External => {
-                line(13.0, 4.5, 20.0, 4.5);
-                line(20.0, 4.5, 20.0, 11.5);
-                line(20.0, 4.5, 12.0, 12.5);
-                line(10.5, 5.5, 4.5, 5.5);
-                line(4.5, 5.5, 4.5, 19.5);
-                line(4.5, 19.5, 19.0, 19.5);
-                line(19.0, 19.5, 19.0, 14.0);
+                path(
+                    &[
+                        (10.4, 5.4),
+                        (4.6, 5.4),
+                        (4.6, 19.4),
+                        (18.6, 19.4),
+                        (18.6, 13.6),
+                    ],
+                    false,
+                )?;
+                path(&[(13.4, 4.6), (19.4, 4.6), (19.4, 10.6)], false)?;
+                path(&[(19.4, 4.6), (12.2, 11.8)], false)?;
+            }
+            Glyph::Play => {
+                path(&[(8.6, 5.4), (18.4, 12.0), (8.6, 18.6)], true)?;
+            }
+            Glyph::Pause => {
+                bar(8.2, 5.4, 10.8, 18.6)?;
+                bar(13.2, 5.4, 15.8, 18.6)?;
+            }
+            Glyph::ChevronLeft => {
+                path(&[(14.6, 5.6), (8.6, 12.0), (14.6, 18.4)], false)?;
+            }
+            Glyph::ChevronRight => {
+                path(&[(9.4, 5.6), (15.4, 12.0), (9.4, 18.4)], false)?;
+            }
+            Glyph::ChevronDown => {
+                path(&[(5.6, 9.4), (12.0, 15.4), (18.4, 9.4)], false)?;
+            }
+            Glyph::Close => {
+                path(&[(7.8, 7.8), (16.2, 16.2)], false)?;
+                path(&[(16.2, 7.8), (7.8, 16.2)], false)?;
+            }
+            Glyph::Pencil => {
+                path(
+                    &[
+                        (5.2, 18.8),
+                        (6.8, 14.2),
+                        (16.4, 4.6),
+                        (19.4, 7.6),
+                        (9.8, 17.2),
+                    ],
+                    true,
+                )?;
+                path(&[(6.8, 14.2), (9.8, 17.2)], false)?;
+            }
+            Glyph::Fullscreen => {
+                path(&[(4.4, 9.8), (4.4, 4.4), (9.8, 4.4)], false)?;
+                path(&[(14.2, 4.4), (19.6, 4.4), (19.6, 9.8)], false)?;
+                path(&[(19.6, 14.2), (19.6, 19.6), (14.2, 19.6)], false)?;
+                path(&[(9.8, 19.6), (4.4, 19.6), (4.4, 14.2)], false)?;
             }
         }
+        Ok(())
+    }
+
+    fn stroke_path(
+        &self,
+        points: &[Vector2],
+        closed: bool,
+        brush: &ID2D1SolidColorBrush,
+        weight: f32,
+    ) -> Result<(), String> {
+        if points.len() < 2 {
+            return Ok(());
+        }
+        let geometry = self.build_path(points, closed, D2D1_FIGURE_BEGIN_HOLLOW)?;
+        let target = self.target.as_ref().expect("render target exists");
+        unsafe { target.DrawGeometry(&geometry, brush, weight, Some(&self.round_stroke)) };
+        Ok(())
+    }
+
+    fn fill_path(&self, points: &[Vector2], brush: &ID2D1SolidColorBrush) -> Result<(), String> {
+        if points.len() < 3 {
+            return Ok(());
+        }
+        let geometry = self.build_path(points, true, D2D1_FIGURE_BEGIN_FILLED)?;
+        let target = self.target.as_ref().expect("render target exists");
+        unsafe { target.FillGeometry(&geometry, brush, None) };
+        Ok(())
+    }
+
+    fn build_path(
+        &self,
+        points: &[Vector2],
+        closed: bool,
+        begin: D2D1_FIGURE_BEGIN,
+    ) -> Result<ID2D1PathGeometry, String> {
+        let geometry =
+            unsafe { self.d2d_factory.CreatePathGeometry() }.map_err(|error| error.to_string())?;
+        let sink = unsafe { geometry.Open() }.map_err(|error| error.to_string())?;
+        unsafe {
+            sink.BeginFigure(points[0], begin);
+            sink.AddLines(&points[1..]);
+            sink.EndFigure(if closed {
+                D2D1_FIGURE_END_CLOSED
+            } else {
+                D2D1_FIGURE_END_OPEN
+            });
+        }
+        unsafe { sink.Close() }.map_err(|error| error.to_string())?;
+        Ok(geometry)
+    }
+
+    fn stroke_arc(
+        &self,
+        from: Vector2,
+        to: Vector2,
+        radius: f32,
+        brush: &ID2D1SolidColorBrush,
+        weight: f32,
+    ) -> Result<(), String> {
+        let geometry =
+            unsafe { self.d2d_factory.CreatePathGeometry() }.map_err(|error| error.to_string())?;
+        let sink = unsafe { geometry.Open() }.map_err(|error| error.to_string())?;
+        unsafe {
+            sink.BeginFigure(from, D2D1_FIGURE_BEGIN_HOLLOW);
+            sink.AddArc(&D2D1_ARC_SEGMENT {
+                point: to,
+                size: D2D_SIZE_F {
+                    width: radius,
+                    height: radius,
+                },
+                rotationAngle: 0.0,
+                sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                arcSize: D2D1_ARC_SIZE_SMALL,
+            });
+            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+        }
+        unsafe { sink.Close() }.map_err(|error| error.to_string())?;
+        let target = self.target.as_ref().expect("render target exists");
+        unsafe { target.DrawGeometry(&geometry, brush, weight, Some(&self.round_stroke)) };
         Ok(())
     }
 
@@ -5441,11 +5414,13 @@ struct LibraryLayout {
 }
 
 fn clip_columns(width: f32) -> usize {
-    if width >= 900.0 {
+    if width >= 1_460.0 {
+        5
+    } else if width >= 1_080.0 {
         4
-    } else if width >= 660.0 {
+    } else if width >= 700.0 {
         3
-    } else if width >= 440.0 {
+    } else if width >= 480.0 {
         2
     } else {
         1
@@ -5487,6 +5462,14 @@ fn library_layout(counts: &[usize], width: f32, grid: bool) -> LibraryLayout {
     }
 }
 
+pub fn sidebar_width(collapsed: bool) -> f32 {
+    if collapsed {
+        SIDEBAR_COLLAPSED_WIDTH
+    } else {
+        SIDEBAR_WIDTH
+    }
+}
+
 fn page_has_chrome(page: Page) -> bool {
     matches!(page, Page::Library | Page::Collections | Page::Settings)
 }
@@ -5497,16 +5480,18 @@ fn content_top() -> f32 {
 
 fn content_bottom(height: f32, chrome: bool) -> f32 {
     if chrome {
-        height - STATUS_BAR_HEIGHT - 18.0
+        height - STATUS_BAR_HEIGHT - 10.0
     } else {
         height
     }
 }
 
-pub fn library_overflow(model: &UiModel, width: f32, height: f32) -> f32 {
-    if model.page != Page::Library {
-        return 0.0;
-    }
+pub fn clips_overflow(model: &UiModel, width: f32, height: f32) -> f32 {
+    let collections = match model.page {
+        Page::Library => false,
+        Page::Collections => true,
+        _ => return 0.0,
+    };
     let today = crate::clock::now();
     let indices = model.visible_clip_indices_at(usize::MAX, today);
     if indices.is_empty() {
@@ -5517,13 +5502,12 @@ pub fn library_overflow(model: &UiModel, width: f32, height: f32) -> f32 {
         .iter()
         .map(|group| group.indices.len())
         .collect::<Vec<_>>();
-    let left = SIDEBAR_WIDTH
-        + CONTENT_PADDING
-        + if model.filter_panel_open {
-            FILTER_PANEL_WIDTH + FILTER_PANEL_GAP
-        } else {
-            0.0
-        };
+    let mut left = sidebar_width(model.sidebar_collapsed) + CONTENT_PADDING;
+    let mut top = content_top() + 100.0;
+    if collections {
+        left += FOLDER_COLUMN_WIDTH + 12.0 + FOLDER_COLUMN_GAP;
+        top += 34.0;
+    }
     let area_width = width - CONTENT_PADDING - left - CLIP_SCROLL_RESERVE;
     let layout = library_layout(&counts, area_width, model.library_grid);
     let selecting = model.selection_mode && !model.selected_clips.is_empty();
@@ -5531,8 +5515,7 @@ pub fn library_overflow(model: &UiModel, width: f32, height: f32) -> f32 {
     if selecting {
         bottom -= 60.0;
     }
-    let viewport = bottom - (content_top() + 105.0);
-    (layout.height - viewport.max(0.0)).max(0.0)
+    (layout.height - (bottom - top).max(0.0)).max(0.0)
 }
 
 fn section_widths(available: f32, preferred: &[f32], minimum: f32) -> Vec<f32> {
@@ -5554,6 +5537,17 @@ fn section_widths(available: f32, preferred: &[f32], minimum: f32) -> Vec<f32> {
         }
         widths.pop();
     }
+}
+
+fn text_format_trailing(
+    factory: &IDWriteFactory,
+    family: PCWSTR,
+    size: f32,
+) -> Result<IDWriteTextFormat, String> {
+    let format = text_format(factory, family, size, false, false)?;
+    unsafe { format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING) }
+        .map_err(|error| error.to_string())?;
+    Ok(format)
 }
 
 fn rect(left: f32, top: f32, right: f32, bottom: f32) -> LogicalRect {
@@ -5646,16 +5640,6 @@ fn settings_gain_rail_in_panel(panel: LogicalRect, index: usize) -> LogicalRect 
     )
 }
 
-fn ellipsize(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_owned();
-    }
-    let visible = max_chars.saturating_sub(1);
-    let mut shortened = value.chars().take(visible).collect::<String>();
-    shortened.push('…');
-    shortened
-}
-
 fn mix(from: u32, to: u32, amount: f32) -> u32 {
     let amount = amount.clamp(0.0, 1.0);
     let channel = |shift: u32| {
@@ -5742,10 +5726,10 @@ fn hotkey_capture_label(modifiers: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CLIP_SCROLL_RESERVE, CONTENT_PADDING, FILTER_PANEL_GAP, FILTER_PANEL_WIDTH, Page,
-        SIDEBAR_WIDTH, TOOLBAR_HEIGHT, TOOLBAR_TOP, clip_columns, content_bottom, content_top,
-        format_bytes, format_storage_limit, library_layout, page_has_chrome, rect, section_widths,
-        settings_gain_percent,
+        CLIP_GROUP_GAP, CLIP_SCROLL_RESERVE, CLIP_SECTION_HEADER, CONTENT_PADDING, Page,
+        SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH, TOOLBAR_HEIGHT, TOOLBAR_TOP, clip_columns,
+        content_bottom, content_top, format_bytes, format_storage_limit, library_layout,
+        page_has_chrome, rect, section_widths, settings_gain_percent, sidebar_width,
     };
 
     #[test]
@@ -5773,32 +5757,39 @@ mod tests {
     }
 
     #[test]
-    fn the_clips_grid_keeps_four_columns_at_the_target_window_width() {
-        let clips_width = 1_440.0
-            - SIDEBAR_WIDTH
-            - CONTENT_PADDING * 2.0
-            - FILTER_PANEL_WIDTH
-            - FILTER_PANEL_GAP
-            - CLIP_SCROLL_RESERVE;
+    fn the_clips_grid_fills_the_window_without_oversized_cards() {
+        let clips_width = |window: f32, collapsed: bool| {
+            window - sidebar_width(collapsed) - CONTENT_PADDING * 2.0 - CLIP_SCROLL_RESERVE
+        };
 
-        assert_eq!(clip_columns(clips_width), 4);
-        assert_eq!(clip_columns(700.0), 3);
+        assert_eq!(clip_columns(clips_width(1_440.0, false)), 4);
+        assert_eq!(clip_columns(clips_width(1_920.0, false)), 5);
+        assert_eq!(clip_columns(clips_width(1_600.0, true)), 5);
+        assert_eq!(clip_columns(clips_width(1_100.0, false)), 3);
         assert_eq!(clip_columns(500.0), 2);
         assert_eq!(clip_columns(320.0), 1);
+
+        assert_eq!(sidebar_width(false), SIDEBAR_WIDTH);
+        assert_eq!(sidebar_width(true), SIDEBAR_COLLAPSED_WIDTH);
     }
 
     #[test]
     fn day_sections_stack_without_overlapping_their_rows() {
-        let layout = library_layout(&[12, 8], 900.0, true);
+        let layout = library_layout(&[12, 8], 1_200.0, true);
 
         assert_eq!(layout.columns, 4);
-        assert_eq!(layout.card_height, 171.0);
-        assert_eq!(layout.sections, vec![0.0, 633.0]);
-        assert_eq!(layout.height, 1_043.0);
+        assert_eq!(layout.row_pitch, layout.card_height + 18.0);
+        let first_section =
+            CLIP_SECTION_HEADER + 2.0 * layout.row_pitch + layout.card_height + CLIP_GROUP_GAP;
+        assert_eq!(layout.sections, vec![0.0, first_section]);
+        assert_eq!(
+            layout.height,
+            first_section + CLIP_SECTION_HEADER + layout.row_pitch + layout.card_height
+        );
 
-        let single = library_layout(&[1], 900.0, true);
+        let single = library_layout(&[1], 1_200.0, true);
         assert_eq!(single.sections, vec![0.0]);
-        assert_eq!(single.height, 44.0 + single.card_height);
+        assert_eq!(single.height, CLIP_SECTION_HEADER + single.card_height);
     }
 
     #[test]
@@ -5807,7 +5798,10 @@ mod tests {
 
         assert_eq!(layout.columns, 1);
         assert_eq!(layout.card_width, 900.0);
-        assert_eq!(layout.height, 44.0 + 3.0 * layout.card_height);
+        assert_eq!(
+            layout.height,
+            CLIP_SECTION_HEADER + 3.0 * layout.card_height
+        );
     }
 
     #[test]

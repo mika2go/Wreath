@@ -52,9 +52,9 @@ use crate::model::{
 };
 use crate::player::{PLAYER_EVENT, Player};
 use crate::renderer::{
-    Renderer, editor_player_bounds, editor_timeline_fraction, editor_timeline_rail,
-    fullscreen_timeline_rail, fullscreen_volume_rail, library_overflow, player_bounds,
-    player_timeline_rail, player_volume_rail, settings_audio_gain_rail, settings_gain_percent,
+    Renderer, clips_overflow, editor_player_bounds, editor_timeline_fraction, editor_timeline_rail,
+    fullscreen_timeline_rail, fullscreen_volume_rail, player_bounds, player_timeline_rail,
+    player_volume_rail, settings_audio_gain_rail, settings_gain_percent,
 };
 use wreath_windows::meter::MicrophoneMeter;
 
@@ -491,6 +491,24 @@ unsafe extern "system" fn window_proc(
                 {
                     state.model.collection_picker_open = false;
                 }
+                if state.model.filter_panel_open
+                    && !matches!(
+                        hit.as_ref(),
+                        Some(
+                            Action::ToggleFilterPanel
+                                | Action::ChooseTimeFilter
+                                | Action::ChooseCollectionFilter
+                                | Action::ChooseTypeFilter
+                                | Action::ChooseSizeFilter
+                                | Action::ChooseClipSort
+                                | Action::ResetFilters
+                                | Action::SelectSettingsOption(_)
+                                | Action::DismissSettingsMenu
+                        )
+                    )
+                {
+                    state.model.filter_panel_open = false;
+                }
                 state.clip_drag = if state.model.page == crate::model::Page::Collections {
                     match hit.as_ref() {
                         Some(Action::OpenClip(index) | Action::ToggleClipSelection(index)) => {
@@ -618,7 +636,10 @@ unsafe extern "system" fn window_proc(
         }
         WM_MOUSEWHEEL => {
             if let Some(state) = state_mut(window)
-                && state.model.page == crate::model::Page::Library
+                && matches!(
+                    state.model.page,
+                    crate::model::Page::Library | crate::model::Page::Collections
+                )
                 && state.model.settings_menu.is_none()
                 && state.model.context_menu.is_none()
             {
@@ -626,7 +647,7 @@ unsafe extern "system" fn window_proc(
                 let width = (state.width as f32 / scale).max(1.0);
                 let height = (state.height as f32 / scale).max(1.0);
                 let notches = f32::from(signed_high_word(wparam.0 as isize)) / 120.0;
-                let overflow = library_overflow(&state.model, width, height);
+                let overflow = clips_overflow(&state.model, width, height);
                 if state
                     .model
                     .scroll_library_by(-notches * LIBRARY_WHEEL_STEP, overflow)
@@ -837,6 +858,10 @@ unsafe extern "system" fn window_proc(
                     }
                     if state.model.collection_picker_open {
                         state.model.collection_picker_open = false;
+                        redraw(window);
+                        return LRESULT(0);
+                    }
+                    if state.model.close_filter_panel() {
                         redraw(window);
                         return LRESULT(0);
                     }
@@ -1162,8 +1187,6 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             }
             set_result(&mut state.model, result, "Library refreshed");
         }
-        Action::SetCollectionCardsPage(page) => state.model.collection_cards_page = page,
-        Action::SetCollectionClipsPage(page) => state.model.collection_clips_page = page,
         Action::SetLibraryGrid(grid) => {
             state.model.library_grid = grid;
             state.model.library_scroll = 0.0;
@@ -1171,7 +1194,10 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         Action::SetClipTab(tab) => state.model.set_clip_tab(tab),
         Action::ToggleFilterPanel => {
             state.model.filter_panel_open = !state.model.filter_panel_open;
-            state.model.library_scroll = 0.0;
+        }
+        Action::ToggleSidebar => {
+            state.model.toggle_sidebar();
+            update_player_window(state);
         }
         Action::ChooseTimeFilter => choose_time_filter(&mut state.model),
         Action::ChooseCollectionFilter => choose_collection_filter(&mut state.model),
@@ -1195,11 +1221,6 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         }
         Action::ToggleCollectionSort => {
             state.model.collections_descending = !state.model.collections_descending;
-            state.model.collection_cards_page = 0;
-        }
-        Action::SetCollectionsGrid(grid) => {
-            state.model.collections_grid = grid;
-            state.model.collection_cards_page = 0;
         }
         Action::SaveReplay => match send(Request::Save) {
             Ok(Response::Saved { path: _ }) => {
@@ -1328,7 +1349,7 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
                 .map(|collection| collection.path.clone());
             state.model.selected_clips.clear();
             state.model.collection_picker_open = false;
-            state.model.collection_clips_page = 0;
+            state.model.library_scroll = 0.0;
         }
         Action::PreviousClip => switch_clip(state, -1),
         Action::NextClip => switch_clip(state, 1),
@@ -1939,7 +1960,7 @@ fn update_editor_drag(state: &mut AppState, x: f32, settle: bool) {
     let scale = state.dpi as f32 / 96.0;
     let width = ((state.width as f32 / scale).round() as u32).max(1);
     let height = ((state.height as f32 / scale).round() as u32).max(1);
-    let rail = editor_timeline_rail(width, height, state.model.player_aspect_ratio);
+    let rail = editor_timeline_rail(&state.model, width, height);
     let thousandths = editor_timeline_fraction(rail, x);
     match handle {
         EditorDrag::Start => state.model.set_editor_start(thousandths),
@@ -2110,15 +2131,15 @@ fn update_slider_drag(state: &mut AppState, x: f32, y: f32, settle: bool) {
     let height = ((state.height as f32 / scale).round() as u32).max(1);
     match drag {
         SliderDrag::DesktopGain => {
-            let rail = settings_audio_gain_rail(width, height, 2);
+            let rail = settings_audio_gain_rail(&state.model, width, height, 2);
             state.model.config.audio.desktop_gain_percent = settings_gain_percent(rail, x);
         }
         SliderDrag::MicrophoneGain => {
-            let rail = settings_audio_gain_rail(width, height, 4);
+            let rail = settings_audio_gain_rail(&state.model, width, height, 4);
             state.model.config.audio.microphone_gain_percent = settings_gain_percent(rail, x);
         }
         SliderDrag::PlayerSeek => {
-            let rail = player_timeline_rail(width, height, state.model.player_aspect_ratio);
+            let rail = player_timeline_rail(&state.model, width, height);
             let fraction = ((x - rail.left) / (rail.right - rail.left).max(1.0)).clamp(0.0, 1.0);
             let fraction = f64::from(fraction);
             state.model.player_position_seconds = state.model.player_duration_seconds * fraction;
@@ -2134,7 +2155,7 @@ fn update_slider_drag(state: &mut AppState, x: f32, y: f32, settle: bool) {
             }
         }
         SliderDrag::PlayerVolume => {
-            let rail = player_volume_rail(width, height, state.model.player_aspect_ratio);
+            let rail = player_volume_rail(&state.model, width, height);
             let fraction =
                 (1.0 - (y - rail.top) / (rail.bottom - rail.top).max(1.0)).clamp(0.0, 1.0);
             set_player_volume(state, (fraction * 100.0).round() as u8);
@@ -2143,7 +2164,7 @@ fn update_slider_drag(state: &mut AppState, x: f32, y: f32, settle: bool) {
             let Some(timing) = &state.model.editor_timing else {
                 return;
             };
-            let rail = editor_timeline_rail(width, height, state.model.player_aspect_ratio);
+            let rail = editor_timeline_rail(&state.model, width, height);
             let thousandths = editor_timeline_fraction(rail, x);
             let requested = timing.duration.mul_f64(f64::from(thousandths) / 1_000.0);
             let position = requested
@@ -2288,17 +2309,9 @@ fn update_player_window(state: &mut AppState) {
             bottom: (logical_height as f32 - FULLSCREEN_CONTROLS_HEIGHT).max(79.0),
         }
     } else if state.model.page == crate::model::Page::Editor {
-        editor_player_bounds(
-            logical_width,
-            logical_height,
-            state.model.player_aspect_ratio,
-        )
+        editor_player_bounds(&state.model, logical_width, logical_height)
     } else {
-        player_bounds(
-            logical_width,
-            logical_height,
-            state.model.player_aspect_ratio,
-        )
+        player_bounds(&state.model, logical_width, logical_height)
     };
     let _ = unsafe {
         SetWindowPos(

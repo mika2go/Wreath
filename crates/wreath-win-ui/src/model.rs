@@ -182,11 +182,10 @@ pub enum Action {
     OpenClipMenu(usize),
     Back,
     Refresh,
-    SetCollectionCardsPage(usize),
-    SetCollectionClipsPage(usize),
     SetLibraryGrid(bool),
     SetClipTab(ClipTab),
     ToggleFilterPanel,
+    ToggleSidebar,
     ChooseTimeFilter,
     ChooseCollectionFilter,
     ChooseTypeFilter,
@@ -194,7 +193,6 @@ pub enum Action {
     ChooseClipSort,
     ResetFilters,
     ToggleCollectionSort,
-    SetCollectionsGrid(bool),
     SaveReplay,
     OpenClipsFolder,
     Search,
@@ -599,11 +597,10 @@ pub struct UiModel {
     pub settings_menu: Option<SettingsMenu>,
     pub search: TextInput,
     pub search_focused: bool,
-    pub collection_cards_page: usize,
-    pub collection_clips_page: usize,
     pub clips_oldest_first: bool,
     pub library_grid: bool,
     pub clip_tab: ClipTab,
+    pub sidebar_collapsed: bool,
     pub filter_panel_open: bool,
     pub filter_time: TimeFilter,
     pub filter_collection: Option<PathBuf>,
@@ -614,7 +611,6 @@ pub struct UiModel {
     pub daemon: DaemonSnapshot,
     pub microphone_level: u8,
     pub collections_descending: bool,
-    pub collections_grid: bool,
     pub context_menu: Option<ClipContextMenu>,
     pub active_collection: Option<PathBuf>,
     pub active_clip: Option<usize>,
@@ -686,12 +682,11 @@ impl UiModel {
             settings_menu: None,
             search: TextInput::new(String::new(), PROMPT_MAX_CHARACTERS),
             search_focused: false,
-            collection_cards_page: 0,
-            collection_clips_page: 0,
             clips_oldest_first: false,
             library_grid: true,
             clip_tab: ClipTab::All,
-            filter_panel_open: true,
+            sidebar_collapsed: false,
+            filter_panel_open: false,
             filter_time: TimeFilter::All,
             filter_collection: None,
             filter_type: TypeFilter::All,
@@ -701,7 +696,6 @@ impl UiModel {
             daemon: DaemonSnapshot::default(),
             microphone_level: 0,
             collections_descending: false,
-            collections_grid: true,
             context_menu: None,
             active_collection: None,
             active_clip: None,
@@ -784,8 +778,6 @@ impl UiModel {
         {
             self.search.clear();
             self.library_scroll = 0.0;
-            self.collection_cards_page = 0;
-            self.collection_clips_page = 0;
         }
         self.search_focused = false;
         self.context_menu = None;
@@ -1173,6 +1165,10 @@ impl UiModel {
         groups
     }
 
+    pub fn toggle_sidebar(&mut self) {
+        self.sidebar_collapsed = !self.sidebar_collapsed;
+    }
+
     pub fn set_clip_tab(&mut self, tab: ClipTab) {
         if self.clip_tab == tab {
             return;
@@ -1188,6 +1184,14 @@ impl UiModel {
             || self.filter_size != SizeFilter::All
             || self.filter_collection.is_some()
             || self.clips_oldest_first
+    }
+
+    pub fn close_filter_panel(&mut self) -> bool {
+        if !self.filter_panel_open {
+            return false;
+        }
+        self.filter_panel_open = false;
+        true
     }
 
     pub fn reset_filters(&mut self) {
@@ -1378,12 +1382,11 @@ mod tests {
             settings_menu: None,
             search: TextInput::new(String::new(), PROMPT_MAX_CHARACTERS),
             search_focused: false,
-            collection_cards_page: 0,
-            collection_clips_page: 0,
             clips_oldest_first: false,
             library_grid: true,
             clip_tab: ClipTab::All,
-            filter_panel_open: true,
+            sidebar_collapsed: false,
+            filter_panel_open: false,
             filter_time: TimeFilter::All,
             filter_collection: None,
             filter_type: TypeFilter::All,
@@ -1396,7 +1399,6 @@ mod tests {
             daemon: DaemonSnapshot::default(),
             microphone_level: 0,
             collections_descending: false,
-            collections_grid: true,
             context_menu: None,
             active_collection: None,
             active_clip: None,
