@@ -19,9 +19,21 @@ supplies the interaction, such as folder selection and window chrome.
 
 ## Visual system
 
-The interface is a monochrome desktop utility: the video thumbnails carry all
-colour, everything around them stays grey. Gradients, coloured accents, glow,
-and decorative artwork are out of scope.
+The interface is a quiet desktop utility: the video thumbnails carry all colour,
+everything around them stays neutral. Gradients, glow, and decorative artwork
+are out of scope.
+
+Three palettes ship, chosen in the settings and applied without a restart:
+
+- **Dark** (default): neutral near-black, the reference palette below.
+- **Light**: cool paper greys, white surfaces, near-black primary button, and a
+  light window frame; the title bar follows the theme.
+- **Café**: the same structure with a warm cast in text and accents plus one
+  restrained sage accent, used only for live indicators (the replay dot and the
+  microphone meter). Every other palette keeps those neutral.
+
+Hover feedback is personalised: surface, outline or both, at off, subtle, normal
+or strong. Text buttons keep a minimal colour change so they stay recognisable.
 
 | Token | Value | Purpose |
 | --- | --- | --- |
@@ -38,6 +50,10 @@ and decorative artwork are out of scope.
 Icons are drawn as Direct2D paths with round caps and joins on a centred
 square inside their box, so a non-square target cannot stretch them. One
 stroke weight scales with the icon size and stays between 1.4 and 2.1 px.
+
+The interface ships German and English. `System` follows the Windows display
+language; every visible string lives in `crates/wreath-win-ui/src/text.rs`, and
+switching the language re-renders without a restart.
 
 Windows uses Segoe UI Variable when available and Segoe UI as the fallback:
 
@@ -129,6 +145,8 @@ Corner radii stay between 4 and 8 px.
 
 ### Settings
 
+- General: start with Windows, replay shortcut, theme, hover effect, hover
+  strength, language.
 - Display: native Windows display list.
 - Quality: clip length, frame rate, codec, and quality.
 - Audio: desktop audio, microphone toggle, friendly input-device name, and

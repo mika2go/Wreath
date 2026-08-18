@@ -42,13 +42,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
 };
 use windows::core::{PCWSTR, w};
-use wreath_core::config::Codec;
+use wreath_core::config::{Codec, HoverStrength, HoverStyle, Language, Theme};
 use wreath_core::ipc::{Request, Response};
 
 use crate::model::{
     Action, ClipContextMenu, ClipDragPreview, DaemonSnapshot, DeleteTarget, DisplayOption,
     NoticeExpiry, PromptKind, SettingsMenu, SettingsMenuItem, SettingsMenuKind, SizeFilter,
-    TextInput, TimeFilter, TypeFilter, UiModel,
+    TextInput, TimeFilter, TypeFilter, UiModel, hover_strength_label, hover_style_label,
+    language_label, theme_label,
 };
 use crate::player::{PLAYER_EVENT, Player};
 use crate::renderer::{
@@ -306,15 +307,7 @@ fn run_initialized() -> Result<(), String> {
         )
     }
     .map_err(|error| error.to_string())?;
-    let dark_titlebar: i32 = 1;
-    let _ = unsafe {
-        DwmSetWindowAttribute(
-            window,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
-            (&dark_titlebar as *const i32).cast(),
-            std::mem::size_of_val(&dark_titlebar) as u32,
-        )
-    };
+    apply_titlebar_theme(window, unsafe { (*state).model.config.appearance.theme });
     let fullscreen_overlay = unsafe {
         CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -338,7 +331,10 @@ fn run_initialized() -> Result<(), String> {
         match Player::new(video_window, window) {
             Ok(player) => (*state).player = Some(player),
             Err(error) => {
-                (*state).model.notice = Some(format!("Clip player unavailable: {error}"));
+                (*state).model.notice = Some(format!(
+                    "{}: {error}",
+                    (*state).model.strings().notice_player_unavailable
+                ));
             }
         }
         (*state).dpi = GetDpiForWindow(window).max(96);
@@ -469,7 +465,10 @@ unsafe extern "system" fn window_proc(
                 if let Err(error) = painted
                     && state.renderer.is_failing()
                 {
-                    state.model.notice = Some(format!("Rendering failed: {error}"));
+                    state.model.notice = Some(format!(
+                        "{}: {error}",
+                        state.model.strings().notice_render_failed
+                    ));
                 }
                 if state.renderer.wants_recovery_repaint() {
                     redraw(window);
@@ -887,7 +886,10 @@ unsafe extern "system" fn window_proc(
                 if let Some(player) = &mut state.player
                     && let Err(error) = player.handle_event(wparam.0 as i32, lparam.0 as i32)
                 {
-                    state.model.notice = Some(format!("Cannot play this clip: {error}"));
+                    state.model.notice = Some(format!(
+                        "{}: {error}",
+                        state.model.strings().notice_cannot_play
+                    ));
                 }
                 sync_player_state(state);
                 update_player_window(state);
@@ -1157,7 +1159,7 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             if let Some(path) = state.model.clips.get(clip).map(|clip| clip.path.clone()) {
                 move_clip_paths_to_collection(state, &[path], collection);
             } else {
-                state.model.notice = Some("Clip is no longer available".into());
+                state.model.notice = Some(state.model.strings().notice_clip_gone.to_owned());
             }
         }
         Action::ToggleSelectionMode => {
@@ -1195,7 +1197,8 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             if result.is_ok() {
                 state.renderer.retry_unavailable_thumbnails();
             }
-            set_result(&mut state.model, result, "Library refreshed");
+            let message = state.model.strings().notice_library_refreshed;
+            set_result(&mut state.model, result, message);
         }
         Action::SetLibraryGrid(grid) => {
             state.model.library_grid = grid;
@@ -1218,6 +1221,10 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             }
             state.microphone_due = Instant::now();
         }
+        Action::ChooseTheme => choose_theme(&mut state.model),
+        Action::ChooseLanguage => choose_language(&mut state.model),
+        Action::ChooseHoverStyle => choose_hover_style(&mut state.model),
+        Action::ChooseHoverStrength => choose_hover_strength(&mut state.model),
         Action::ChooseTimeFilter => choose_time_filter(&mut state.model),
         Action::ChooseCollectionFilter => choose_collection_filter(&mut state.model),
         Action::ChooseTypeFilter => choose_type_filter(&mut state.model),
@@ -1235,7 +1242,7 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             if let Some(clip) = state.model.clips.get(index) {
                 open_path(&clip.path.clone());
             } else {
-                state.model.notice = Some("Clip is no longer available".into());
+                state.model.notice = Some(state.model.strings().notice_clip_gone.to_owned());
             }
         }
         Action::ToggleCollectionSort => {
@@ -1318,7 +1325,10 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         Action::ChooseMicrophoneGain => choose_microphone_gain(&mut state.model),
         Action::ChooseStorageLimit => choose_storage_limit(&mut state.model),
         Action::DismissSettingsMenu => state.model.settings_menu = None,
-        Action::SelectSettingsOption(index) => select_settings_option(&mut state.model, index),
+        Action::SelectSettingsOption(index) => {
+            select_settings_option(&mut state.model, index);
+            apply_titlebar_theme(window, state.model.config.appearance.theme);
+        }
         Action::CaptureHotkey => {
             if !state.model.hotkey_pending {
                 state.model.hotkey_capture = true;
@@ -1374,7 +1384,9 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         Action::NextClip => switch_clip(state, 1),
         Action::PlayPause => match state.player.as_ref().map(Player::toggle) {
             Some(Err(error)) => state.model.notice = Some(error),
-            None => state.model.notice = Some("No clip is loaded".into()),
+            None => {
+                state.model.notice = Some(state.model.strings().notice_no_clip_loaded.to_owned());
+            }
             Some(Ok(())) => {}
         },
         Action::DragDesktopGain
@@ -1411,7 +1423,7 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
 
 fn begin_editor(state: &mut AppState) {
     let Some(source) = state.model.active_clip().map(|clip| clip.path.clone()) else {
-        state.model.notice = Some("Clip is no longer available".into());
+        state.model.notice = Some(state.model.strings().notice_clip_gone.to_owned());
         return;
     };
     if !state.model.edit_active_clip() {
@@ -1431,7 +1443,7 @@ fn begin_editor(state: &mut AppState) {
         });
     if spawned.is_err() {
         state.model.editor_loading = false;
-        state.model.notice = Some("Cannot start the editor worker".into());
+        state.model.notice = Some(state.model.strings().notice_cannot_open_editor.to_owned());
     }
 }
 
@@ -1440,7 +1452,7 @@ fn save_cut(state: &mut AppState, output: wreath_core::trim::TrimOutput) {
         return;
     }
     let Some(source) = state.model.active_clip().map(|clip| clip.path.clone()) else {
-        state.model.notice = Some("Clip is no longer available".into());
+        state.model.notice = Some(state.model.strings().notice_clip_gone.to_owned());
         return;
     };
     let replacing = matches!(output, wreath_core::trim::TrimOutput::Replace);
@@ -1457,10 +1469,11 @@ fn save_cut(state: &mut AppState, output: wreath_core::trim::TrimOutput) {
         stop_player(state);
     }
     state.model.editor_working = true;
+    let text = state.model.strings();
     state.model.notice = Some(if replacing {
-        "Replacing the original clip on a background worker…".into()
+        text.notice_replace_running.to_owned()
     } else {
-        "Cutting on a background worker…".into()
+        text.notice_cut_running.to_owned()
     });
     let spawned = std::thread::Builder::new()
         .name("wreath-editor-cut".into())
@@ -1476,7 +1489,7 @@ fn save_cut(state: &mut AppState, output: wreath_core::trim::TrimOutput) {
         });
     if spawned.is_err() {
         state.model.editor_working = false;
-        state.model.notice = Some("Cannot start the cutting worker".into());
+        state.model.notice = Some(state.model.strings().notice_cannot_cut.to_owned());
         if replacing {
             open_current_clip(state);
         }
@@ -1501,7 +1514,10 @@ fn poll_trim_updates(state: &mut AppState) -> bool {
                     }
                     Err(error) => {
                         state.model.editor_loading = false;
-                        state.model.notice = Some(format!("Cannot open editor: {error}"));
+                        state.model.notice = Some(format!(
+                            "{}: {error}",
+                            state.model.strings().notice_cannot_open_editor
+                        ));
                     }
                 }
             }
@@ -1529,25 +1545,24 @@ fn poll_trim_updates(state: &mut AppState) -> bool {
                             || report.path.display().to_string(),
                             |name| name.to_string_lossy().into_owned(),
                         );
+                        let text = state.model.strings();
                         let message = format!(
                             "{} · {name}",
-                            if report.reencoded {
-                                if replacing {
-                                    "Original replaced and re-encoded for an exact start"
-                                } else {
-                                    "Re-encoded for an exact start"
-                                }
-                            } else if replacing {
-                                "Original replaced with a lossless cut"
-                            } else {
-                                "Losslessly cut"
+                            match (report.reencoded, replacing) {
+                                (true, true) => text.notice_replaced_reencoded,
+                                (true, false) => text.notice_cut_reencoded,
+                                (false, true) => text.notice_replaced_lossless,
+                                (false, false) => text.notice_cut_lossless,
                             }
                         );
                         set_result(&mut state.model, result, &message);
                         replacing
                     }
                     Err(error) => {
-                        state.model.notice = Some(format!("Cannot cut clip: {error}"));
+                        state.model.notice = Some(format!(
+                            "{}: {error}",
+                            state.model.strings().notice_cannot_cut
+                        ));
                         false
                     }
                 };
@@ -1680,16 +1695,18 @@ fn start_microphone_test(state: &mut AppState) -> bool {
         Ok((probe, fell_back)) => {
             state.microphone_probe = Some(probe);
             if fell_back {
-                state.model.notice = Some(
-                    "Gespeichertes Mikrofon nicht verfügbar; Windows-Standard wird getestet".into(),
-                );
+                state.model.notice =
+                    Some(state.model.strings().notice_microphone_fallback.to_owned());
             }
             true
         }
         Err(error) => {
             state.model.microphone_test = false;
             state.microphone_probe = None;
-            state.model.notice = Some(format!("Mikrofontest: {error}"));
+            state.model.notice = Some(format!(
+                "{}: {error}",
+                state.model.strings().notice_microphone_test
+            ));
             false
         }
     }
@@ -1869,20 +1886,21 @@ fn confirm_prompt(state: &mut AppState) {
         return;
     };
     let name = prompt.input.value.trim().to_owned();
+    let text = state.model.strings();
     let outcome = match prompt.kind {
         PromptKind::NewCollection => {
             let directory = state.model.config.storage.directory.clone();
             match wreath_core::clips::create_collection(&directory, &name) {
                 Ok(path) => {
                     state.model.active_collection = Some(path);
-                    Ok("Collection created")
+                    Ok(text.notice_collection_created)
                 }
-                Err(error) => Err(format!("Cannot create collection: {error}")),
+                Err(error) => Err(format!("{}: {error}", text.notice_cannot_create_collection)),
             }
         }
         PromptKind::RenameClip(index) => {
             let Some(clip) = state.model.clips.get(index).cloned() else {
-                state.model.notice = Some("Clip is no longer available".into());
+                state.model.notice = Some(state.model.strings().notice_clip_gone.to_owned());
                 return;
             };
             let thumbnails = state.model.paths.thumbnail_dir.clone();
@@ -1890,9 +1908,9 @@ fn confirm_prompt(state: &mut AppState) {
                 Ok(renamed) => {
                     state.model.favorites.relocate(&clip.path, &renamed);
                     let _ = state.model.favorites.save();
-                    Ok("Clip renamed")
+                    Ok(text.notice_clip_renamed)
                 }
-                Err(error) => Err(format!("Cannot rename clip: {error}")),
+                Err(error) => Err(format!("{}: {error}", text.notice_cannot_rename_clip)),
             }
         }
         PromptKind::RenameCollection(collection) => {
@@ -1900,9 +1918,9 @@ fn confirm_prompt(state: &mut AppState) {
             match wreath_core::clips::rename_collection(&directory, &collection, &name) {
                 Ok(path) => {
                     state.model.active_collection = Some(path);
-                    Ok("Sammlung umbenannt")
+                    Ok(text.notice_collection_renamed)
                 }
-                Err(error) => Err(format!("Sammlung konnte nicht umbenannt werden: {error}")),
+                Err(error) => Err(format!("{}: {error}", text.notice_cannot_rename_collection)),
             }
         }
     };
@@ -1925,7 +1943,7 @@ fn confirm_delete(model: &mut UiModel) {
     match target {
         DeleteTarget::Clip(index) => {
             let Some(clip) = model.clips.get(index).cloned() else {
-                model.notice = Some("Clip is no longer available".into());
+                model.notice = Some(model.strings().notice_clip_gone.to_owned());
                 return;
             };
             match wreath_core::clips::delete(&clip, &model.paths.thumbnail_dir) {
@@ -1933,9 +1951,15 @@ fn confirm_delete(model: &mut UiModel) {
                     model.favorites.remove(&clip.path);
                     let _ = model.favorites.save();
                     let result = model.refresh();
-                    set_result(model, result, "Clip deleted");
+                    let message = model.strings().notice_clip_deleted;
+                    set_result(model, result, message);
                 }
-                Err(error) => model.notice = Some(format!("Cannot delete clip: {error}")),
+                Err(error) => {
+                    model.notice = Some(format!(
+                        "{}: {error}",
+                        model.strings().notice_cannot_delete_clip
+                    ));
+                }
             }
         }
         DeleteTarget::Collection(collection) => match wreath_core::clips::delete_collection(
@@ -1946,9 +1970,15 @@ fn confirm_delete(model: &mut UiModel) {
             Ok(()) => {
                 model.active_collection = None;
                 let result = model.refresh();
-                set_result(model, result, "Collection deleted; clips moved to Library");
+                let message = model.strings().notice_collection_deleted;
+                set_result(model, result, message);
             }
-            Err(error) => model.notice = Some(format!("Cannot delete collection: {error}")),
+            Err(error) => {
+                model.notice = Some(format!(
+                    "{}: {error}",
+                    model.strings().notice_cannot_delete_collection
+                ));
+            }
         },
     }
 }
@@ -2107,7 +2137,7 @@ fn dragged_clip_paths(model: &UiModel, dragged: usize) -> Vec<PathBuf> {
 
 fn move_clip_paths_to_collection(state: &mut AppState, paths: &[PathBuf], collection: usize) {
     let Some(collection) = state.model.collections.get(collection).cloned() else {
-        state.model.notice = Some("Collection is no longer available".into());
+        state.model.notice = Some(state.model.strings().notice_collection_gone.to_owned());
         return;
     };
     let clips = paths
@@ -2123,7 +2153,13 @@ fn move_clip_paths_to_collection(state: &mut AppState, paths: &[PathBuf], collec
         .filter(|clip| clip.path.parent() != Some(collection.path.as_path()))
         .collect::<Vec<_>>();
     if clips.is_empty() {
-        state.model.notice = Some("The selected clips are already in this collection".into());
+        state.model.notice = Some(
+            state
+                .model
+                .strings()
+                .notice_already_in_collection
+                .to_owned(),
+        );
         return;
     }
     if let Some(existing) = clips.iter().find_map(|clip| {
@@ -2131,9 +2167,10 @@ fn move_clip_paths_to_collection(state: &mut AppState, paths: &[PathBuf], collec
         destination.exists().then_some(destination)
     }) {
         state.model.notice = Some(format!(
-            "Cannot move clips: {} already exists in {}",
+            "{}: {} → {}",
+            state.model.strings().notice_cannot_move_clips,
             existing.file_name().map_or_else(
-                || "a clip".into(),
+                || String::from("?"),
                 |name| name.to_string_lossy().into_owned()
             ),
             collection.name
@@ -2166,12 +2203,11 @@ fn move_clip_paths_to_collection(state: &mut AppState, paths: &[PathBuf], collec
     state.model.clear_clip_selection();
     state.model.notice = match (refresh, failure) {
         (Err(error), _) => Some(error),
-        (Ok(()), Some(error)) => Some(format!("Moved {moved} clips; stopped: {error}")),
-        (Ok(()), None) => Some(if moved == 1 {
-            format!("Clip moved to {}", collection.name)
-        } else {
-            format!("{moved} clips moved to {}", collection.name)
-        }),
+        (Ok(()), Some(error)) => Some(format!(
+            "{} · {error}",
+            state.model.strings().moved_clips(moved, &collection.name)
+        )),
+        (Ok(()), None) => Some(state.model.strings().moved_clips(moved, &collection.name)),
     };
 }
 
@@ -2729,9 +2765,14 @@ fn save_settings(model: &mut UiModel, success: &str) {
             Ok(Response::Error { message }) | Err(message) => {
                 model.notice = Some(format!("Saved, but reload failed: {message}"))
             }
-            Ok(_) => model.notice = Some("Settings saved".into()),
+            Ok(_) => model.notice = Some(model.strings().notice_settings_saved.to_owned()),
         },
-        Err(error) => model.notice = Some(format!("Cannot save settings: {error}")),
+        Err(error) => {
+            model.notice = Some(format!(
+                "{}: {error}",
+                model.strings().notice_cannot_save_settings
+            ));
+        }
     }
 }
 
@@ -2757,9 +2798,10 @@ fn reload_capture() -> Result<Response, String> {
 
 fn choose_duration(model: &mut UiModel) {
     let values = [15, 30, 45, 60, 90, 120];
+    let text = model.strings();
     let labels = values
         .iter()
-        .map(|seconds| format!("{seconds} seconds"))
+        .map(|seconds| text.seconds(*seconds))
         .collect::<Vec<_>>();
     let current = values
         .iter()
@@ -2781,7 +2823,7 @@ fn choose_frame_rate(model: &mut UiModel) {
 
 fn choose_codec(model: &mut UiModel) {
     let values = [Codec::Auto, Codec::H264, Codec::Hevc, Codec::Av1];
-    let labels = ["Auto (recommended)", "H.264", "HEVC", "AV1"]
+    let labels = [model.strings().codec_auto, "H.264", "HEVC", "AV1"]
         .into_iter()
         .map(str::to_string)
         .collect::<Vec<_>>();
@@ -2810,10 +2852,16 @@ fn choose_quality(model: &mut UiModel) {
 }
 
 fn choose_audio_mode(model: &mut UiModel) {
-    let labels = ["Systemaudio", "Mikrofon", "System + Mikrofon", "Audio aus"]
-        .into_iter()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
+    let text = model.strings();
+    let labels = [
+        text.audio_system,
+        text.audio_microphone,
+        text.audio_system_and_microphone,
+        text.audio_none,
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect::<Vec<_>>();
     let current = match (model.config.audio.desktop, model.config.audio.microphone) {
         (true, false) => Some(0),
         (false, true) => Some(1),
@@ -2844,7 +2892,7 @@ fn choose_display(model: &mut UiModel) {
 
 fn choose_microphone(model: &mut UiModel) {
     refresh_microphones(model);
-    let mut labels = vec!["Windows default".to_string()];
+    let mut labels = vec![model.strings().windows_default.to_string()];
     labels.extend(model.microphone_names.iter().map(|(_, name)| name.clone()));
     let current = model
         .config
@@ -2875,7 +2923,7 @@ fn choose_microphone_gain(model: &mut UiModel) {
 
 fn choose_desktop_device(model: &mut UiModel) {
     refresh_outputs(model);
-    let mut labels = vec!["Windows default".to_string()];
+    let mut labels = vec![model.strings().windows_default.to_string()];
     labels.extend(model.output_names.iter().map(|(_, name)| name.clone()));
     let current = model
         .config
@@ -2904,10 +2952,54 @@ fn choose_desktop_gain(model: &mut UiModel) {
     open_choice_menu(model, SettingsMenuKind::DesktopGain, labels, current);
 }
 
+fn choose_theme(model: &mut UiModel) {
+    let labels = Theme::OPTIONS
+        .iter()
+        .map(|theme| theme_label(*theme, model.strings()).to_owned())
+        .collect::<Vec<_>>();
+    let current = Theme::OPTIONS
+        .iter()
+        .position(|theme| *theme == model.config.appearance.theme);
+    open_choice_menu(model, SettingsMenuKind::Theme, labels, current);
+}
+
+fn choose_hover_style(model: &mut UiModel) {
+    let labels = HoverStyle::OPTIONS
+        .iter()
+        .map(|style| hover_style_label(*style, model.strings()).to_owned())
+        .collect::<Vec<_>>();
+    let current = HoverStyle::OPTIONS
+        .iter()
+        .position(|style| *style == model.config.appearance.hover);
+    open_choice_menu(model, SettingsMenuKind::HoverStyle, labels, current);
+}
+
+fn choose_hover_strength(model: &mut UiModel) {
+    let labels = HoverStrength::OPTIONS
+        .iter()
+        .map(|strength| hover_strength_label(*strength, model.strings()).to_owned())
+        .collect::<Vec<_>>();
+    let current = HoverStrength::OPTIONS
+        .iter()
+        .position(|strength| *strength == model.config.appearance.hover_strength);
+    open_choice_menu(model, SettingsMenuKind::HoverStrength, labels, current);
+}
+
+fn choose_language(model: &mut UiModel) {
+    let labels = Language::OPTIONS
+        .iter()
+        .map(|language| language_label(*language, model.strings()).to_owned())
+        .collect::<Vec<_>>();
+    let current = Language::OPTIONS
+        .iter()
+        .position(|language| *language == model.config.appearance.language);
+    open_choice_menu(model, SettingsMenuKind::Language, labels, current);
+}
+
 fn choose_time_filter(model: &mut UiModel) {
     let labels = TimeFilter::OPTIONS
         .iter()
-        .map(|option| option.label().to_owned())
+        .map(|option| option.label(model.strings()).to_owned())
         .collect::<Vec<_>>();
     let current = TimeFilter::OPTIONS
         .iter()
@@ -2916,7 +3008,7 @@ fn choose_time_filter(model: &mut UiModel) {
 }
 
 fn choose_collection_filter(model: &mut UiModel) {
-    let mut labels = vec!["Alle".to_owned()];
+    let mut labels = vec![model.strings().all.to_owned()];
     labels.extend(
         model
             .collections
@@ -2944,7 +3036,7 @@ fn choose_collection_filter(model: &mut UiModel) {
 fn choose_type_filter(model: &mut UiModel) {
     let labels = TypeFilter::OPTIONS
         .iter()
-        .map(|option| option.label().to_owned())
+        .map(|option| option.label(model.strings()).to_owned())
         .collect::<Vec<_>>();
     let current = TypeFilter::OPTIONS
         .iter()
@@ -2955,7 +3047,7 @@ fn choose_type_filter(model: &mut UiModel) {
 fn choose_size_filter(model: &mut UiModel) {
     let labels = SizeFilter::OPTIONS
         .iter()
-        .map(|option| option.label().to_owned())
+        .map(|option| option.label(model.strings()).to_owned())
         .collect::<Vec<_>>();
     let current = SizeFilter::OPTIONS
         .iter()
@@ -2964,7 +3056,8 @@ fn choose_size_filter(model: &mut UiModel) {
 }
 
 fn choose_clip_sort(model: &mut UiModel) {
-    let labels = ["Neueste zuerst", "Älteste zuerst"]
+    let text = model.strings();
+    let labels = [text.sort_newest, text.sort_oldest]
         .into_iter()
         .map(str::to_string)
         .collect::<Vec<_>>();
@@ -3008,6 +3101,13 @@ fn select_settings_option(model: &mut UiModel, index: usize) {
         return;
     }
     let kind = menu.kind;
+    let appearance = matches!(
+        menu.kind,
+        SettingsMenuKind::Theme
+            | SettingsMenuKind::HoverStyle
+            | SettingsMenuKind::HoverStrength
+            | SettingsMenuKind::Language
+    );
     let library_filter = matches!(
         menu.kind,
         SettingsMenuKind::TimeFilter
@@ -3016,8 +3116,30 @@ fn select_settings_option(model: &mut UiModel, index: usize) {
             | SettingsMenuKind::SizeFilter
             | SettingsMenuKind::ClipSort
     );
-    let apply_immediately = !library_filter && model.page != crate::model::Page::Settings;
+    let apply_immediately =
+        !library_filter && !appearance && model.page != crate::model::Page::Settings;
     match kind {
+        SettingsMenuKind::Theme => {
+            if let Some(theme) = Theme::OPTIONS.get(index) {
+                model.config.appearance.theme = *theme;
+            }
+        }
+        SettingsMenuKind::Language => {
+            if let Some(language) = Language::OPTIONS.get(index) {
+                model.config.appearance.language = *language;
+                model.refresh_language();
+            }
+        }
+        SettingsMenuKind::HoverStyle => {
+            if let Some(style) = HoverStyle::OPTIONS.get(index) {
+                model.config.appearance.hover = *style;
+            }
+        }
+        SettingsMenuKind::HoverStrength => {
+            if let Some(strength) = HoverStrength::OPTIONS.get(index) {
+                model.config.appearance.hover_strength = *strength;
+            }
+        }
         SettingsMenuKind::TimeFilter => {
             if let Some(value) = TimeFilter::OPTIONS.get(index) {
                 model.filter_time = *value;
@@ -3122,6 +3244,16 @@ fn select_settings_option(model: &mut UiModel, index: usize) {
     if library_filter {
         model.library_scroll = 0.0;
     }
+    if appearance {
+        // the look applies at once; only the file needs writing
+        let paths = model.paths.clone();
+        if let Err(error) = model.config.save(&paths) {
+            model.notice = Some(format!(
+                "{}: {error}",
+                model.strings().notice_appearance_failed
+            ));
+        }
+    }
     if apply_immediately {
         save_settings(model, "Einstellung gespeichert und Aufnahme neu geladen");
     }
@@ -3151,6 +3283,20 @@ fn load_displays(model: &mut UiModel) -> Result<(), String> {
         })
         .collect();
     Ok(())
+}
+
+/// The window frame follows the chosen palette, so a light theme does not sit
+/// under a black title bar.
+fn apply_titlebar_theme(window: HWND, theme: Theme) {
+    let dark: i32 = i32::from(theme != Theme::Light);
+    let _ = unsafe {
+        DwmSetWindowAttribute(
+            window,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            (&dark as *const i32).cast(),
+            std::mem::size_of_val(&dark) as u32,
+        )
+    };
 }
 
 fn short_display_label(friendly_name: &str) -> String {
@@ -3208,7 +3354,12 @@ fn choose_storage(model: &mut UiModel) {
     match result {
         Ok(path) => model.config.storage.directory = path,
         Err(error) if error.contains("0x800704C7") => {}
-        Err(error) => model.notice = Some(format!("Folder picker failed: {error}")),
+        Err(error) => {
+            model.notice = Some(format!(
+                "{}: {error}",
+                model.strings().notice_folder_picker_failed
+            ));
+        }
     }
 }
 

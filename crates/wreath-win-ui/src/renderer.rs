@@ -41,28 +41,109 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{GUID, PCWSTR, w};
 use windows_numerics::{Matrix3x2, Vector2};
 
+use wreath_core::config::{HoverStyle, Language, Theme};
+
 use crate::model::{
     Action, ClipGroup, ClipTab, DeleteTarget, Page, SettingsMenuKind, TextInput, UiModel,
-    quality_label,
+    hover_strength_label, hover_style_label, language_label, quality_label, theme_label,
+};
+use crate::text::Strings;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Palette {
+    pub canvas: u32,
+    pub rail: u32,
+    pub stage: u32,
+    pub surface: u32,
+    pub surface_raised: u32,
+    pub surface_hover: u32,
+    pub border: u32,
+    pub hairline: u32,
+    pub card: u32,
+    pub primary: u32,
+    pub secondary: u32,
+    pub muted: u32,
+    pub accent: u32,
+    pub accent_hover: u32,
+    pub accent_text: u32,
+    pub selection: u32,
+    pub destructive: u32,
+    /// Colour of live indicators: the replay dot and the microphone meter. The
+    /// café palette spends its single accent here, the others stay neutral.
+    pub live: u32,
+}
+
+const DARK_PALETTE: Palette = Palette {
+    canvas: 0x0a0a0b,
+    rail: 0x0d0d0e,
+    stage: 0x0e0e0f,
+    surface: 0x111113,
+    surface_raised: 0x141416,
+    surface_hover: 0x171719,
+    border: 0x242426,
+    hairline: 0x1b1b1d,
+    card: 0x0e0e0f,
+    primary: 0xf2f2f2,
+    secondary: 0x99999f,
+    muted: 0x6f6f75,
+    accent: 0xf2f2f2,
+    accent_hover: 0xffffff,
+    accent_text: 0x0a0a0b,
+    selection: 0x3a3a40,
+    destructive: 0xd9d9dc,
+    live: 0xf2f2f2,
 };
 
-const CANVAS: u32 = 0x0a0a0b;
-const RAIL: u32 = 0x0d0d0e;
-const STAGE: u32 = 0x0e0e0f;
-const SURFACE: u32 = 0x111113;
-const SURFACE_RAISED: u32 = 0x141416;
-const SURFACE_HOVER: u32 = 0x171719;
-const BORDER: u32 = 0x242426;
-const HAIRLINE: u32 = 0x1b1b1d;
-const CARD: u32 = 0x0e0e0f;
-const PRIMARY: u32 = 0xf2f2f2;
-const SECONDARY: u32 = 0x99999f;
-const MUTED: u32 = 0x6f6f75;
-const ACCENT: u32 = 0xf2f2f2;
-const ACCENT_HOVER: u32 = 0xffffff;
-const ACCENT_TEXT: u32 = 0x0a0a0b;
-const SELECTION: u32 = 0x3a3a40;
-const DESTRUCTIVE: u32 = 0xd9d9dc;
+const LIGHT_PALETTE: Palette = Palette {
+    canvas: 0xecedf0,
+    rail: 0xe5e7ea,
+    stage: 0xd8dade,
+    surface: 0xffffff,
+    surface_raised: 0xffffff,
+    surface_hover: 0xe3e5ea,
+    border: 0xcbced5,
+    hairline: 0xdfe1e6,
+    card: 0xffffff,
+    primary: 0x16171a,
+    secondary: 0x54585f,
+    muted: 0x6f747d,
+    accent: 0x16171a,
+    accent_hover: 0x2b2d33,
+    accent_text: 0xffffff,
+    selection: 0xc3c7d0,
+    destructive: 0x3a3c42,
+    live: 0x16171a,
+};
+
+const CAFE_PALETTE: Palette = Palette {
+    canvas: 0x0d0c0b,
+    rail: 0x100f0d,
+    stage: 0x100f0e,
+    surface: 0x151412,
+    surface_raised: 0x191715,
+    surface_hover: 0x1e1b18,
+    border: 0x2a2621,
+    hairline: 0x201d1a,
+    card: 0x121110,
+    primary: 0xf0ece4,
+    secondary: 0xa9a29a,
+    muted: 0x7c766d,
+    accent: 0xe9e2d4,
+    accent_hover: 0xf7f2e8,
+    accent_text: 0x0d0c0b,
+    selection: 0x3a352e,
+    destructive: 0xd8d2c8,
+    live: 0x7f9b6f,
+};
+
+pub const fn palette_for(theme: Theme) -> Palette {
+    match theme {
+        Theme::Dark => DARK_PALETTE,
+        Theme::Light => LIGHT_PALETTE,
+        Theme::Cafe => CAFE_PALETTE,
+    }
+}
+
 const RADIUS: f32 = 6.0;
 const RADIUS_SMALL: f32 = 4.0;
 const RADIUS_LARGE: f32 = 8.0;
@@ -84,6 +165,11 @@ const FILTER_ROW_PITCH: f32 = 62.0;
 const FOLDER_COLUMN_WIDTH: f32 = 236.0;
 const FOLDER_COLUMN_GAP: f32 = 24.0;
 const FOLDER_ROW_HEIGHT: f32 = 34.0;
+const SETTINGS_PANEL_HEADER: f32 = 36.0;
+const SETTINGS_GENERAL_ROWS: usize = 6;
+const SETTINGS_CAPTURE_ROWS: usize = 6;
+const SETTINGS_AUDIO_ROWS: usize = 6;
+const SETTINGS_STORAGE_ROWS: usize = 2;
 const METER_WIDTH: f32 = 112.0;
 const LEGACY_PAGE_TOP: f32 = 56.0;
 const NAVIGATION_TOP: f32 = 86.0;
@@ -256,12 +342,13 @@ pub fn settings_audio_gain_rail(
     height: u32,
     row: usize,
 ) -> LogicalRect {
+    // the audio panel is the third box of the settings grid
     let left = sidebar_width(model.sidebar_collapsed) + CONTENT_PADDING;
     let right = width as f32 - CONTENT_PADDING;
     let offset = content_top() - LEGACY_PAGE_TOP;
     let virtual_height = content_bottom(height as f32, true) - offset + 22.0;
     let [_, _, audio, _] = settings_panel_rects(left, right, virtual_height);
-    let rail = settings_gain_rail_in_panel(audio, row);
+    let rail = settings_gain_rail_in_panel(audio, SETTINGS_AUDIO_ROWS, row);
     rect(
         rail.left,
         rail.top + offset,
@@ -301,6 +388,10 @@ struct HitRegion {
 pub struct Renderer {
     d2d_factory: ID2D1Factory,
     round_stroke: ID2D1StrokeStyle,
+    palette: Palette,
+    strings: &'static Strings,
+    hover_style: HoverStyle,
+    hover_strength: f32,
     write_factory: IDWriteFactory,
     target: Option<ID2D1HwndRenderTarget>,
     page_title: IDWriteTextFormat,
@@ -470,6 +561,10 @@ impl Renderer {
         Ok(Self {
             d2d_factory,
             round_stroke,
+            palette: palette_for(Theme::default()),
+            strings: crate::text::strings(Language::default()),
+            hover_style: HoverStyle::default(),
+            hover_strength: 1.0,
             write_factory,
             target: None,
             page_title,
@@ -576,6 +671,34 @@ impl Renderer {
         true
     }
 
+    fn apply_appearance(&mut self, model: &UiModel) {
+        let config = &model.config;
+        self.palette = palette_for(config.appearance.theme);
+        self.strings = model.strings();
+        self.hover_style = config.appearance.hover;
+        self.hover_strength = config.appearance.hover_strength.factor();
+    }
+
+    /// Hover fill blend, following the personalised style and strength.
+    fn hover_fill(&self, base: u32, target: u32) -> u32 {
+        if !self.hover_style.fills() {
+            return base;
+        }
+        mix(base, target, self.hover_amount(1.0))
+    }
+
+    /// Hover outline blend, following the same settings.
+    fn hover_edge(&self, base: u32, target: u32) -> u32 {
+        if !self.hover_style.outlines() {
+            return base;
+        }
+        mix(base, target, self.hover_amount(1.0))
+    }
+
+    fn hover_amount(&self, weight: f32) -> f32 {
+        hover_blend_amount(self.hover_progress, self.hover_strength, weight)
+    }
+
     fn is_hovered(&self, action: &Action) -> bool {
         self.hovered.as_ref() == Some(action)
     }
@@ -588,12 +711,13 @@ impl Renderer {
         height: u32,
         fullscreen: bool,
     ) -> Result<(), String> {
+        self.apply_appearance(model);
         self.ensure_target(window, width, height)?;
         self.hits.clear();
         let target = self.target.as_ref().expect("render target exists").clone();
         unsafe {
             target.BeginDraw();
-            target.Clear(Some(&color(CANVAS)));
+            target.Clear(Some(&color(self.palette.canvas)));
         }
         let drawn = self.render_frame(model, width, height, fullscreen);
         let ended = unsafe { target.EndDraw(None, None) }.map_err(|error| error.to_string());
@@ -614,12 +738,13 @@ impl Renderer {
         width: u32,
         height: u32,
     ) -> Result<(), String> {
+        self.apply_appearance(model);
         self.ensure_target(window, width, height)?;
         self.hits.clear();
         let target = self.target.as_ref().expect("render target exists").clone();
         unsafe {
             target.BeginDraw();
-            target.Clear(Some(&color(CANVAS)));
+            target.Clear(Some(&color(self.palette.canvas)));
         }
         let drawn = self.render_fullscreen_controls(model, width, height);
         let ended = unsafe { target.EndDraw(None, None) }.map_err(|error| error.to_string());
@@ -728,8 +853,8 @@ impl Renderer {
                 width as f32 - CONTENT_PADDING,
                 notice_bottom,
             );
-            self.fill(notice_area, SURFACE_RAISED, RADIUS)?;
-            self.stroke(notice_area, BORDER, RADIUS, 1.0)?;
+            self.fill(notice_area, self.palette.surface_raised, RADIUS)?;
+            self.stroke(notice_area, self.palette.border, RADIUS, 1.0)?;
             self.fill(
                 rect(
                     notice_area.left + 7.0,
@@ -738,9 +863,9 @@ impl Renderer {
                     notice_area.bottom - 12.0,
                 ),
                 if model.hotkey_capture {
-                    PRIMARY
+                    self.palette.primary
                 } else {
-                    SECONDARY
+                    self.palette.secondary
                 },
                 1.5,
             )?;
@@ -753,7 +878,7 @@ impl Renderer {
                     notice_area.bottom,
                 ),
                 &self.body.clone(),
-                PRIMARY,
+                self.palette.primary,
             )?;
             let close = rect(
                 notice_area.right - 34.0,
@@ -769,7 +894,7 @@ impl Renderer {
                     close.right - 6.0,
                     close.bottom - 6.0,
                 ),
-                SECONDARY,
+                self.palette.secondary,
             )?;
             self.hits.push(HitRegion {
                 rect: close,
@@ -777,37 +902,38 @@ impl Renderer {
             });
         }
         if let Some(drag) = &model.clip_drag_preview {
-            let label = if drag.count == 1 {
-                "Move 1 clip".to_owned()
-            } else {
-                format!("Move {} clips", drag.count)
-            };
+            let label = self.strings.move_drag(drag.count);
             let chip_width = 138.0;
             let chip_height = 36.0;
             let left = (drag.x + 14.0).clamp(12.0, width as f32 - chip_width - 12.0);
             let top = (drag.y + 14.0).clamp(12.0, height as f32 - chip_height - 12.0);
             let chip = rect(left, top, left + chip_width, top + chip_height);
-            self.fill(chip, SURFACE_RAISED, RADIUS)?;
-            self.stroke(chip, ACCENT, RADIUS, 1.0)?;
-            self.text(&label, chip, &self.body_center.clone(), PRIMARY)?;
+            self.fill(chip, self.palette.surface_raised, RADIUS)?;
+            self.stroke(chip, self.palette.accent, RADIUS, 1.0)?;
+            self.text(
+                &label,
+                chip,
+                &self.body_center.clone(),
+                self.palette.primary,
+            )?;
         }
         Ok(())
     }
 
     fn render_fullscreen_header(&mut self, width: f32) -> Result<(), String> {
-        self.fill(rect(0.0, 0.0, width, 78.0), CANVAS, 0.0)?;
+        self.fill(rect(0.0, 0.0, width, 78.0), self.palette.canvas, 0.0)?;
         self.pill(
             rect(18.0, 18.0, 208.0, 60.0),
-            SURFACE,
-            "←  Zurück zur Preview",
-            PRIMARY,
+            self.palette.surface,
+            &format!("←  {}", self.strings.back_to_preview),
+            self.palette.primary,
             Some(Action::ToggleFullscreen),
         )?;
         self.pill(
             rect(width - 228.0, 18.0, width - 18.0, 60.0),
-            SURFACE,
-            "Originalgröße     ESC",
-            PRIMARY,
+            self.palette.surface,
+            self.strings.original_size_hint,
+            self.palette.primary,
             Some(Action::ToggleFullscreen),
         )
     }
@@ -820,7 +946,7 @@ impl Renderer {
     ) -> Result<(), String> {
         let width = width as f32;
         let height = height as f32;
-        self.fill(rect(0.0, 0.0, width, height), CANVAS, 0.0)?;
+        self.fill(rect(0.0, 0.0, width, height), self.palette.canvas, 0.0)?;
         let timeline = rect(42.0, 16.0, width - 42.0, 22.0);
         self.draw_progress_rail(model, timeline)?;
         self.hits.push(HitRegion {
@@ -832,21 +958,21 @@ impl Renderer {
         self.floating_icon(
             rect(24.0, row_top, 66.0, row_bottom),
             if model.player_playing { "Ⅱ" } else { "▶" },
-            PRIMARY,
+            self.palette.primary,
             Some(Action::PlayPause),
             FloatingIconSize::Media,
         )?;
         self.floating_icon(
             rect(72.0, row_top, 112.0, row_bottom),
             "‹",
-            SECONDARY,
+            self.palette.secondary,
             model.adjacent_clip(-1).map(|_| Action::PreviousClip),
             FloatingIconSize::Navigation,
         )?;
         self.floating_icon(
             rect(116.0, row_top, 156.0, row_bottom),
             "›",
-            SECONDARY,
+            self.palette.secondary,
             model.adjacent_clip(1).map(|_| Action::NextClip),
             FloatingIconSize::Navigation,
         )?;
@@ -858,7 +984,7 @@ impl Renderer {
             ),
             rect(174.0, row_top, 302.0, row_bottom),
             &self.body.clone(),
-            SECONDARY,
+            self.palette.secondary,
         )?;
         self.floating_icon(
             rect(width - 108.0, row_top, width - 66.0, row_bottom),
@@ -867,20 +993,20 @@ impl Renderer {
             } else {
                 "🔊"
             },
-            PRIMARY,
+            self.palette.primary,
             Some(Action::ToggleMute),
             FloatingIconSize::Media,
         )?;
         self.floating_icon(
             rect(width - 60.0, row_top, width - 18.0, row_bottom),
             "⛶",
-            PRIMARY,
+            self.palette.primary,
             Some(Action::ToggleFullscreen),
             FloatingIconSize::Fullscreen,
         )?;
         let info = rect(18.0, 92.0, width - 18.0, height - 10.0);
-        self.fill(info, SURFACE, RADIUS)?;
-        self.stroke(info, BORDER, RADIUS, 1.0)?;
+        self.fill(info, self.palette.surface, RADIUS)?;
+        self.stroke(info, self.palette.border, RADIUS, 1.0)?;
         if let Some(clip) = model.active_clip() {
             let preview = rect(
                 info.left + 18.0,
@@ -888,7 +1014,7 @@ impl Renderer {
                 info.left + 108.0,
                 info.bottom - 14.0,
             );
-            self.fill(preview, STAGE, RADIUS_SMALL)?;
+            self.fill(preview, self.palette.stage, RADIUS_SMALL)?;
             let _ = self.draw_thumbnail(&clip.path, preview)?;
             self.text(
                 &clip.title,
@@ -899,7 +1025,7 @@ impl Renderer {
                     info.top + 42.0,
                 ),
                 &self.section.clone(),
-                PRIMARY,
+                self.palette.primary,
             )?;
             self.text(
                 &format!(
@@ -916,7 +1042,7 @@ impl Renderer {
                     info.bottom - 8.0,
                 ),
                 &self.small.clone(),
-                SECONDARY,
+                self.palette.secondary,
             )?;
             self.pill(
                 rect(
@@ -925,9 +1051,9 @@ impl Renderer {
                     width / 2.0 - 72.0,
                     info.bottom - 18.0,
                 ),
-                STAGE,
-                "Clip bearbeiten",
-                PRIMARY,
+                self.palette.stage,
+                self.strings.edit_clip,
+                self.palette.primary,
                 Some(Action::EditActiveClip),
             )?;
             self.pill(
@@ -937,9 +1063,9 @@ impl Renderer {
                     width / 2.0 + 104.0,
                     info.bottom - 18.0,
                 ),
-                STAGE,
+                self.palette.stage,
                 "Ordner öffnen",
-                PRIMARY,
+                self.palette.primary,
                 Some(Action::OpenClipsFolder),
             )?;
             if let Some(index) = model.active_clip {
@@ -950,9 +1076,9 @@ impl Renderer {
                         info.right - 16.0,
                         info.bottom - 18.0,
                     ),
-                    STAGE,
-                    "Clip löschen",
-                    DESTRUCTIVE,
+                    self.palette.stage,
+                    self.strings.delete_clip,
+                    self.palette.destructive,
                     Some(Action::DeleteClip(index)),
                 )?;
             }
@@ -1011,13 +1137,17 @@ impl Renderer {
     fn render_sidebar(&mut self, model: &UiModel, height: f32) -> Result<(), String> {
         let rail = sidebar_width(model.sidebar_collapsed);
         let collapsed = model.sidebar_collapsed;
-        self.fill(rect(0.0, 0.0, rail, height), RAIL, 0.0)?;
-        self.fill(rect(rail - 1.0, 0.0, rail, height), BORDER, 0.0)?;
+        self.fill(rect(0.0, 0.0, rail, height), self.palette.rail, 0.0)?;
+        self.fill(
+            rect(rail - 1.0, 0.0, rail, height),
+            self.palette.border,
+            0.0,
+        )?;
 
         if collapsed {
             self.draw_wreath_logo(
                 rect(rail / 2.0 - 12.0, 26.0, rail / 2.0 + 12.0, 50.0),
-                PRIMARY,
+                self.palette.primary,
             )?;
             self.rail_button(
                 rect(rail / 2.0 - 14.0, 60.0, rail / 2.0 + 14.0, 88.0),
@@ -1025,12 +1155,12 @@ impl Renderer {
                 Action::ToggleSidebar,
             )?;
         } else {
-            self.draw_wreath_logo(rect(20.0, 26.0, 44.0, 50.0), PRIMARY)?;
+            self.draw_wreath_logo(rect(20.0, 26.0, 44.0, 50.0), self.palette.primary)?;
             self.text(
                 "wreath",
                 rect(52.0, 26.0, rail - 42.0, 50.0),
                 &self.brand.clone(),
-                PRIMARY,
+                self.palette.primary,
             )?;
             self.rail_button(
                 rect(rail - 38.0, 24.0, rail - 10.0, 52.0),
@@ -1040,9 +1170,13 @@ impl Renderer {
         }
 
         let navigation = [
-            (Some(Page::Library), Glyph::Library, "Clips"),
-            (Some(Page::Collections), Glyph::Collections, "Collections"),
-            (None, Glyph::Folder, "Ordner öffnen"),
+            (Some(Page::Library), Glyph::Library, self.strings.clips),
+            (
+                Some(Page::Collections),
+                Glyph::Collections,
+                self.strings.collections,
+            ),
+            (None, Glyph::Folder, self.strings.open_folder),
         ];
         let navigation_top = if collapsed {
             NAVIGATION_TOP + 18.0
@@ -1071,7 +1205,7 @@ impl Renderer {
             rail,
             height - 92.0,
             Glyph::Settings,
-            "Einstellungen",
+            self.strings.settings,
             model.page == Page::Settings,
             collapsed,
             Action::Navigate(Page::Settings),
@@ -1081,7 +1215,7 @@ impl Renderer {
                 &format!("wreath v{}", env!("CARGO_PKG_VERSION")),
                 rect(22.0, height - 44.0, rail - 12.0, height - 22.0),
                 &self.small.clone(),
-                MUTED,
+                self.palette.muted,
             )?;
         }
         Ok(())
@@ -1104,11 +1238,19 @@ impl Renderer {
             rect(10.0, top, rail - 10.0, top + NAVIGATION_HEIGHT)
         };
         if active {
-            self.fill(area, SURFACE_HOVER, RADIUS)?;
+            self.fill(area, self.palette.surface_hover, RADIUS)?;
         } else if self.is_hovered(&action) {
-            self.fill(area, mix(RAIL, SURFACE_HOVER, self.hover_progress), RADIUS)?;
+            self.fill(
+                area,
+                self.hover_fill(self.palette.rail, self.palette.surface_hover),
+                RADIUS,
+            )?;
         }
-        let tone = if active { PRIMARY } else { SECONDARY };
+        let tone = if active {
+            self.palette.primary
+        } else {
+            self.palette.secondary
+        };
         let icon_left = if collapsed {
             (area.left + area.right) / 2.0 - 9.0
         } else {
@@ -1145,7 +1287,7 @@ impl Renderer {
         if self.is_hovered(&action) {
             self.fill(
                 area,
-                mix(RAIL, SURFACE_HOVER, self.hover_progress),
+                self.hover_fill(self.palette.rail, self.palette.surface_hover),
                 RADIUS_SMALL,
             )?;
         }
@@ -1160,9 +1302,9 @@ impl Renderer {
                 center_y + 8.0,
             ),
             if self.is_hovered(&action) {
-                PRIMARY
+                self.palette.primary
             } else {
-                MUTED
+                self.palette.muted
             },
         )?;
         self.hits.push(HitRegion { rect: area, action });
@@ -1176,8 +1318,8 @@ impl Renderer {
         right: f32,
     ) -> Result<(), String> {
         let bar = rect(left, TOOLBAR_TOP, right, TOOLBAR_TOP + TOOLBAR_HEIGHT);
-        self.fill(bar, SURFACE, RADIUS)?;
-        self.stroke(bar, BORDER, RADIUS, 1.0)?;
+        self.fill(bar, self.palette.surface, RADIUS)?;
+        self.stroke(bar, self.palette.border, RADIUS, 1.0)?;
 
         let narrow = bar.right - bar.left < 900.0;
         let action_width = 152.0;
@@ -1185,7 +1327,7 @@ impl Renderer {
         let action_block = action_width + 14.0 + gear_width + 20.0 + 28.0;
         let status_width = if narrow { 214.0 } else { 244.0 };
         let display = model.selected_display().map_or_else(
-            || "Automatisch".to_owned(),
+            || self.strings.automatic.to_owned(),
             |display| display.short_label.clone(),
         );
         let quality = format!(
@@ -1196,36 +1338,36 @@ impl Renderer {
             model.config.capture.frames_per_second
         );
         let audio = match (model.config.audio.desktop, model.config.audio.microphone) {
-            (true, true) => "System + Mikrofon",
-            (true, false) => "Systemaudio",
-            (false, true) => "Mikrofon",
-            (false, false) => "Kein Audio",
+            (true, true) => self.strings.audio_system_and_microphone,
+            (true, false) => self.strings.audio_system,
+            (false, true) => self.strings.audio_microphone,
+            (false, false) => self.strings.audio_none,
         };
         let settings = [
             (
                 Glyph::Clock,
-                "CLIP-LÄNGE",
-                format!("{} Sekunden", model.config.capture.duration_seconds),
+                self.strings.clip_length_label,
+                self.strings.seconds(model.config.capture.duration_seconds),
                 Action::ChooseDuration,
                 160.0,
             ),
             (
                 Glyph::Monitor,
-                "BILDSCHIRM",
+                self.strings.display_label,
                 display,
                 Action::ChooseDisplay,
                 164.0,
             ),
             (
                 Glyph::Quality,
-                "QUALITÄT",
+                self.strings.quality_label,
                 quality,
                 Action::ChooseQuality,
                 170.0,
             ),
             (
                 Glyph::Audio,
-                "AUDIO",
+                self.strings.audio_label,
                 audio.to_owned(),
                 Action::ChooseAudioMode,
                 200.0,
@@ -1267,7 +1409,7 @@ impl Renderer {
             bar.top + 56.0,
         );
         self.toolbar_separator(bar, (x + 14.0).min(button.left - 20.0))?;
-        self.action_button(button, "CLIP SPEICHERN", Action::SaveReplay)?;
+        self.action_button(button, self.strings.save_clip, Action::SaveReplay)?;
         self.text(
             &wreath_windows::hotkey::localized_hotkey_label(&model.config.hotkey),
             rect(
@@ -1277,7 +1419,7 @@ impl Renderer {
                 bar.bottom - 20.0,
             ),
             &self.body_center.clone(),
-            MUTED,
+            self.palette.muted,
         )?;
         self.icon_button(gear, Glyph::Settings, Action::Navigate(Page::Settings))?;
         Ok(())
@@ -1286,7 +1428,7 @@ impl Renderer {
     fn toolbar_separator(&self, bar: LogicalRect, x: f32) -> Result<(), String> {
         self.fill(
             rect(x, bar.top + 22.0, x + 1.0, bar.bottom - 22.0),
-            BORDER,
+            self.palette.border,
             0.0,
         )
     }
@@ -1300,7 +1442,7 @@ impl Renderer {
         let live = model.daemon.is_recording();
         self.status_dot(area.left + 20.0, area.top + 38.0, live)?;
         self.text(
-            model.daemon.toolbar_headline(),
+            model.daemon.toolbar_headline(self.strings),
             rect(
                 area.left + 36.0,
                 area.top + 28.0,
@@ -1308,14 +1450,18 @@ impl Renderer {
                 area.top + 48.0,
             ),
             &self.label.clone(),
-            if live { PRIMARY } else { SECONDARY },
+            if live {
+                self.palette.primary
+            } else {
+                self.palette.secondary
+            },
         )?;
         let seconds = model.config.capture.duration_seconds;
         self.text(
             &if narrow {
-                format!("{seconds} Sekunden Puffer")
+                self.strings.buffered_seconds(seconds)
             } else {
-                format!("Speichert die letzten {seconds} Sekunden")
+                self.strings.saves_last_seconds(seconds)
             },
             rect(
                 area.left + 36.0,
@@ -1324,14 +1470,21 @@ impl Renderer {
                 area.top + 70.0,
             ),
             &self.small.clone(),
-            MUTED,
+            self.palette.muted,
         )
     }
 
     fn status_dot(&self, x: f32, y: f32, live: bool) -> Result<(), String> {
         let target = self.target.as_ref().expect("render target exists");
         let brush = unsafe {
-            target.CreateSolidColorBrush(&color(if live { PRIMARY } else { MUTED }), None)
+            target.CreateSolidColorBrush(
+                &color(if live {
+                    self.palette.live
+                } else {
+                    self.palette.muted
+                }),
+                None,
+            )
         }
         .map_err(|error| error.to_string())?;
         unsafe {
@@ -1364,7 +1517,7 @@ impl Renderer {
                     area.right - 6.0,
                     area.bottom - 12.0,
                 ),
-                mix(SURFACE, SURFACE_HOVER, self.hover_progress),
+                self.hover_fill(self.palette.surface, self.palette.surface_hover),
                 RADIUS,
             )?;
         }
@@ -1380,7 +1533,7 @@ impl Renderer {
                     area.left + 34.0,
                     area.top + 54.0,
                 ),
-                SECONDARY,
+                self.palette.secondary,
             )?;
             area.left + 44.0
         };
@@ -1393,7 +1546,7 @@ impl Renderer {
                 area.top + 47.0,
             ),
             &self.label.clone(),
-            MUTED,
+            self.palette.muted,
         )?;
         let chevron = rect(
             area.right - 24.0,
@@ -1411,12 +1564,16 @@ impl Renderer {
             &self.shorten(value, &self.strong, value_area.right - value_area.left),
             value_area,
             &self.strong.clone(),
-            PRIMARY,
+            self.palette.primary,
         )?;
         self.glyph(
             Glyph::ChevronDown,
             chevron,
-            if hovered { SECONDARY } else { MUTED },
+            if hovered {
+                self.palette.secondary
+            } else {
+                self.palette.muted
+            },
         )?;
         self.hits.push(HitRegion { rect: area, action });
         Ok(())
@@ -1429,12 +1586,16 @@ impl Renderer {
         action: Action,
     ) -> Result<(), String> {
         let background = if self.is_hovered(&action) {
-            mix(ACCENT, ACCENT_HOVER, self.hover_progress)
+            mix(
+                self.palette.accent,
+                self.palette.accent_hover,
+                self.hover_amount(1.0),
+            )
         } else {
-            ACCENT
+            self.palette.accent
         };
         self.fill(area, background, RADIUS_SMALL)?;
-        self.text(label, area, &self.button.clone(), ACCENT_TEXT)?;
+        self.text(label, area, &self.button.clone(), self.palette.accent_text)?;
         self.hits.push(HitRegion { rect: area, action });
         Ok(())
     }
@@ -1451,10 +1612,10 @@ impl Renderer {
             width,
             height,
         );
-        self.fill(bar, CANVAS, 0.0)?;
+        self.fill(bar, self.palette.canvas, 0.0)?;
         self.fill(
             rect(bar.left, bar.top, bar.right, bar.top + 1.0),
-            BORDER,
+            self.palette.border,
             0.0,
         )?;
 
@@ -1484,7 +1645,7 @@ impl Renderer {
             if index > 0 {
                 self.fill(
                     rect(x - 12.0, bar.top + 22.0, x - 11.0, bar.bottom - 22.0),
-                    BORDER,
+                    self.palette.border,
                     0.0,
                 )?;
             }
@@ -1496,19 +1657,19 @@ impl Renderer {
                     self.status_entry(
                         area,
                         16.0,
-                        model.daemon.status_headline(),
-                        &format!("{} Sekunden Puffer", model.daemon.buffered_seconds),
+                        model.daemon.status_headline(self.strings),
+                        &self.strings.buffered_seconds(model.daemon.buffered_seconds),
                     )?;
                 }
                 1 => {
-                    self.status_entry(area, 0.0, "SPEICHER", &storage)?;
+                    self.status_entry(area, 0.0, self.strings.storage_caps, &storage)?;
                     let track = rect(
                         area.left,
                         area.bottom - 24.0,
                         area.right - 24.0,
                         area.bottom - 21.0,
                     );
-                    self.fill(track, SURFACE_HOVER, 1.5)?;
+                    self.fill(track, self.palette.surface_hover, 1.5)?;
                     self.fill(
                         rect(
                             track.left,
@@ -1516,7 +1677,7 @@ impl Renderer {
                             track.left + (track.right - track.left) * fraction,
                             track.bottom,
                         ),
-                        SECONDARY,
+                        self.palette.secondary,
                         1.5,
                     )?;
                 }
@@ -1524,14 +1685,14 @@ impl Renderer {
                     self.status_entry(
                         area,
                         0.0,
-                        "HOTKEY",
+                        self.strings.hotkey_caps,
                         &wreath_windows::hotkey::localized_hotkey_label(&model.config.hotkey),
                     )?;
                 }
                 _ => {
                     let action = Action::ToggleMicrophoneTest;
                     let hovered = self.is_hovered(&action);
-                    self.status_entry(area, 0.0, "MIKROFON", "")?;
+                    self.status_entry(area, 0.0, self.strings.microphone_caps, "")?;
                     self.text(
                         &model.microphone_readout(),
                         rect(
@@ -1542,11 +1703,11 @@ impl Renderer {
                         ),
                         &self.small_right.clone(),
                         if model.microphone_test {
-                            PRIMARY
+                            self.palette.primary
                         } else if hovered {
-                            SECONDARY
+                            self.palette.secondary
                         } else {
-                            MUTED
+                            self.palette.muted
                         },
                     )?;
                     self.glyph(
@@ -1558,11 +1719,11 @@ impl Renderer {
                             area.top + 60.0,
                         ),
                         if model.microphone_test {
-                            PRIMARY
+                            self.palette.primary
                         } else if model.config.audio.microphone {
-                            SECONDARY
+                            self.palette.secondary
                         } else {
-                            MUTED
+                            self.palette.muted
                         },
                     )?;
                     self.level_meter(
@@ -1608,7 +1769,7 @@ impl Renderer {
                 area.top + 42.0,
             ),
             &self.label.clone(),
-            MUTED,
+            self.palette.muted,
         )?;
         if value.is_empty() {
             return Ok(());
@@ -1622,7 +1783,7 @@ impl Renderer {
                 area.top + 64.0,
             ),
             &self.body.clone(),
-            PRIMARY,
+            self.palette.primary,
         )
     }
 
@@ -1651,13 +1812,13 @@ impl Renderer {
             self.fill(
                 bar,
                 if index < lit {
-                    PRIMARY
+                    self.palette.live
                 } else if marker > 0 && index + 1 == marker {
-                    SECONDARY
+                    self.palette.secondary
                 } else if enabled {
-                    BORDER
+                    self.palette.border
                 } else {
-                    mix(CANVAS, BORDER, 0.6)
+                    mix(self.palette.canvas, self.palette.border, 0.6)
                 },
                 1.0,
             )?;
@@ -1675,10 +1836,10 @@ impl Renderer {
     ) -> Result<(), String> {
         let today = crate::clock::now();
         self.text(
-            "Clips",
+            self.strings.clips,
             rect(left, top, left + 260.0, top + 34.0),
             &self.page_title.clone(),
-            PRIMARY,
+            self.palette.primary,
         )?;
 
         let mut tab_left = left;
@@ -1689,18 +1850,22 @@ impl Renderer {
             } else {
                 self.body.clone()
             };
-            let width = self.measure(tab.label(), &format);
+            let width = self.measure(tab.label(self.strings), &format);
             let area = rect(tab_left, top + 44.0, tab_left + width, top + 70.0);
             self.text(
-                tab.label(),
+                tab.label(self.strings),
                 area,
                 &format,
-                if active { PRIMARY } else { SECONDARY },
+                if active {
+                    self.palette.primary
+                } else {
+                    self.palette.secondary
+                },
             )?;
             if active {
                 self.fill(
                     rect(area.left, area.bottom, area.right, area.bottom + 1.5),
-                    PRIMARY,
+                    self.palette.primary,
                     0.0,
                 )?;
             }
@@ -1728,7 +1893,7 @@ impl Renderer {
             tools_bottom,
         );
         if search.right - search.left >= 120.0 {
-            self.search_field(model, search, "Clips suchen...")?;
+            self.search_field(model, search, self.strings.search_clips)?;
         }
         self.view_button(
             filter,
@@ -1749,7 +1914,11 @@ impl Renderer {
             Action::SetLibraryGrid(false),
         )?;
 
-        self.fill(rect(left, top + 88.0, right, top + 89.0), BORDER, 0.0)?;
+        self.fill(
+            rect(left, top + 88.0, right, top + 89.0),
+            self.palette.border,
+            0.0,
+        )?;
 
         let body_top = top + 100.0;
         let selecting = model.selection_mode && !model.selected_clips.is_empty();
@@ -1764,13 +1933,13 @@ impl Renderer {
         if indices.is_empty() {
             self.empty_state(
                 if !model.search.value.is_empty() {
-                    "Keine passenden Clips"
+                    self.strings.empty_no_match
                 } else if model.clip_tab == ClipTab::Favorites {
-                    "Noch keine Favoriten"
+                    self.strings.empty_no_favorites
                 } else if model.filters_are_active() {
-                    "Keine Clips in dieser Auswahl"
+                    self.strings.empty_no_filter_match
                 } else {
-                    "Noch keine Clips"
+                    self.strings.empty_no_clips
                 },
                 area.left,
                 area.right,
@@ -1803,7 +1972,7 @@ impl Renderer {
                 let thumb_top = area.top + (viewport_height - thumb_height) * (scroll / overflow);
                 self.fill(
                     rect(track.left, thumb_top, track.right, thumb_top + thumb_height),
-                    BORDER,
+                    self.palette.border,
                     1.5,
                 )?;
             }
@@ -1829,27 +1998,27 @@ impl Renderer {
     ) -> Result<(), String> {
         let entries: [(&str, String, Action); 5] = [
             (
-                "Zeitraum",
-                model.filter_time.label().to_owned(),
+                self.strings.filter_time,
+                model.filter_time.label(self.strings).to_owned(),
                 Action::ChooseTimeFilter,
             ),
             (
-                "Spiel",
+                self.strings.filter_game,
                 model.filter_collection_label().to_owned(),
                 Action::ChooseCollectionFilter,
             ),
             (
-                "Typ",
-                model.filter_type.label().to_owned(),
+                self.strings.filter_type,
+                model.filter_type.label(self.strings).to_owned(),
                 Action::ChooseTypeFilter,
             ),
             (
-                "Größe",
-                model.filter_size.label().to_owned(),
+                self.strings.filter_size,
+                model.filter_size.label(self.strings).to_owned(),
                 Action::ChooseSizeFilter,
             ),
             (
-                "Sortierung",
+                self.strings.filter_sort,
                 model.sort_label().to_owned(),
                 Action::ChooseClipSort,
             ),
@@ -1863,10 +2032,10 @@ impl Renderer {
             anchor.right,
             anchor.bottom + 8.0 + panel_height,
         );
-        self.fill(panel, SURFACE_RAISED, RADIUS_LARGE)?;
-        self.stroke(panel, BORDER, RADIUS_LARGE, 1.0)?;
+        self.fill(panel, self.palette.surface_raised, RADIUS_LARGE)?;
+        self.stroke(panel, self.palette.border, RADIUS_LARGE, 1.0)?;
         self.text(
-            "FILTER",
+            self.strings.filter_caps,
             rect(
                 panel.left + 18.0,
                 panel.top + 12.0,
@@ -1874,7 +2043,7 @@ impl Renderer {
                 panel.top + 34.0,
             ),
             &self.label.clone(),
-            MUTED,
+            self.palette.muted,
         )?;
         let active = model.filters_are_active();
         let reset = rect(
@@ -1884,15 +2053,15 @@ impl Renderer {
             panel.top + 34.0,
         );
         self.text(
-            "Zurücksetzen",
+            self.strings.reset,
             reset,
             &self.small_right.clone(),
             if !active {
-                MUTED
+                self.palette.muted
             } else if self.is_hovered(&Action::ResetFilters) {
-                PRIMARY
+                self.palette.primary
             } else {
-                SECONDARY
+                self.palette.secondary
             },
         )?;
         if active {
@@ -1911,7 +2080,7 @@ impl Renderer {
                 label,
                 rect(panel.left + 18.0, top, panel.right - 18.0, top + 18.0),
                 &self.small.clone(),
-                SECONDARY,
+                self.palette.secondary,
             )?;
             self.dropdown(
                 rect(
@@ -1947,15 +2116,11 @@ impl Renderer {
                     &group.label,
                     rect(area.left, header_top, area.left + 300.0, header_top + 26.0),
                     &self.section.clone(),
-                    PRIMARY,
+                    self.palette.primary,
                 )?;
                 let count = group.indices.len();
                 self.text(
-                    &if count == 1 {
-                        "1 Clip".to_owned()
-                    } else {
-                        format!("{count} Clips")
-                    },
+                    &self.strings.clip_count(count),
                     rect(
                         area.right - 160.0 - CLIP_SCROLL_RESERVE,
                         header_top + 3.0,
@@ -1963,7 +2128,7 @@ impl Renderer {
                         header_top + 24.0,
                     ),
                     &self.small_right.clone(),
-                    MUTED,
+                    self.palette.muted,
                 )?;
             }
             for (position, index) in group.indices.iter().copied().enumerate() {
@@ -2025,22 +2190,22 @@ impl Renderer {
         self.fill(
             card,
             if selected {
-                SURFACE_HOVER
+                self.palette.surface_hover
             } else if hovered {
-                mix(CARD, SURFACE_HOVER, self.hover_progress)
+                self.hover_fill(self.palette.card, self.palette.surface_hover)
             } else {
-                CARD
+                self.palette.card
             },
             RADIUS,
         )?;
         self.stroke(
             card,
             if selected {
-                SECONDARY
+                self.palette.secondary
             } else if hovered {
-                mix(HAIRLINE, SECONDARY, self.hover_progress * 0.8)
+                self.hover_edge(self.palette.hairline, self.palette.secondary)
             } else {
-                HAIRLINE
+                self.palette.hairline
             },
             RADIUS,
             1.0,
@@ -2052,7 +2217,7 @@ impl Renderer {
             card.right - 1.0,
             card.bottom - CLIP_META_HEIGHT,
         );
-        self.fill(preview, STAGE, RADIUS_SMALL)?;
+        self.fill(preview, self.palette.stage, RADIUS_SMALL)?;
         if !self.draw_thumbnail(&clip.path, preview)? {
             self.glyph(
                 Glyph::Play,
@@ -2062,7 +2227,7 @@ impl Renderer {
                     (preview.left + preview.right) / 2.0 + 10.0,
                     (preview.top + preview.bottom) / 2.0 + 10.0,
                 ),
-                MUTED,
+                self.palette.muted,
             )?;
         }
 
@@ -2076,7 +2241,12 @@ impl Renderer {
                 preview.bottom - 7.0,
             );
             self.fill_alpha(badge, 0x000000, 0.7, RADIUS_SMALL)?;
-            self.text(&label, badge, &self.small_center.clone(), PRIMARY)?;
+            self.text(
+                &label,
+                badge,
+                &self.small_center.clone(),
+                self.palette.primary,
+            )?;
         }
 
         if model.selection_mode {
@@ -2086,20 +2256,47 @@ impl Renderer {
                 preview.right - 8.0,
                 preview.top + 30.0,
             );
-            self.fill(check, if selected { ACCENT } else { SURFACE_RAISED }, 11.0)?;
-            self.stroke(check, if selected { ACCENT } else { BORDER }, 11.0, 1.0)?;
+            self.fill(
+                check,
+                if selected {
+                    self.palette.accent
+                } else {
+                    self.palette.surface_raised
+                },
+                11.0,
+            )?;
+            self.stroke(
+                check,
+                if selected {
+                    self.palette.accent
+                } else {
+                    self.palette.border
+                },
+                11.0,
+                1.0,
+            )?;
             if selected {
-                self.text("✓", check, &self.strong_center.clone(), ACCENT_TEXT)?;
+                self.text(
+                    "✓",
+                    check,
+                    &self.strong_center.clone(),
+                    self.palette.accent_text,
+                )?;
             }
         } else if hovered {
-            self.fill_alpha(preview, CANVAS, 0.4 * self.hover_progress, RADIUS_SMALL)?;
+            self.fill_alpha(
+                preview,
+                self.palette.canvas,
+                0.4 * self.hover_amount(1.0),
+                RADIUS_SMALL,
+            )?;
             let play = rect(
                 (preview.left + preview.right) / 2.0 - 18.0,
                 (preview.top + preview.bottom) / 2.0 - 18.0,
                 (preview.left + preview.right) / 2.0 + 18.0,
                 (preview.top + preview.bottom) / 2.0 + 18.0,
             );
-            self.fill(play, ACCENT, RADIUS_SMALL)?;
+            self.fill(play, self.palette.accent, RADIUS_SMALL)?;
             self.glyph(
                 Glyph::Play,
                 rect(
@@ -2108,7 +2305,7 @@ impl Renderer {
                     play.right - 8.0,
                     play.bottom - 9.0,
                 ),
-                ACCENT_TEXT,
+                self.palette.accent_text,
             )?;
             let star = rect(
                 preview.right - 34.0,
@@ -2148,7 +2345,7 @@ impl Renderer {
                     star.right - 4.0,
                     star.bottom - 4.0,
                 ),
-                PRIMARY,
+                self.palette.primary,
             )?;
         }
 
@@ -2168,12 +2365,12 @@ impl Renderer {
                 card.bottom - CLIP_META_HEIGHT + 26.0,
             ),
             &self.strong.clone(),
-            PRIMARY,
+            self.palette.primary,
         )?;
         self.text(
             &format!(
                 "{}  ·  {}",
-                crate::clock::stamp_label(crate::clock::local(clip.modified), today),
+                crate::clock::stamp_label(crate::clock::local(clip.modified), today, self.strings),
                 format_bytes(clip.size_bytes)
             ),
             rect(
@@ -2183,7 +2380,7 @@ impl Renderer {
                 card.bottom - 8.0,
             ),
             &self.small.clone(),
-            MUTED,
+            self.palette.muted,
         )?;
         self.glyph(
             Glyph::More,
@@ -2194,9 +2391,9 @@ impl Renderer {
                 more.bottom - 8.0,
             ),
             if self.is_hovered(&menu) {
-                PRIMARY
+                self.palette.primary
             } else {
-                MUTED
+                self.palette.muted
             },
         )?;
         if !model.selection_mode {
@@ -2225,13 +2422,17 @@ impl Renderer {
         let menu = Action::OpenClipMenu(index);
         let selected = model.clip_is_selected(index);
         if selected {
-            self.fill(row, SURFACE_HOVER, RADIUS_SMALL)?;
+            self.fill(row, self.palette.surface_hover, RADIUS_SMALL)?;
         } else if self.is_hovered(&open) {
-            self.fill(row, mix(CANVAS, SURFACE, self.hover_progress), RADIUS_SMALL)?;
+            self.fill(
+                row,
+                self.hover_fill(self.palette.canvas, self.palette.surface),
+                RADIUS_SMALL,
+            )?;
         }
         self.fill(
             rect(row.left, row.bottom - 1.0, row.right, row.bottom),
-            BORDER,
+            self.palette.border,
             0.0,
         )?;
         let preview = rect(
@@ -2240,7 +2441,7 @@ impl Renderer {
             row.left + 96.0,
             row.bottom - 6.0,
         );
-        self.fill(preview, STAGE, RADIUS_SMALL)?;
+        self.fill(preview, self.palette.stage, RADIUS_SMALL)?;
         let _ = self.draw_thumbnail(&clip.path, preview)?;
         if let Some(duration) = self.clip_duration(&clip.path) {
             let label = format_clip_badge_duration(duration);
@@ -2251,25 +2452,30 @@ impl Renderer {
                 preview.bottom - 4.0,
             );
             self.fill_alpha(badge, 0x000000, 0.72, RADIUS_SMALL)?;
-            self.text(&label, badge, &self.strong_center.clone(), PRIMARY)?;
+            self.text(
+                &label,
+                badge,
+                &self.strong_center.clone(),
+                self.palette.primary,
+            )?;
         }
         self.text(
             &clip.title,
             rect(preview.right + 16.0, row.top, row.right - 300.0, row.bottom),
             &self.strong.clone(),
-            PRIMARY,
+            self.palette.primary,
         )?;
         self.text(
-            &crate::clock::stamp_label(crate::clock::local(clip.modified), today),
+            &crate::clock::stamp_label(crate::clock::local(clip.modified), today, self.strings),
             rect(row.right - 296.0, row.top, row.right - 150.0, row.bottom),
             &self.small.clone(),
-            SECONDARY,
+            self.palette.secondary,
         )?;
         self.text(
             &format_bytes(clip.size_bytes),
             rect(row.right - 146.0, row.top, row.right - 74.0, row.bottom),
             &self.small.clone(),
-            MUTED,
+            self.palette.muted,
         )?;
         let star = rect(
             row.right - 68.0,
@@ -2286,11 +2492,11 @@ impl Renderer {
                 star.bottom - 3.0,
             ),
             if model.is_favorite(index) {
-                PRIMARY
+                self.palette.primary
             } else if self.is_hovered(&favorite) {
-                SECONDARY
+                self.palette.secondary
             } else {
-                MUTED
+                self.palette.muted
             },
         )?;
         if model.is_favorite(index) {
@@ -2302,7 +2508,7 @@ impl Renderer {
                     star.right - 3.0,
                     star.bottom - 3.0,
                 ),
-                PRIMARY,
+                self.palette.primary,
             )?;
         }
         let more = rect(
@@ -2320,9 +2526,9 @@ impl Renderer {
                 more.bottom - 7.0,
             ),
             if self.is_hovered(&menu) {
-                PRIMARY
+                self.palette.primary
             } else {
-                MUTED
+                self.palette.muted
             },
         )?;
         self.push_clipped_hit(row, viewport, open);
@@ -2343,7 +2549,11 @@ impl Renderer {
         let hovered = self.is_hovered(&action);
         self.fill_alpha(
             area,
-            if hovered { SURFACE_HOVER } else { 0x000000 },
+            if hovered {
+                self.palette.surface_hover
+            } else {
+                0x000000
+            },
             if hovered { 0.95 } else { 0.6 },
             RADIUS_SMALL,
         )?;
@@ -2355,7 +2565,7 @@ impl Renderer {
                 area.right - 5.0,
                 area.bottom - 5.0,
             ),
-            PRIMARY,
+            self.palette.primary,
         )?;
         self.push_clipped_hit(area, viewport, action);
         Ok(())
@@ -2366,18 +2576,18 @@ impl Renderer {
         self.fill(
             area,
             if hovered {
-                mix(SURFACE, SURFACE_HOVER, self.hover_progress)
+                self.hover_fill(self.palette.surface, self.palette.surface_hover)
             } else {
-                SURFACE
+                self.palette.surface
             },
             RADIUS_SMALL,
         )?;
         self.stroke(
             area,
             if hovered {
-                mix(BORDER, SECONDARY, self.hover_progress * 0.6)
+                self.hover_edge(self.palette.border, self.palette.secondary)
             } else {
-                BORDER
+                self.palette.border
             },
             RADIUS_SMALL,
             1.0,
@@ -2393,9 +2603,9 @@ impl Renderer {
             &self.shorten(value, &self.body, value_area.right - value_area.left),
             value_area,
             &self.body.clone(),
-            PRIMARY,
+            self.palette.primary,
         )?;
-        self.glyph(Glyph::ChevronDown, chevron, MUTED)?;
+        self.glyph(Glyph::ChevronDown, chevron, self.palette.muted)?;
         self.hits.push(HitRegion { rect: area, action });
         Ok(())
     }
@@ -2411,15 +2621,15 @@ impl Renderer {
         self.fill(
             area,
             if active {
-                SURFACE_HOVER
+                self.palette.surface_hover
             } else if hovered {
-                mix(SURFACE, SURFACE_HOVER, self.hover_progress)
+                self.hover_fill(self.palette.surface, self.palette.surface_hover)
             } else {
-                SURFACE
+                self.palette.surface
             },
             RADIUS_SMALL,
         )?;
-        self.stroke(area, BORDER, RADIUS_SMALL, 1.0)?;
+        self.stroke(area, self.palette.border, RADIUS_SMALL, 1.0)?;
         self.glyph(
             glyph,
             rect(
@@ -2429,9 +2639,9 @@ impl Renderer {
                 area.bottom - 9.0,
             ),
             if active || hovered {
-                PRIMARY
+                self.palette.primary
             } else {
-                SECONDARY
+                self.palette.secondary
             },
         )?;
         self.hits.push(HitRegion { rect: area, action });
@@ -2506,20 +2716,24 @@ impl Renderer {
     ) -> Result<(), String> {
         let today = crate::clock::now();
         self.text(
-            "Collections",
+            self.strings.collections,
             rect(left, top, left + 320.0, top + 34.0),
             &self.page_title.clone(),
-            PRIMARY,
+            self.palette.primary,
         )?;
         self.text(
-            "Ordne deine Clips in lokalen Ordnern.",
+            self.strings.collections_subtitle,
             rect(left, top + 44.0, left + 420.0, top + 68.0),
             &self.body.clone(),
-            MUTED,
+            self.palette.muted,
         )?;
 
         let create = rect(right - 176.0, top + 4.0, right, top + 38.0);
-        self.action_button(create, "NEUE SAMMLUNG", Action::CreateCollection)?;
+        self.action_button(
+            create,
+            self.strings.new_collection_button,
+            Action::CreateCollection,
+        )?;
         let search = rect(
             (create.left - 246.0).max(left + 340.0),
             top + 4.0,
@@ -2527,16 +2741,20 @@ impl Renderer {
             top + 38.0,
         );
         if search.right - search.left >= 120.0 {
-            self.search_field(model, search, "Sammlungen suchen...")?;
+            self.search_field(model, search, self.strings.search_collections)?;
         }
-        self.fill(rect(left, top + 88.0, right, top + 89.0), BORDER, 0.0)?;
+        self.fill(
+            rect(left, top + 88.0, right, top + 89.0),
+            self.palette.border,
+            0.0,
+        )?;
 
         let body_top = top + 100.0;
         let column = rect(left, body_top, left + FOLDER_COLUMN_WIDTH, bottom);
         self.render_folder_column(model, column)?;
         self.fill(
             rect(column.right + 12.0, body_top, column.right + 13.0, bottom),
-            BORDER,
+            self.palette.border,
             0.0,
         )?;
 
@@ -2547,12 +2765,14 @@ impl Renderer {
                 .iter()
                 .find(|collection| &collection.path == path)
         });
-        let title = active.map_or("Alle Clips", |collection| collection.name.as_str());
+        let title = active.map_or(self.strings.all_clips, |collection| {
+            collection.name.as_str()
+        });
         self.text(
             &self.shorten(title, &self.section, right - area_left - 240.0),
             rect(area_left, body_top - 4.0, right - 240.0, body_top + 22.0),
             &self.section.clone(),
-            PRIMARY,
+            self.palette.primary,
         )?;
         if active.is_some() {
             let delete = rect(right - 84.0, body_top - 6.0, right, body_top + 22.0);
@@ -2563,8 +2783,18 @@ impl Renderer {
                 body_top + 22.0,
             );
             for (area, label, action, destructive) in [
-                (rename, "Umbenennen", Action::RenameActiveCollection, false),
-                (delete, "Löschen", Action::DeleteActiveCollection, true),
+                (
+                    rename,
+                    self.strings.rename,
+                    Action::RenameActiveCollection,
+                    false,
+                ),
+                (
+                    delete,
+                    self.strings.delete,
+                    Action::DeleteActiveCollection,
+                    true,
+                ),
             ] {
                 let hovered = self.is_hovered(&action);
                 self.text(
@@ -2572,11 +2802,11 @@ impl Renderer {
                     area,
                     &self.small_right.clone(),
                     if destructive && hovered {
-                        DESTRUCTIVE
+                        self.palette.destructive
                     } else if hovered {
-                        PRIMARY
+                        self.palette.primary
                     } else {
-                        SECONDARY
+                        self.palette.secondary
                     },
                 )?;
                 self.hits.push(HitRegion { rect: area, action });
@@ -2595,9 +2825,9 @@ impl Renderer {
         if indices.is_empty() {
             self.empty_state(
                 if active.is_some() {
-                    "Diese Sammlung ist leer"
+                    self.strings.empty_collection
                 } else {
-                    "Noch keine Clips"
+                    self.strings.empty_no_clips
                 },
                 area.left,
                 area.right,
@@ -2632,7 +2862,7 @@ impl Renderer {
                         area.right - 1.0,
                         thumb_top + thumb_height,
                     ),
-                    BORDER,
+                    self.palette.border,
                     1.5,
                 )?;
             }
@@ -2648,7 +2878,7 @@ impl Renderer {
 
     fn render_folder_column(&mut self, model: &UiModel, area: LogicalRect) -> Result<(), String> {
         self.text(
-            "ORDNER",
+            self.strings.folders_caps,
             rect(
                 area.left + 4.0,
                 area.top - 4.0,
@@ -2656,7 +2886,7 @@ impl Renderer {
                 area.top + 18.0,
             ),
             &self.label.clone(),
-            MUTED,
+            self.palette.muted,
         )?;
         let sort = Action::ToggleCollectionSort;
         let sort_area = rect(
@@ -2667,16 +2897,16 @@ impl Renderer {
         );
         self.text(
             if model.collections_descending {
-                "Z–A"
+                self.strings.sort_descending
             } else {
-                "A–Z"
+                self.strings.sort_ascending
             },
             sort_area,
             &self.small_right.clone(),
             if self.is_hovered(&sort) {
-                PRIMARY
+                self.palette.primary
             } else {
-                MUTED
+                self.palette.muted
             },
         )?;
         self.hits.push(HitRegion {
@@ -2689,7 +2919,7 @@ impl Renderer {
         self.folder_row(
             rect(area.left, row_top, area.right, row_top + FOLDER_ROW_HEIGHT),
             Glyph::Library,
-            "Alle Clips",
+            self.strings.all_clips,
             model.clips.len(),
             model.active_collection.is_none(),
             false,
@@ -2715,10 +2945,10 @@ impl Renderer {
         }
         if model.collections.is_empty() {
             self.text(
-                "Noch keine Sammlungen",
+                self.strings.no_collections,
                 rect(area.left + 4.0, row_top + 6.0, area.right, row_top + 30.0),
                 &self.small.clone(),
-                MUTED,
+                self.palette.muted,
             )?;
         }
         Ok(())
@@ -2737,24 +2967,24 @@ impl Renderer {
     ) -> Result<(), String> {
         let hovered = self.is_hovered(&action);
         if active {
-            self.fill(area, SURFACE_HOVER, RADIUS_SMALL)?;
+            self.fill(area, self.palette.surface_hover, RADIUS_SMALL)?;
         } else if hovered || drop_target {
             self.fill(
                 area,
                 mix(
-                    CANVAS,
-                    SURFACE_HOVER,
+                    self.palette.canvas,
+                    self.palette.surface_hover,
                     if drop_target {
                         1.0
                     } else {
-                        self.hover_progress
+                        self.hover_amount(1.0)
                     },
                 ),
                 RADIUS_SMALL,
             )?;
         }
         if drop_target {
-            self.stroke(area, SECONDARY, RADIUS_SMALL, 1.0)?;
+            self.stroke(area, self.palette.secondary, RADIUS_SMALL, 1.0)?;
         }
         let center = (area.top + area.bottom) / 2.0;
         self.glyph(
@@ -2765,7 +2995,11 @@ impl Renderer {
                 area.left + 25.0,
                 center + 8.0,
             ),
-            if active { PRIMARY } else { SECONDARY },
+            if active {
+                self.palette.primary
+            } else {
+                self.palette.secondary
+            },
         )?;
         let count_area = rect(area.right - 48.0, area.top, area.right - 10.0, area.bottom);
         self.text(
@@ -2777,13 +3011,17 @@ impl Renderer {
                 area.bottom,
             ),
             &self.body.clone(),
-            if active { PRIMARY } else { SECONDARY },
+            if active {
+                self.palette.primary
+            } else {
+                self.palette.secondary
+            },
         )?;
         self.text(
             &count.to_string(),
             count_area,
             &self.small_right.clone(),
-            MUTED,
+            self.palette.muted,
         )?;
         self.hits.push(HitRegion { rect: area, action });
         Ok(())
@@ -2797,54 +3035,61 @@ impl Renderer {
         height: f32,
     ) -> Result<(), String> {
         self.page_heading(
-            "Einstellungen",
-            "Passe wreath nach deinen Wünschen an.",
+            self.strings.settings,
+            self.strings.settings_subtitle,
             left,
             right,
         )?;
         self.pill(
             rect(right - 154.0, 86.0, right, 130.0),
-            ACCENT,
-            "Speichern",
-            CANVAS,
+            self.palette.accent,
+            self.strings.save,
+            self.palette.accent_text,
             Some(Action::SaveSettings),
         )?;
         let [general, capture, audio, storage] = settings_panel_rects(left, right, height);
-        self.settings_panel(general, "Allgemein")?;
+
+        self.settings_panel(general, self.strings.panel_general)?;
         self.settings_compact_row(
             general,
+            SETTINGS_GENERAL_ROWS,
             0,
-            "Programmstart",
-            "wreath automatisch mit Windows starten",
-            if model.autostart_enabled { "An" } else { "Aus" },
+            self.strings.autostart,
+            self.strings.autostart_hint,
+            if model.autostart_enabled {
+                self.strings.on
+            } else {
+                self.strings.off
+            },
             Action::ToggleAutostart,
             SettingControl::Toggle,
         )?;
         let shortcut = if model.hotkey_pending {
-            "Aktivieren...".to_owned()
+            self.strings.hotkey_activating.to_owned()
         } else if model.hotkey_capture {
-            hotkey_capture_label(&model.hotkey_modifiers)
+            hotkey_capture_label(&model.hotkey_modifiers, self.strings)
         } else {
             wreath_windows::hotkey::localized_hotkey_label(&model.config.hotkey)
         };
         self.settings_compact_row(
             general,
+            SETTINGS_GENERAL_ROWS,
             1,
-            "Replay-Hotkey",
-            "Speichert den aktuellen Replay",
+            self.strings.replay_hotkey,
+            self.strings.replay_hotkey_hint,
             &shortcut,
             Action::CaptureHotkey,
             SettingControl::Button,
         )?;
-        let row_height = compact_settings_row_height(general);
-        let hotkey_top = general.top + 44.0 + row_height;
+        let row_height = compact_settings_row_height(general, SETTINGS_GENERAL_ROWS);
+        let hotkey_top = general.top + SETTINGS_PANEL_HEADER + row_height;
         let clear = rect(
             general.right - 48.0,
             hotkey_top + 7.0,
             general.right - 20.0,
             hotkey_top + row_height - 7.0,
         );
-        self.fill(clear, SURFACE_RAISED, RADIUS_SMALL)?;
+        self.fill(clear, self.palette.surface_raised, RADIUS_SMALL)?;
         self.glyph(
             Glyph::Close,
             rect(
@@ -2853,7 +3098,7 @@ impl Renderer {
                 clear.right - 3.0,
                 clear.bottom - 3.0,
             ),
-            SECONDARY,
+            self.palette.secondary,
         )?;
         self.hits.push(HitRegion {
             rect: clear,
@@ -2861,69 +3106,129 @@ impl Renderer {
         });
         self.settings_compact_row(
             general,
+            SETTINGS_GENERAL_ROWS,
             2,
-            "Mauszeiger aufnehmen",
-            "Zeiger in Aufnahmen anzeigen",
-            if model.config.capture.cursor {
-                "An"
-            } else {
-                "Aus"
-            },
-            Action::ToggleCursor,
-            SettingControl::Toggle,
+            self.strings.theme_row,
+            self.strings.theme_hint,
+            theme_label(model.config.appearance.theme, self.strings),
+            Action::ChooseTheme,
+            SettingControl::Dropdown,
+        )?;
+        self.settings_compact_row(
+            general,
+            SETTINGS_GENERAL_ROWS,
+            3,
+            self.strings.hover_row,
+            self.strings.hover_hint,
+            hover_style_label(model.config.appearance.hover, self.strings),
+            Action::ChooseHoverStyle,
+            SettingControl::Dropdown,
+        )?;
+        self.settings_compact_row(
+            general,
+            SETTINGS_GENERAL_ROWS,
+            4,
+            self.strings.hover_strength_row,
+            self.strings.hover_strength_hint,
+            hover_strength_label(model.config.appearance.hover_strength, self.strings),
+            Action::ChooseHoverStrength,
+            SettingControl::Dropdown,
+        )?;
+        self.settings_compact_row(
+            general,
+            SETTINGS_GENERAL_ROWS,
+            5,
+            self.strings.language_row,
+            self.strings.language_hint,
+            language_label(model.config.appearance.language, self.strings),
+            Action::ChooseLanguage,
+            SettingControl::Dropdown,
         )?;
 
-        self.settings_panel(capture, "Aufnahmen")?;
+        self.settings_panel(capture, self.strings.panel_capture)?;
         let display = model
             .selected_display()
-            .map_or("Primärer Bildschirm", |display| display.label.as_str());
+            .map_or(self.strings.primary_display, |display| {
+                display.label.as_str()
+            });
         self.settings_compact_row(
             capture,
+            SETTINGS_CAPTURE_ROWS,
             0,
-            "Bildschirm",
-            "Aufnahmequelle",
+            self.strings.display_row,
+            self.strings.display_hint,
             display,
             Action::ChooseDisplay,
             SettingControl::Dropdown,
         )?;
         self.settings_compact_row(
             capture,
+            SETTINGS_CAPTURE_ROWS,
             1,
-            "Clip-Dauer",
-            "Länge des Replay-Fensters",
-            &format!("{} Sekunden", model.config.capture.duration_seconds),
+            self.strings.clip_duration,
+            self.strings.clip_duration_hint,
+            &self.strings.seconds(model.config.capture.duration_seconds),
             Action::ChooseDuration,
             SettingControl::Dropdown,
         )?;
         self.settings_compact_row(
             capture,
+            SETTINGS_CAPTURE_ROWS,
             2,
-            "Bildrate",
-            "Maximal 60 Bilder pro Sekunde",
-            &format!("{} fps", model.config.capture.frames_per_second),
+            self.strings.frame_rate,
+            self.strings.frame_rate_hint,
+            &self
+                .strings
+                .frames_per_second(model.config.capture.frames_per_second),
             Action::ChooseFrameRate,
             SettingControl::Dropdown,
         )?;
         self.settings_compact_row(
             capture,
+            SETTINGS_CAPTURE_ROWS,
             3,
-            "Codec",
-            "Hardware-Encoder",
+            self.strings.video_quality,
+            self.strings.video_quality_hint,
+            &quality_label(model.config.capture.quality),
+            Action::ChooseQuality,
+            SettingControl::Dropdown,
+        )?;
+        self.settings_compact_row(
+            capture,
+            SETTINGS_CAPTURE_ROWS,
+            4,
+            self.strings.codec,
+            self.strings.codec_hint,
             &format!("{:?}", model.config.capture.codec),
             Action::ChooseCodec,
             SettingControl::Dropdown,
         )?;
+        self.settings_compact_row(
+            capture,
+            SETTINGS_CAPTURE_ROWS,
+            5,
+            self.strings.capture_cursor,
+            self.strings.capture_cursor_hint,
+            if model.config.capture.cursor {
+                self.strings.on
+            } else {
+                self.strings.off
+            },
+            Action::ToggleCursor,
+            SettingControl::Toggle,
+        )?;
 
-        self.settings_panel(audio, "Audio")?;
+        self.settings_panel(audio, self.strings.panel_audio)?;
         self.settings_compact_row(
             audio,
+            SETTINGS_AUDIO_ROWS,
             0,
-            "Systemaudio",
-            "Spiel- und Desktop-Ton aufnehmen",
+            self.strings.system_audio,
+            self.strings.system_audio_hint,
             if model.config.audio.desktop {
-                "An"
+                self.strings.on
             } else {
-                "Aus"
+                self.strings.off
             },
             Action::ToggleDesktopAudio,
             SettingControl::Toggle,
@@ -2939,73 +3244,39 @@ impl Renderer {
                     .iter()
                     .find(|(device_id, _)| device_id == id)
             })
-            .map_or("Windows-Standard", |(_, name)| name.as_str());
+            .map_or(self.strings.windows_default, |(_, name)| name.as_str());
         self.settings_compact_row(
             audio,
+            SETTINGS_AUDIO_ROWS,
             1,
-            "Ausgabegerät",
-            "Quelle für Systemaudio",
+            self.strings.output_device,
+            self.strings.output_device_hint,
             output_name,
             Action::ChooseDesktopDevice,
             SettingControl::Dropdown,
         )?;
         self.settings_gain_slider(
             audio,
+            SETTINGS_AUDIO_ROWS,
             2,
-            "Systemaudio-Pegel",
-            "Balance der Desktop-Aufnahme",
+            self.strings.system_level,
+            self.strings.system_level_hint,
             model.config.audio.desktop_gain_percent,
             Action::DragDesktopGain,
         )?;
         self.settings_compact_row(
             audio,
+            SETTINGS_AUDIO_ROWS,
             3,
-            "Mikrofon",
-            "Eingabegerät mit aufnehmen",
+            self.strings.microphone,
+            self.strings.microphone_hint,
             if model.config.audio.microphone {
-                "An"
+                self.strings.on
             } else {
-                "Aus"
+                self.strings.off
             },
             Action::ToggleMicrophone,
             SettingControl::Toggle,
-        )?;
-        self.settings_gain_slider(
-            audio,
-            4,
-            "Mikrofon-Pegel",
-            "Lautstärke der Stimme",
-            model.config.audio.microphone_gain_percent,
-            Action::DragMicrophoneGain,
-        )?;
-
-        self.settings_panel(storage, "Speicher und Qualität")?;
-        self.settings_compact_row(
-            storage,
-            0,
-            "Speicherort",
-            "Lokaler Ordner für Clips",
-            &model.config.storage.directory.display().to_string(),
-            Action::ChooseStorage,
-            SettingControl::Button,
-        )?;
-        self.settings_compact_row(
-            storage,
-            1,
-            "Speicherlimit",
-            "Maximaler Platz für Clips",
-            &format_storage_limit(model.config.storage.max_megabytes),
-            Action::ChooseStorageLimit,
-            SettingControl::Dropdown,
-        )?;
-        self.settings_compact_row(
-            storage,
-            2,
-            "Videoqualität",
-            "Detailgrad und Speicherbedarf",
-            &quality_label(model.config.capture.quality),
-            Action::ChooseQuality,
-            SettingControl::Dropdown,
         )?;
         let microphone_name = model
             .config
@@ -3018,66 +3289,62 @@ impl Renderer {
                     .iter()
                     .find(|(device_id, _)| device_id == id)
             })
-            .map_or("Windows-Standard", |(_, name)| name.as_str());
+            .map_or(self.strings.windows_default, |(_, name)| name.as_str());
         self.settings_compact_row(
-            storage,
-            3,
-            "Mikrofon-Gerät",
-            "Aktives Windows-Eingabegerät",
+            audio,
+            SETTINGS_AUDIO_ROWS,
+            4,
+            self.strings.microphone_device,
+            self.strings.microphone_device_hint,
             microphone_name,
             Action::ChooseMicrophone,
             SettingControl::Dropdown,
         )?;
-        if height >= 920.0 {
-            let about = rect(left, audio.bottom + 14.0, right, height - 14.0);
-            self.fill(about, SURFACE, RADIUS_LARGE)?;
-            self.stroke(about, BORDER, RADIUS_LARGE, 1.0)?;
-            self.text(
-                "Über wreath",
-                rect(
-                    about.left + 20.0,
-                    about.top + 8.0,
-                    about.right - 230.0,
-                    about.top + 39.0,
-                ),
-                &self.body.clone(),
-                PRIMARY,
-            )?;
-            self.text(
-                &format!("wreath {}", env!("CARGO_PKG_VERSION")),
-                rect(
-                    about.left + 20.0,
-                    about.top + 37.0,
-                    about.right - 230.0,
-                    about.top + 62.0,
-                ),
-                &self.small.clone(),
-                SECONDARY,
-            )?;
-            self.text(
-                "Ein lokales Clipping-Tool für deine besten Momente.",
-                rect(
-                    about.left + 20.0,
-                    about.top + 59.0,
-                    about.right - 230.0,
-                    about.bottom - 6.0,
-                ),
-                &self.small.clone(),
-                SECONDARY,
-            )?;
-            self.pill(
-                rect(
-                    about.right - 196.0,
-                    about.top + 22.0,
-                    about.right - 20.0,
-                    about.bottom - 22.0,
-                ),
-                STAGE,
-                "Einstellungen speichern",
-                PRIMARY,
-                Some(Action::SaveSettings),
-            )?;
-        }
+        self.settings_gain_slider(
+            audio,
+            SETTINGS_AUDIO_ROWS,
+            5,
+            self.strings.microphone_level,
+            self.strings.microphone_level_hint,
+            model.config.audio.microphone_gain_percent,
+            Action::DragMicrophoneGain,
+        )?;
+
+        self.settings_panel(storage, self.strings.panel_storage)?;
+        self.settings_compact_row(
+            storage,
+            SETTINGS_STORAGE_ROWS,
+            0,
+            self.strings.storage_location,
+            self.strings.storage_location_hint,
+            &model.config.storage.directory.display().to_string(),
+            Action::ChooseStorage,
+            SettingControl::Button,
+        )?;
+        self.settings_compact_row(
+            storage,
+            SETTINGS_STORAGE_ROWS,
+            1,
+            self.strings.storage_limit,
+            self.strings.storage_limit_hint,
+            &format_storage_limit(model.config.storage.max_megabytes),
+            Action::ChooseStorageLimit,
+            SettingControl::Dropdown,
+        )?;
+        self.text(
+            &self.strings.version_line(env!("CARGO_PKG_VERSION")),
+            rect(
+                storage.left + 20.0,
+                storage.top
+                    + 44.0
+                    + 2.0 * compact_settings_row_height(storage, SETTINGS_STORAGE_ROWS)
+                    + 12.0,
+                storage.right - 20.0,
+                storage.bottom - 14.0,
+            ),
+            &self.small.clone(),
+            self.palette.muted,
+        )?;
         Ok(())
     }
 
@@ -3089,27 +3356,27 @@ impl Renderer {
         height: f32,
     ) -> Result<(), String> {
         self.page_heading(
-            "Clip-Preview",
-            "Schau dir deinen Clip an und prüfe die besten Momente.",
+            self.strings.preview_title,
+            self.strings.preview_subtitle,
             left,
             right,
         )?;
         self.pill(
             rect(right - 344.0, 92.0, right - 218.0, 140.0),
-            SURFACE,
-            "←  Zurück",
-            PRIMARY,
+            self.palette.surface,
+            &format!("←  {}", self.strings.back),
+            self.palette.primary,
             Some(Action::Back),
         )?;
         self.pill(
             rect(right - 200.0, 92.0, right, 140.0),
-            ACCENT,
-            "Clip bearbeiten",
-            CANVAS,
+            self.palette.accent,
+            self.strings.edit_clip,
+            self.palette.canvas,
             Some(Action::EditActiveClip),
         )?;
         let Some(clip) = model.active_clip() else {
-            self.empty_state("Clip nicht verfügbar", left, right, 240.0)?;
+            self.empty_state(self.strings.clip_unavailable, left, right, 240.0)?;
             return Ok(());
         };
         let detail_width = if right - left >= 960.0 { 276.0 } else { 0.0 };
@@ -3123,8 +3390,8 @@ impl Renderer {
             rect(left, 176.0, main_right, (height - 178.0).max(390.0)),
             model.player_aspect_ratio,
         );
-        self.fill(stage, STAGE, RADIUS_LARGE)?;
-        self.stroke(stage, BORDER, RADIUS_LARGE, 1.0)?;
+        self.fill(stage, self.palette.stage, RADIUS_LARGE)?;
+        self.stroke(stage, self.palette.border, RADIUS_LARGE, 1.0)?;
         self.hits.push(HitRegion {
             rect: stage,
             action: Action::PlayPause,
@@ -3146,8 +3413,8 @@ impl Renderer {
         editor: bool,
     ) -> Result<(), String> {
         let controls = rect(stage.left, stage.bottom, stage.right, stage.bottom + 76.0);
-        self.fill(controls, SURFACE, 0.0)?;
-        self.stroke(controls, BORDER, 0.0, 1.0)?;
+        self.fill(controls, self.palette.surface, 0.0)?;
+        self.stroke(controls, self.palette.border, 0.0, 1.0)?;
         self.floating_glyph(
             rect(
                 controls.left + 12.0,
@@ -3160,7 +3427,7 @@ impl Renderer {
             } else {
                 Glyph::Play
             },
-            PRIMARY,
+            self.palette.primary,
             Some(Action::PlayPause),
         )?;
         self.floating_glyph(
@@ -3171,7 +3438,7 @@ impl Renderer {
                 controls.bottom - 16.0,
             ),
             Glyph::ChevronLeft,
-            SECONDARY,
+            self.palette.secondary,
             (!editor).then_some(Action::PreviousClip),
         )?;
         self.floating_glyph(
@@ -3182,7 +3449,7 @@ impl Renderer {
                 controls.bottom - 16.0,
             ),
             Glyph::ChevronRight,
-            SECONDARY,
+            self.palette.secondary,
             (!editor).then_some(Action::NextClip),
         )?;
         self.text(
@@ -3198,7 +3465,7 @@ impl Renderer {
                 controls.bottom,
             ),
             &self.small.clone(),
-            SECONDARY,
+            self.palette.secondary,
         )?;
         let rail = rect(
             controls.left + 260.0,
@@ -3228,20 +3495,24 @@ impl Renderer {
                 controls.bottom - 16.0,
             ),
             Glyph::Fullscreen,
-            PRIMARY,
+            self.palette.primary,
             (!editor).then_some(Action::ToggleFullscreen),
         )
     }
 
     fn draw_progress_rail(&self, model: &UiModel, rail: LogicalRect) -> Result<(), String> {
-        self.fill(rail, SURFACE_HOVER, 3.0)?;
+        self.fill(rail, self.palette.surface_hover, 3.0)?;
         let progress = if model.player_duration_seconds > 0.0 {
             (model.player_position_seconds / model.player_duration_seconds).clamp(0.0, 1.0) as f32
         } else {
             0.0
         };
         let x = rail.left + (rail.right - rail.left) * progress;
-        self.fill(rect(rail.left, rail.top, x, rail.bottom), ACCENT, 3.0)?;
+        self.fill(
+            rect(rail.left, rail.top, x, rail.bottom),
+            self.palette.accent,
+            3.0,
+        )?;
         self.fill(
             rect(
                 x - 5.0,
@@ -3249,7 +3520,7 @@ impl Renderer {
                 x + 5.0,
                 (rail.top + rail.bottom) / 2.0 + 5.0,
             ),
-            PRIMARY,
+            self.palette.primary,
             5.0,
         )
     }
@@ -3262,10 +3533,10 @@ impl Renderer {
         allow_rename: bool,
         delete_for: Option<usize>,
     ) -> Result<(), String> {
-        self.fill(area, SURFACE, RADIUS_LARGE)?;
-        self.stroke(area, BORDER, RADIUS_LARGE, 1.0)?;
+        self.fill(area, self.palette.surface, RADIUS_LARGE)?;
+        self.stroke(area, self.palette.border, RADIUS_LARGE, 1.0)?;
         self.text(
-            "Clip-Informationen",
+            self.strings.clip_information,
             rect(
                 area.left + 20.0,
                 area.top + 10.0,
@@ -3273,22 +3544,29 @@ impl Renderer {
                 area.top + 43.0,
             ),
             &self.body.clone(),
-            PRIMARY,
+            self.palette.primary,
         )?;
         let resolution = if model.player_video_width > 0 && model.player_video_height > 0 {
             format!("{}×{}", model.player_video_width, model.player_video_height)
         } else {
-            "Wird geladen".to_owned()
+            self.strings.loading.to_owned()
         };
         let rows = [
-            ("Titel", clip.title.clone()),
-            ("Erstellt", age(clip.modified)),
+            (self.strings.field_title, clip.title.clone()),
             (
-                "Dauer (Original)",
+                self.strings.field_created,
+                crate::clock::stamp_label(
+                    crate::clock::local(clip.modified),
+                    crate::clock::now(),
+                    self.strings,
+                ),
+            ),
+            (
+                self.strings.field_duration,
                 format_player_time(model.player_duration_seconds),
             ),
-            ("Größe (Original)", format_bytes(clip.size_bytes)),
-            ("Auflösung", resolution),
+            (self.strings.field_size, format_bytes(clip.size_bytes)),
+            (self.strings.field_resolution, resolution),
         ];
         let reserved_actions = if delete_for.is_some() { 62.0 } else { 0.0 };
         let row_height = ((area.bottom - area.top - 54.0 - reserved_actions) / rows.len() as f32)
@@ -3300,7 +3578,7 @@ impl Renderer {
                 label,
                 rect(area.left + 20.0, top, area.right - 20.0, top + 24.0),
                 &self.small.clone(),
-                SECONDARY,
+                self.palette.secondary,
             )?;
             let value_area = rect(
                 area.left + 20.0,
@@ -3316,7 +3594,7 @@ impl Renderer {
                 &self.shorten(&value, &self.body, value_area.right - value_area.left),
                 value_area,
                 &self.body.clone(),
-                PRIMARY,
+                self.palette.primary,
             )?;
             if has_title_action {
                 let action = Action::RenameActiveClip;
@@ -3330,9 +3608,9 @@ impl Renderer {
                         hit.bottom - 9.0,
                     ),
                     if self.is_hovered(&action) {
-                        PRIMARY
+                        self.palette.primary
                     } else {
-                        SECONDARY
+                        self.palette.secondary
                     },
                 )?;
                 self.hits.push(HitRegion { rect: hit, action });
@@ -3347,9 +3625,9 @@ impl Renderer {
             );
             self.pill(
                 delete,
-                STAGE,
-                "Clip löschen",
-                DESTRUCTIVE,
+                self.palette.stage,
+                self.strings.delete_clip,
+                self.palette.destructive,
                 Some(Action::DeleteClip(index)),
             )?;
         }
@@ -3364,16 +3642,16 @@ impl Renderer {
         height: f32,
     ) -> Result<(), String> {
         self.text(
-            "Clip bearbeiten",
+            self.strings.edit_clip,
             rect(left, 62.0, right - 470.0, 94.0),
             &self.brand.clone(),
-            PRIMARY,
+            self.palette.primary,
         )?;
         self.text(
-            "Schneide deinen Clip und speichere nur die besten Momente.",
+            self.strings.editor_subtitle,
             rect(left, 94.0, right - 470.0, 122.0),
             &self.body.clone(),
-            SECONDARY,
+            self.palette.secondary,
         )?;
         let Some(clip) = model.active_clip() else {
             self.empty_state("Clip nicht verfügbar", left, right, 240.0)?;
@@ -3384,34 +3662,50 @@ impl Renderer {
         let redo_enabled = enabled && model.can_redo_editor_trim();
         self.pill(
             rect(right - 430.0, 82.0, right - 386.0, 126.0),
-            SURFACE,
+            self.palette.surface,
             "↶",
-            if undo_enabled { PRIMARY } else { BORDER },
+            if undo_enabled {
+                self.palette.primary
+            } else {
+                self.palette.border
+            },
             undo_enabled.then_some(Action::UndoEditorTrim),
         )?;
         self.pill(
             rect(right - 374.0, 82.0, right - 330.0, 126.0),
-            SURFACE,
+            self.palette.surface,
             "↷",
-            if redo_enabled { PRIMARY } else { BORDER },
+            if redo_enabled {
+                self.palette.primary
+            } else {
+                self.palette.border
+            },
             redo_enabled.then_some(Action::RedoEditorTrim),
         )?;
         self.pill(
             rect(right - 320.0, 82.0, right - 174.0, 126.0),
-            SURFACE,
-            "Verwerfen",
-            PRIMARY,
+            self.palette.surface,
+            self.strings.discard,
+            self.palette.primary,
             Some(Action::Back),
         )?;
         self.pill(
             rect(right - 158.0, 82.0, right, 126.0),
-            if enabled { ACCENT } else { SURFACE_HOVER },
-            if model.editor_working {
-                "Speichert…"
+            if enabled {
+                self.palette.accent
             } else {
-                "Speichern"
+                self.palette.surface_hover
             },
-            if enabled { CANVAS } else { SECONDARY },
+            if model.editor_working {
+                self.strings.saving
+            } else {
+                self.strings.save
+            },
+            if enabled {
+                self.palette.canvas
+            } else {
+                self.palette.secondary
+            },
             enabled.then_some(if model.trim_replace_original {
                 Action::ReplaceCut
             } else {
@@ -3435,8 +3729,8 @@ impl Renderer {
             ),
             model.player_aspect_ratio,
         );
-        self.fill(stage, STAGE, RADIUS_LARGE)?;
-        self.stroke(stage, BORDER, RADIUS_LARGE, 1.0)?;
+        self.fill(stage, self.palette.stage, RADIUS_LARGE)?;
+        self.stroke(stage, self.palette.border, RADIUS_LARGE, 1.0)?;
         self.hits.push(HitRegion {
             rect: stage,
             action: Action::PlayPause,
@@ -3453,10 +3747,10 @@ impl Renderer {
             );
             self.clip_information_panel(model, clip, info, true, None)?;
             let duration = rect(detail_left, info.bottom + 16.0, right, info.bottom + 104.0);
-            self.fill(duration, SURFACE, RADIUS_LARGE)?;
-            self.stroke(duration, BORDER, RADIUS_LARGE, 1.0)?;
+            self.fill(duration, self.palette.surface, RADIUS_LARGE)?;
+            self.stroke(duration, self.palette.border, RADIUS_LARGE, 1.0)?;
             self.text(
-                "Geschnittene Dauer",
+                self.strings.trimmed_duration,
                 rect(
                     duration.left + 18.0,
                     duration.top + 8.0,
@@ -3464,7 +3758,7 @@ impl Renderer {
                     duration.top + 38.0,
                 ),
                 &self.body.clone(),
-                PRIMARY,
+                self.palette.primary,
             )?;
             self.text(
                 &format!(
@@ -3479,7 +3773,7 @@ impl Renderer {
                     duration.bottom - 8.0,
                 ),
                 &self.small.clone(),
-                SECONDARY,
+                self.palette.secondary,
             )?;
             self.text(
                 &format_editor_time(model.editor_selected_duration()),
@@ -3490,7 +3784,7 @@ impl Renderer {
                     duration.bottom - 8.0,
                 ),
                 &self.body_center.clone(),
-                PRIMARY,
+                self.palette.primary,
             )?;
             let save_mode = rect(
                 detail_left,
@@ -3498,10 +3792,10 @@ impl Renderer {
                 right,
                 duration.bottom + 80.0,
             );
-            self.fill(save_mode, SURFACE, RADIUS_LARGE)?;
-            self.stroke(save_mode, BORDER, RADIUS_LARGE, 1.0)?;
+            self.fill(save_mode, self.palette.surface, RADIUS_LARGE)?;
+            self.stroke(save_mode, self.palette.border, RADIUS_LARGE, 1.0)?;
             self.text(
-                "Speichern als",
+                self.strings.save_as_new,
                 rect(
                     save_mode.left + 14.0,
                     save_mode.top + 3.0,
@@ -3509,7 +3803,7 @@ impl Renderer {
                     save_mode.top + 26.0,
                 ),
                 &self.small.clone(),
-                SECONDARY,
+                self.palette.secondary,
             )?;
             let choices = rect(
                 save_mode.left + 10.0,
@@ -3521,30 +3815,30 @@ impl Renderer {
             self.pill(
                 rect(choices.left, choices.top, split - 3.0, choices.bottom),
                 if model.trim_replace_original {
-                    STAGE
+                    self.palette.stage
                 } else {
-                    ACCENT
+                    self.palette.accent
                 },
-                "Neuer Clip",
+                self.strings.new_clip,
                 if model.trim_replace_original {
-                    PRIMARY
+                    self.palette.primary
                 } else {
-                    CANVAS
+                    self.palette.canvas
                 },
                 Some(Action::SetTrimReplace(false)),
             )?;
             self.pill(
                 rect(split + 3.0, choices.top, choices.right, choices.bottom),
                 if model.trim_replace_original {
-                    ACCENT
+                    self.palette.accent
                 } else {
-                    STAGE
+                    self.palette.stage
                 },
-                "Original ersetzen",
+                self.strings.replace_original,
                 if model.trim_replace_original {
-                    CANVAS
+                    self.palette.canvas
                 } else {
-                    PRIMARY
+                    self.palette.primary
                 },
                 Some(Action::SetTrimReplace(true)),
             )?;
@@ -3557,8 +3851,8 @@ impl Renderer {
             right,
             (timeline_top + EDITOR_TIMELINE_HEIGHT).min(height - 16.0),
         );
-        self.fill(timeline, SURFACE, RADIUS_LARGE)?;
-        self.stroke(timeline, BORDER, RADIUS_LARGE, 1.0)?;
+        self.fill(timeline, self.palette.surface, RADIUS_LARGE)?;
+        self.stroke(timeline, self.palette.border, RADIUS_LARGE, 1.0)?;
         self.timeline_labels(
             model,
             rect(
@@ -3594,7 +3888,7 @@ impl Renderer {
                 &format_player_time(duration * step as f64 / 6.0),
                 label_area,
                 &self.small.clone(),
-                SECONDARY,
+                self.palette.secondary,
             )?;
         }
         Ok(())
@@ -3606,7 +3900,7 @@ impl Renderer {
         clip: &wreath_core::clips::Clip,
         area: LogicalRect,
     ) -> Result<(), String> {
-        self.fill(area, STAGE, RADIUS_SMALL)?;
+        self.fill(area, self.palette.stage, RADIUS_SMALL)?;
         let segment_width = (area.right - area.left) / 8.0;
         for segment in 0..8 {
             let preview = rect(
@@ -3633,7 +3927,7 @@ impl Renderer {
                 * (model.player_position_seconds / duration).clamp(0.0, 1.0) as f32;
         self.stroke(
             rect(start_x, area.top, end_x, area.bottom),
-            PRIMARY,
+            self.palette.primary,
             2.0,
             2.0,
         )?;
@@ -3644,12 +3938,12 @@ impl Renderer {
                 start_x + 8.0,
                 area.bottom + 2.0,
             ),
-            PRIMARY,
+            self.palette.primary,
             5.0,
         )?;
         self.fill(
             rect(end_x - 8.0, area.top - 2.0, end_x + 8.0, area.bottom + 2.0),
-            PRIMARY,
+            self.palette.primary,
             5.0,
         )?;
         self.fill(
@@ -3659,7 +3953,7 @@ impl Renderer {
                 playhead_x + 1.0,
                 area.bottom + 24.0,
             ),
-            PRIMARY,
+            self.palette.primary,
             0.0,
         )?;
         self.fill(
@@ -3669,7 +3963,7 @@ impl Renderer {
                 playhead_x + 5.0,
                 area.top - 50.0,
             ),
-            PRIMARY,
+            self.palette.primary,
             5.0,
         )?;
         self.hits.push(HitRegion {
@@ -3701,8 +3995,9 @@ impl Renderer {
     fn draw_wreath_logo(&self, area: LogicalRect, fill: u32) -> Result<(), String> {
         use windows::Win32::Graphics::Direct2D::ID2D1StrokeStyle;
         let target = self.target.as_ref().expect("render target exists");
-        let outline = unsafe { target.CreateSolidColorBrush(&color(SURFACE_RAISED), None) }
-            .map_err(|error| error.to_string())?;
+        let outline =
+            unsafe { target.CreateSolidColorBrush(&color(self.palette.surface_raised), None) }
+                .map_err(|error| error.to_string())?;
         let foreground = unsafe { target.CreateSolidColorBrush(&color(fill), None) }
             .map_err(|error| error.to_string())?;
         let width = area.right - area.left;
@@ -3752,12 +4047,20 @@ impl Renderer {
     fn toggle_visual(&self, area: LogicalRect, enabled: bool) -> Result<(), String> {
         self.fill(
             area,
-            if enabled { PRIMARY } else { SURFACE_HOVER },
+            if enabled {
+                self.palette.primary
+            } else {
+                self.palette.surface_hover
+            },
             (area.bottom - area.top) / 2.0,
         )?;
         self.stroke(
             area,
-            if enabled { PRIMARY } else { SECONDARY },
+            if enabled {
+                self.palette.primary
+            } else {
+                self.palette.secondary
+            },
             (area.bottom - area.top) / 2.0,
             1.0,
         )?;
@@ -3769,7 +4072,11 @@ impl Renderer {
         };
         self.fill(
             rect(left, area.top + 2.0, left + diameter, area.bottom - 2.0),
-            if enabled { CANVAS } else { SECONDARY },
+            if enabled {
+                self.palette.canvas
+            } else {
+                self.palette.secondary
+            },
             diameter / 2.0,
         )
     }
@@ -3783,13 +4090,13 @@ impl Renderer {
         self.fill(
             area,
             if self.is_hovered(&action) {
-                SURFACE_HOVER
+                self.palette.surface_hover
             } else {
-                SURFACE
+                self.palette.surface
             },
             RADIUS,
         )?;
-        self.stroke(area, BORDER, RADIUS, 1.0)?;
+        self.stroke(area, self.palette.border, RADIUS, 1.0)?;
         self.glyph(
             glyph,
             rect(
@@ -3798,7 +4105,7 @@ impl Renderer {
                 area.right - 13.0,
                 area.bottom - 11.0,
             ),
-            PRIMARY,
+            self.palette.primary,
         )?;
         self.hits.push(HitRegion { rect: area, action });
         Ok(())
@@ -3811,13 +4118,13 @@ impl Renderer {
         placeholder: &str,
     ) -> Result<(), String> {
         let action = Action::Search;
-        self.fill(area, SURFACE, RADIUS)?;
+        self.fill(area, self.palette.surface, RADIUS)?;
         self.stroke(
             area,
             if model.search_focused {
-                PRIMARY
+                self.palette.primary
             } else {
-                BORDER
+                self.palette.border
             },
             RADIUS,
             1.0,
@@ -3830,7 +4137,7 @@ impl Renderer {
                 area.left + 37.0,
                 area.bottom - 10.0,
             ),
-            SECONDARY,
+            self.palette.secondary,
         )?;
         self.render_text_input(
             &model.search,
@@ -3844,8 +4151,8 @@ impl Renderer {
     }
 
     fn settings_panel(&self, area: LogicalRect, title: &str) -> Result<(), String> {
-        self.fill(area, SURFACE, RADIUS_LARGE)?;
-        self.stroke(area, BORDER, RADIUS_LARGE, 1.0)?;
+        self.fill(area, self.palette.surface, RADIUS_LARGE)?;
+        self.stroke(area, self.palette.border, RADIUS_LARGE, 1.0)?;
         self.text(
             title,
             rect(
@@ -3855,14 +4162,16 @@ impl Renderer {
                 area.top + 48.0,
             ),
             &self.body.clone(),
-            PRIMARY,
+            self.palette.primary,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn settings_compact_row(
         &mut self,
         panel: LogicalRect,
+        rows: usize,
         index: usize,
         title: &str,
         description: &str,
@@ -3870,12 +4179,12 @@ impl Renderer {
         action: Action,
         control: SettingControl,
     ) -> Result<(), String> {
-        let row_height = compact_settings_row_height(panel);
-        let top = panel.top + 44.0 + index as f32 * row_height;
+        let row_height = compact_settings_row_height(panel, rows);
+        let top = panel.top + SETTINGS_PANEL_HEADER + index as f32 * row_height;
         if index > 0 {
             self.fill(
                 rect(panel.left + 20.0, top, panel.right - 20.0, top + 1.0),
-                BORDER,
+                self.palette.border,
                 0.0,
             )?;
         }
@@ -3886,28 +4195,36 @@ impl Renderer {
             panel.right - 20.0,
             top + row_height - 6.0,
         );
+        // a short row drops the description instead of overlapping it
+        let roomy = row_height >= 34.0;
         self.text(
             title,
             rect(
                 panel.left + 20.0,
-                top + 2.0,
+                if roomy { top + 2.0 } else { top },
                 control_area.left - 16.0,
-                top + row_height * 0.50,
+                if roomy {
+                    top + row_height * 0.50
+                } else {
+                    top + row_height
+                },
             ),
             &self.body.clone(),
-            PRIMARY,
+            self.palette.primary,
         )?;
-        self.text(
-            description,
-            rect(
-                panel.left + 20.0,
-                top + row_height * 0.45,
-                control_area.left - 16.0,
-                top + row_height,
-            ),
-            &self.small.clone(),
-            SECONDARY,
-        )?;
+        if roomy {
+            self.text(
+                description,
+                rect(
+                    panel.left + 20.0,
+                    top + row_height * 0.45,
+                    control_area.left - 16.0,
+                    top + row_height,
+                ),
+                &self.small.clone(),
+                self.palette.secondary,
+            )?;
+        }
         match control {
             SettingControl::Toggle => self.toggle_visual(
                 rect(
@@ -3919,8 +4236,8 @@ impl Renderer {
                 value == "An",
             )?,
             SettingControl::Dropdown => {
-                self.fill(control_area, STAGE, RADIUS_SMALL)?;
-                self.stroke(control_area, BORDER, RADIUS_SMALL, 1.0)?;
+                self.fill(control_area, self.palette.stage, RADIUS_SMALL)?;
+                self.stroke(control_area, self.palette.border, RADIUS_SMALL, 1.0)?;
                 let clipped = self.shorten(value, &self.small, control_width - 50.0);
                 self.text(
                     &clipped,
@@ -3931,7 +4248,7 @@ impl Renderer {
                         control_area.bottom,
                     ),
                     &self.small.clone(),
-                    PRIMARY,
+                    self.palette.primary,
                 )?;
                 self.glyph(
                     Glyph::ChevronDown,
@@ -3941,12 +4258,12 @@ impl Renderer {
                         control_area.right - 11.0,
                         control_area.bottom - 10.0,
                     ),
-                    SECONDARY,
+                    self.palette.secondary,
                 )?;
             }
             SettingControl::Button => {
-                self.fill(control_area, STAGE, RADIUS_SMALL)?;
-                self.stroke(control_area, BORDER, RADIUS_SMALL, 1.0)?;
+                self.fill(control_area, self.palette.stage, RADIUS_SMALL)?;
+                self.stroke(control_area, self.palette.border, RADIUS_SMALL, 1.0)?;
                 let clipped = self.shorten(value, &self.small, control_width - 32.0);
                 self.text(
                     &clipped,
@@ -3957,7 +4274,7 @@ impl Renderer {
                         control_area.bottom,
                     ),
                     &self.small.clone(),
-                    PRIMARY,
+                    self.palette.primary,
                 )?;
             }
         }
@@ -3968,54 +4285,67 @@ impl Renderer {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn settings_gain_slider(
         &mut self,
         panel: LogicalRect,
+        rows: usize,
         index: usize,
         title: &str,
         description: &str,
         value: u16,
         action: Action,
     ) -> Result<(), String> {
-        let row_height = compact_settings_row_height(panel);
-        let top = panel.top + 44.0 + index as f32 * row_height;
+        let row_height = compact_settings_row_height(panel, rows);
+        let top = panel.top + SETTINGS_PANEL_HEADER + index as f32 * row_height;
         if index > 0 {
             self.fill(
                 rect(panel.left + 20.0, top, panel.right - 20.0, top + 1.0),
-                BORDER,
+                self.palette.border,
                 0.0,
             )?;
         }
-        let control_area = settings_control_area(panel, index);
+        let control_area = settings_control_area(panel, rows, index);
+        let roomy = row_height >= 34.0;
         self.text(
             title,
             rect(
                 panel.left + 20.0,
-                top + 2.0,
+                if roomy { top + 2.0 } else { top },
                 control_area.left - 16.0,
-                top + row_height * 0.50,
+                if roomy {
+                    top + row_height * 0.50
+                } else {
+                    top + row_height
+                },
             ),
             &self.body.clone(),
-            PRIMARY,
+            self.palette.primary,
         )?;
-        self.text(
-            description,
-            rect(
-                panel.left + 20.0,
-                top + row_height * 0.45,
-                control_area.left - 16.0,
-                top + row_height,
-            ),
-            &self.small.clone(),
-            SECONDARY,
-        )?;
+        if roomy {
+            self.text(
+                description,
+                rect(
+                    panel.left + 20.0,
+                    top + row_height * 0.45,
+                    control_area.left - 16.0,
+                    top + row_height,
+                ),
+                &self.small.clone(),
+                self.palette.secondary,
+            )?;
+        }
 
-        let rail = settings_gain_rail_in_panel(panel, index);
+        let rail = settings_gain_rail_in_panel(panel, rows, index);
         let fraction = f32::from(value.min(200)) / 200.0;
         let knob_x = rail.left + (rail.right - rail.left) * fraction;
-        self.fill(rail, BORDER, 2.0)?;
+        self.fill(rail, self.palette.border, 2.0)?;
         if knob_x > rail.left {
-            self.fill(rect(rail.left, rail.top, knob_x, rail.bottom), PRIMARY, 2.0)?;
+            self.fill(
+                rect(rail.left, rail.top, knob_x, rail.bottom),
+                self.palette.primary,
+                2.0,
+            )?;
         }
         let knob_size = if self.is_hovered(&action) { 12.0 } else { 10.0 };
         self.fill(
@@ -4025,7 +4355,7 @@ impl Renderer {
                 knob_x + knob_size / 2.0,
                 (rail.top + rail.bottom + knob_size) / 2.0,
             ),
-            PRIMARY,
+            self.palette.primary,
             knob_size / 2.0,
         )?;
         self.text(
@@ -4037,7 +4367,7 @@ impl Renderer {
                 control_area.bottom,
             ),
             &self.small.clone(),
-            PRIMARY,
+            self.palette.primary,
         )?;
         self.hits.push(HitRegion {
             rect: control_area,
@@ -4057,13 +4387,13 @@ impl Renderer {
             title,
             rect(left, 58.0, right, 99.0),
             &self.page_title.clone(),
-            PRIMARY,
+            self.palette.primary,
         )?;
         self.text(
             subtitle,
             rect(left, 99.0, right, 128.0),
             &self.body.clone(),
-            SECONDARY,
+            self.palette.secondary,
         )
     }
 
@@ -4075,14 +4405,14 @@ impl Renderer {
         top: f32,
     ) -> Result<(), String> {
         let bar = rect(left, top, right, top + 44.0);
-        self.fill(bar, SURFACE_RAISED, RADIUS)?;
-        self.stroke(bar, BORDER, RADIUS, 1.0)?;
+        self.fill(bar, self.palette.surface_raised, RADIUS)?;
+        self.stroke(bar, self.palette.border, RADIUS, 1.0)?;
         let selected = model.selected_clips.len();
         self.text(
             &format!("{selected} ausgewählt"),
             rect(bar.left + 16.0, bar.top, bar.left + 200.0, bar.bottom),
             &self.body.clone(),
-            SECONDARY,
+            self.palette.secondary,
         )?;
         let move_button = rect(
             bar.right - 152.0,
@@ -4093,16 +4423,16 @@ impl Renderer {
         if selected > 0 && !model.collections.is_empty() {
             self.action_button(
                 move_button,
-                &format!("VERSCHIEBEN ({selected})"),
+                &self.strings.move_button(selected),
                 Action::ToggleCollectionPicker,
             )?;
         } else {
-            self.fill(move_button, SURFACE, RADIUS_SMALL)?;
+            self.fill(move_button, self.palette.surface, RADIUS_SMALL)?;
             self.text(
                 &format!("VERSCHIEBEN ({selected})"),
                 move_button,
                 &self.button.clone(),
-                MUTED,
+                self.palette.muted,
             )?;
         }
         self.pill(
@@ -4112,9 +4442,9 @@ impl Renderer {
                 move_button.left - 10.0,
                 bar.bottom - 6.0,
             ),
-            SURFACE,
-            "Alle auswählen",
-            PRIMARY,
+            self.palette.surface,
+            self.strings.select_all,
+            self.palette.primary,
             Some(Action::SelectAllVisibleClips),
         )?;
         self.pill(
@@ -4124,9 +4454,9 @@ impl Renderer {
                 move_button.left - 156.0,
                 bar.bottom - 6.0,
             ),
-            SURFACE,
-            "Abbrechen",
-            SECONDARY,
+            self.palette.surface,
+            self.strings.cancel,
+            self.palette.secondary,
             Some(Action::ToggleSelectionMode),
         )
     }
@@ -4146,10 +4476,10 @@ impl Renderer {
             right,
             top + 48.0 + visible as f32 * row_height + 10.0,
         );
-        self.fill(area, SURFACE_RAISED, RADIUS_LARGE)?;
-        self.stroke(area, BORDER, RADIUS_LARGE, 1.0)?;
+        self.fill(area, self.palette.surface_raised, RADIUS_LARGE)?;
+        self.stroke(area, self.palette.border, RADIUS_LARGE, 1.0)?;
         self.text(
-            "Move selected clips to",
+            self.strings.move_selected_to,
             rect(
                 area.left + 14.0,
                 area.top + 4.0,
@@ -4157,7 +4487,7 @@ impl Renderer {
                 area.top + 44.0,
             ),
             &self.small.clone(),
-            SECONDARY,
+            self.palette.secondary,
         )?;
         for (index, collection) in model.collections.iter().take(visible).enumerate() {
             let action = Action::MoveSelectedToCollection(index);
@@ -4168,19 +4498,23 @@ impl Renderer {
                 area.top + 44.0 + (index + 1) as f32 * row_height,
             );
             if self.is_hovered(&action) {
-                self.fill(row, mix(SURFACE, ACCENT, self.hover_progress * 0.12), 7.0)?;
+                self.fill(
+                    row,
+                    self.hover_fill(self.palette.surface, self.palette.surface_hover),
+                    RADIUS_SMALL,
+                )?;
             }
             self.text(
                 &collection.name,
                 rect(row.left + 10.0, row.top, row.right - 42.0, row.bottom),
                 &self.body.clone(),
-                PRIMARY,
+                self.palette.primary,
             )?;
             self.text(
                 &collection.clip_count.to_string(),
                 rect(row.right - 32.0, row.top, row.right - 8.0, row.bottom),
                 &self.small.clone(),
-                SECONDARY,
+                self.palette.secondary,
             )?;
             self.hits.push(HitRegion { rect: row, action });
         }
@@ -4197,7 +4531,7 @@ impl Renderer {
     ) -> Result<(), String> {
         let body = self.body.clone();
         if input.value.is_empty() {
-            self.text(placeholder, field, &body, SECONDARY)?;
+            self.text(placeholder, field, &body, self.palette.secondary)?;
         } else {
             if focused {
                 let (start, end) = input.selection();
@@ -4214,12 +4548,12 @@ impl Renderer {
                             (field.left + offset + width).min(field.right),
                             field.bottom - 8.0,
                         ),
-                        SELECTION,
+                        self.palette.selection,
                         3.0,
                     )?;
                 }
             }
-            self.text(&input.value, field, &body, PRIMARY)?;
+            self.text(&input.value, field, &body, self.palette.primary)?;
         }
 
         if focused {
@@ -4232,7 +4566,7 @@ impl Renderer {
             let caret_x = (field.left + prefixes[input.caret]).min(field.right);
             self.fill(
                 rect(caret_x, field.top + 8.0, caret_x + 1.5, field.bottom - 8.0),
-                PRIMARY,
+                self.palette.primary,
                 0.0,
             )?;
             for index in 0..=input.characters() {
@@ -4282,6 +4616,10 @@ impl Renderer {
         });
 
         let target_action = match menu_state.kind {
+            SettingsMenuKind::Theme => Action::ChooseTheme,
+            SettingsMenuKind::Language => Action::ChooseLanguage,
+            SettingsMenuKind::HoverStyle => Action::ChooseHoverStyle,
+            SettingsMenuKind::HoverStrength => Action::ChooseHoverStrength,
             SettingsMenuKind::TimeFilter => Action::ChooseTimeFilter,
             SettingsMenuKind::CollectionFilter => Action::ChooseCollectionFilter,
             SettingsMenuKind::TypeFilter => Action::ChooseTypeFilter,
@@ -4340,13 +4678,18 @@ impl Renderer {
                 menu.right + 4.0,
                 menu.bottom + 6.0,
             ),
-            CANVAS,
+            self.palette.canvas,
             0.48,
             RADIUS_LARGE,
         )?;
-        self.fill(menu, SURFACE_RAISED, RADIUS_LARGE)?;
-        self.stroke(menu, BORDER, RADIUS_LARGE, 1.0)?;
-        self.stroke(anchor, mix(BORDER, SECONDARY, 0.7), RADIUS, 1.0)?;
+        self.fill(menu, self.palette.surface_raised, RADIUS_LARGE)?;
+        self.stroke(menu, self.palette.border, RADIUS_LARGE, 1.0)?;
+        self.stroke(
+            anchor,
+            mix(self.palette.border, self.palette.secondary, 0.7),
+            RADIUS,
+            1.0,
+        )?;
 
         let cell_width = (menu_width - 12.0) / columns as f32;
         for (index, item) in menu_state.items.iter().enumerate() {
@@ -4365,16 +4708,16 @@ impl Renderer {
                 self.fill(
                     item_area,
                     if selected {
-                        SURFACE_HOVER
+                        self.palette.surface_hover
                     } else {
-                        mix(SURFACE_HOVER, ACCENT, self.hover_progress * 0.10)
+                        self.hover_fill(self.palette.surface, self.palette.surface_hover)
                     },
                     RADIUS_SMALL,
                 )?;
             }
             if selected {
                 if columns > 1 {
-                    self.stroke(item_area, ACCENT, RADIUS_SMALL, 1.0)?;
+                    self.stroke(item_area, self.palette.accent, RADIUS_SMALL, 1.0)?;
                 } else {
                     self.fill(
                         rect(
@@ -4383,13 +4726,18 @@ impl Renderer {
                             item_area.left + 9.0,
                             item_area.bottom - 11.0,
                         ),
-                        ACCENT,
+                        self.palette.accent,
                         1.5,
                     )?;
                 }
             }
             if columns > 1 {
-                self.text(&item.label, item_area, &self.body_center.clone(), PRIMARY)?;
+                self.text(
+                    &item.label,
+                    item_area,
+                    &self.body_center.clone(),
+                    self.palette.primary,
+                )?;
             } else if let Some(detail) = &item.detail {
                 self.text(
                     &item.label,
@@ -4400,7 +4748,7 @@ impl Renderer {
                         item_area.top + 28.0,
                     ),
                     &self.body.clone(),
-                    PRIMARY,
+                    self.palette.primary,
                 )?;
                 self.text(
                     detail,
@@ -4411,7 +4759,7 @@ impl Renderer {
                         item_area.bottom - 3.0,
                     ),
                     &self.small.clone(),
-                    SECONDARY,
+                    self.palette.secondary,
                 )?;
             } else {
                 self.text(
@@ -4423,7 +4771,7 @@ impl Renderer {
                         item_area.bottom,
                     ),
                     &self.body.clone(),
-                    PRIMARY,
+                    self.palette.primary,
                 )?;
             }
             self.hits.push(HitRegion {
@@ -4462,38 +4810,38 @@ impl Renderer {
         let left = context.x.min(width - menu_width - 16.0).max(16.0);
         let top = context.y.min(height - menu_height - 16.0).max(16.0);
         let menu = rect(left, top, left + menu_width, top + menu_height);
-        self.fill(menu, SURFACE_RAISED, RADIUS_LARGE)?;
-        self.stroke(menu, BORDER, RADIUS_LARGE, 1.0)?;
+        self.fill(menu, self.palette.surface_raised, RADIUS_LARGE)?;
+        self.stroke(menu, self.palette.border, RADIUS_LARGE, 1.0)?;
         self.text(
-            "Clip-Aktionen",
+            self.strings.clip_actions,
             rect(left + 16.0, top + 12.0, menu.right - 16.0, top + 30.0),
             &self.small.clone(),
-            SECONDARY,
+            self.palette.secondary,
         )?;
         self.text(
             &clip.title,
             rect(left + 16.0, top + 31.0, menu.right - 16.0, top + 58.0),
             &self.body.clone(),
-            PRIMARY,
+            self.palette.primary,
         )?;
 
         let mut row_top = top + 66.0;
         for (label, action) in [
             (
                 if model.is_favorite(context.clip) {
-                    "Favorit entfernen"
+                    self.strings.favorite_remove
                 } else {
-                    "Als Favorit merken"
+                    self.strings.favorite_add
                 },
                 Action::ToggleFavorite(context.clip),
             ),
             (
-                "Im Explorer öffnen",
+                self.strings.open_in_explorer,
                 Action::OpenClipExternally(context.clip),
             ),
-            ("Clip bearbeiten", Action::EditClip(context.clip)),
-            ("Umbenennen", Action::RenameClip(context.clip)),
-            ("Mehrere auswählen", Action::ToggleSelectionMode),
+            (self.strings.edit_clip, Action::EditClip(context.clip)),
+            (self.strings.rename, Action::RenameClip(context.clip)),
+            (self.strings.select_multiple, Action::ToggleSelectionMode),
         ] {
             self.context_menu_row(
                 rect(left + 8.0, row_top, menu.right - 8.0, row_top + 40.0),
@@ -4506,7 +4854,7 @@ impl Renderer {
 
         if visible_collections > 0 {
             self.text(
-                "In Sammlung verschieben",
+                self.strings.move_to_collection,
                 rect(
                     left + 16.0,
                     row_top + 4.0,
@@ -4514,7 +4862,7 @@ impl Renderer {
                     row_top + 28.0,
                 ),
                 &self.small.clone(),
-                SECONDARY,
+                self.palette.secondary,
             )?;
             row_top += 44.0;
             for (collection, item) in model
@@ -4538,13 +4886,13 @@ impl Renderer {
 
         self.fill(
             rect(left + 16.0, row_top + 1.0, menu.right - 16.0, row_top + 2.0),
-            BORDER,
+            self.palette.border,
             0.0,
         )?;
         row_top += 6.0;
         self.context_menu_row(
             rect(left + 8.0, row_top, menu.right - 8.0, row_top + 40.0),
-            "Clip löschen",
+            self.strings.delete_clip,
             Action::DeleteClip(context.clip),
             true,
         )
@@ -4561,9 +4909,9 @@ impl Renderer {
             self.fill(
                 area,
                 if dangerous {
-                    mix(SURFACE_HOVER, DESTRUCTIVE, 0.28)
+                    mix(self.palette.surface_hover, self.palette.destructive, 0.28)
                 } else {
-                    mix(SURFACE_HOVER, ACCENT, self.hover_progress * 0.10)
+                    self.hover_fill(self.palette.surface, self.palette.surface_hover)
                 },
                 RADIUS,
             )?;
@@ -4572,7 +4920,11 @@ impl Renderer {
             label,
             rect(area.left + 12.0, area.top, area.right - 12.0, area.bottom),
             &self.body.clone(),
-            if dangerous { DESTRUCTIVE } else { PRIMARY },
+            if dangerous {
+                self.palette.destructive
+            } else {
+                self.palette.primary
+            },
         )?;
         self.hits.push(HitRegion { rect: area, action });
         Ok(())
@@ -4588,7 +4940,7 @@ impl Renderer {
             return Ok(());
         };
         let overlay = rect(0.0, 0.0, width, height);
-        self.fill_alpha(overlay, CANVAS, 0.82, 0.0)?;
+        self.fill_alpha(overlay, self.palette.canvas, 0.82, 0.0)?;
         self.hits.push(HitRegion {
             rect: overlay,
             action: Action::CancelDelete,
@@ -4598,33 +4950,33 @@ impl Renderer {
         let left = (width - modal_width) / 2.0;
         let top = (height - modal_height) / 2.0;
         let modal = rect(left, top, left + modal_width, top + modal_height);
-        self.fill(modal, SURFACE_RAISED, RADIUS_LARGE)?;
-        self.stroke(modal, BORDER, RADIUS_LARGE, 1.0)?;
+        self.fill(modal, self.palette.surface_raised, RADIUS_LARGE)?;
+        self.stroke(modal, self.palette.border, RADIUS_LARGE, 1.0)?;
         let (title, detail, confirmation) = match target {
             DeleteTarget::Clip(index) => {
                 let name = model
                     .clips
                     .get(*index)
-                    .map_or("this clip", |clip| clip.title.as_str());
+                    .map_or(self.strings.this_clip, |clip| clip.title.as_str());
                 (
-                    "Clip löschen?",
+                    self.strings.delete_clip_question,
                     format!(
                         "{name} wird dauerhaft entfernt. Das kann nicht rückgängig gemacht werden."
                     ),
-                    "Clip löschen",
+                    self.strings.delete_clip,
                 )
             }
             DeleteTarget::Collection(path) => {
                 let name = path
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .unwrap_or("this collection");
+                    .unwrap_or(self.strings.this_collection);
                 (
-                    "Sammlung löschen?",
+                    self.strings.delete_collection_question,
                     format!(
                         "{name} wird entfernt; enthaltene Clips kommen zurück in die Bibliothek."
                     ),
-                    "Sammlung löschen",
+                    self.strings.delete,
                 )
             }
         };
@@ -4632,13 +4984,13 @@ impl Renderer {
             title,
             rect(left + 28.0, top + 24.0, modal.right - 28.0, top + 58.0),
             &self.section.clone(),
-            PRIMARY,
+            self.palette.primary,
         )?;
         self.text(
             &detail,
             rect(left + 28.0, top + 66.0, modal.right - 28.0, top + 108.0),
             &self.body.clone(),
-            SECONDARY,
+            self.palette.secondary,
         )?;
         self.pill(
             rect(
@@ -4647,9 +4999,9 @@ impl Renderer {
                 modal.right - 178.0,
                 modal.bottom - 22.0,
             ),
-            SURFACE_HOVER,
-            "Abbrechen",
-            PRIMARY,
+            self.palette.surface_hover,
+            self.strings.cancel,
+            self.palette.primary,
             Some(Action::CancelDelete),
         )?;
         self.pill(
@@ -4659,9 +5011,9 @@ impl Renderer {
                 modal.right - 22.0,
                 modal.bottom - 22.0,
             ),
-            DESTRUCTIVE,
+            self.palette.destructive,
             confirmation,
-            CANVAS,
+            self.palette.canvas,
             Some(Action::ConfirmDelete),
         )
     }
@@ -4676,7 +5028,7 @@ impl Renderer {
             return Ok(());
         };
         let overlay = rect(0.0, 0.0, width, height);
-        self.fill_alpha(overlay, CANVAS, 0.82, 0.0)?;
+        self.fill_alpha(overlay, self.palette.canvas, 0.82, 0.0)?;
         self.hits.push(HitRegion {
             rect: overlay,
             action: Action::CancelPrompt,
@@ -4686,27 +5038,27 @@ impl Renderer {
         let left = (width - modal_width) / 2.0;
         let top = (height - modal_height) / 2.0;
         let modal = rect(left, top, left + modal_width, top + modal_height);
-        self.fill(modal, SURFACE_RAISED, RADIUS_LARGE)?;
-        self.stroke(modal, BORDER, RADIUS_LARGE, 1.0)?;
+        self.fill(modal, self.palette.surface_raised, RADIUS_LARGE)?;
+        self.stroke(modal, self.palette.border, RADIUS_LARGE, 1.0)?;
         self.hits.push(HitRegion {
             rect: modal,
             action: Action::DismissNotice,
         });
         self.text(
-            prompt.title(),
+            prompt.title(self.strings),
             rect(left + 28.0, top + 24.0, modal.right - 28.0, top + 58.0),
             &self.section.clone(),
-            PRIMARY,
+            self.palette.primary,
         )?;
         self.text(
-            prompt.label(),
+            prompt.label(self.strings),
             rect(left + 28.0, top + 64.0, modal.right - 28.0, top + 84.0),
             &self.small.clone(),
-            SECONDARY,
+            self.palette.secondary,
         )?;
         let field = rect(left + 28.0, top + 90.0, modal.right - 28.0, top + 134.0);
-        self.fill(field, STAGE, RADIUS_LARGE)?;
-        self.stroke(field, ACCENT, RADIUS_LARGE, 1.0)?;
+        self.fill(field, self.palette.stage, RADIUS_LARGE)?;
+        self.stroke(field, self.palette.accent, RADIUS_LARGE, 1.0)?;
         self.render_text_input(
             &prompt.input,
             rect(
@@ -4720,10 +5072,10 @@ impl Renderer {
             TextInputTarget::Prompt,
         )?;
         self.text(
-            "Strg+A alles wählen · Strg+C/X/V · Enter bestätigen · Esc abbrechen",
+            self.strings.prompt_hint,
             rect(left + 28.0, top + 142.0, modal.right - 28.0, top + 162.0),
             &self.small.clone(),
-            SECONDARY,
+            self.palette.secondary,
         )?;
         self.pill(
             rect(
@@ -4732,9 +5084,9 @@ impl Renderer {
                 modal.right - 178.0,
                 modal.bottom - 22.0,
             ),
-            SURFACE_HOVER,
-            "Abbrechen",
-            PRIMARY,
+            self.palette.surface_hover,
+            self.strings.cancel,
+            self.palette.primary,
             Some(Action::CancelPrompt),
         )?;
         self.pill(
@@ -4744,9 +5096,9 @@ impl Renderer {
                 modal.right - 22.0,
                 modal.bottom - 22.0,
             ),
-            ACCENT,
-            prompt.confirm(),
-            CANVAS,
+            self.palette.accent,
+            prompt.confirm(self.strings),
+            self.palette.canvas,
             Some(Action::ConfirmPrompt),
         )
     }
@@ -4762,7 +5114,7 @@ impl Renderer {
             message,
             rect(left, top, right, top + 34.0),
             &self.section.clone(),
-            SECONDARY,
+            self.palette.secondary,
         )
     }
 
@@ -4777,19 +5129,23 @@ impl Renderer {
         let hovered = action
             .as_ref()
             .is_some_and(|candidate| self.is_hovered(candidate));
-        let is_accent = background == ACCENT;
+        let is_accent = background == self.palette.accent;
         let rendered_background = if hovered {
             if is_accent {
-                mix(ACCENT, ACCENT_HOVER, self.hover_progress)
+                mix(
+                    self.palette.accent,
+                    self.palette.accent_hover,
+                    self.hover_amount(1.0),
+                )
             } else {
-                mix(background, ACCENT, self.hover_progress * 0.10)
+                self.hover_fill(background, self.palette.surface_hover)
             }
         } else {
             background
         };
         self.fill(area, rendered_background, RADIUS)?;
         if !is_accent {
-            self.stroke(area, BORDER, RADIUS, 1.0)?;
+            self.stroke(area, self.palette.border, RADIUS, 1.0)?;
         }
         self.text(label, area, &self.body_center.clone(), foreground)?;
         if let Some(action) = action {
@@ -4809,10 +5165,10 @@ impl Renderer {
         let hovered = action
             .as_ref()
             .is_some_and(|candidate| self.is_hovered(candidate));
-        let progress = if hovered { self.hover_progress } else { 0.0 };
+        let progress = if hovered { self.hover_amount(1.0) } else { 0.0 };
         let lift = progress * 2.5;
         let label_area = rect(area.left, area.top - lift, area.right, area.bottom - lift);
-        let color = mix(foreground, PRIMARY, progress * 0.72);
+        let color = mix(foreground, self.palette.primary, progress * 0.72);
         let format = match size {
             FloatingIconSize::Media => self.media_icon.clone(),
             FloatingIconSize::Navigation => self.navigation_icon.clone(),
@@ -4836,7 +5192,7 @@ impl Renderer {
             .as_ref()
             .is_some_and(|candidate| self.is_hovered(candidate));
         let color = if hovered {
-            mix(foreground, PRIMARY, self.hover_progress * 0.72)
+            mix(foreground, self.palette.primary, self.hover_amount(0.72))
         } else {
             foreground
         };
@@ -5450,6 +5806,10 @@ struct LibraryLayout {
     height: f32,
 }
 
+fn hover_blend_amount(progress: f32, strength: f32, weight: f32) -> f32 {
+    (progress * strength * weight).clamp(0.0, 1.0)
+}
+
 fn clip_columns(width: f32) -> usize {
     if width >= 1_460.0 {
         5
@@ -5626,12 +5986,10 @@ fn format_clip_badge_duration(total_seconds: u64) -> String {
     }
 }
 
-fn compact_settings_row_height(panel: LogicalRect) -> f32 {
-    if panel.bottom - panel.top < 300.0 {
-        42.0
-    } else {
-        52.0
-    }
+/// A panel divides its own height by the rows it carries, so a long group stays
+/// inside its box instead of running into the one below.
+fn compact_settings_row_height(panel: LogicalRect, rows: usize) -> f32 {
+    ((panel.bottom - panel.top - SETTINGS_PANEL_HEADER) / rows.max(1) as f32).clamp(30.0, 52.0)
 }
 
 fn settings_panel_rects(left: f32, right: f32, height: f32) -> [LogicalRect; 4] {
@@ -5643,8 +6001,8 @@ fn settings_panel_rects(left: f32, right: f32, height: f32) -> [LogicalRect; 4] 
     } else {
         height - 22.0
     };
-    let panel_space = (panels_bottom - top - gap).max(450.0);
-    let top_height = (panel_space * 0.46).clamp(225.0, 314.0);
+    let panel_space = (panels_bottom - top - gap).max(420.0);
+    let top_height = (panel_space / 2.0).max(180.0);
     let bottom_top = top + top_height + gap;
     [
         rect(left, top, middle - gap / 2.0, top + top_height),
@@ -5654,9 +6012,9 @@ fn settings_panel_rects(left: f32, right: f32, height: f32) -> [LogicalRect; 4] 
     ]
 }
 
-fn settings_control_area(panel: LogicalRect, index: usize) -> LogicalRect {
-    let row_height = compact_settings_row_height(panel);
-    let top = panel.top + 44.0 + index as f32 * row_height;
+fn settings_control_area(panel: LogicalRect, rows: usize, index: usize) -> LogicalRect {
+    let row_height = compact_settings_row_height(panel, rows);
+    let top = panel.top + SETTINGS_PANEL_HEADER + index as f32 * row_height;
     let control_width = ((panel.right - panel.left) * 0.34).clamp(128.0, 205.0);
     rect(
         panel.right - control_width - 20.0,
@@ -5666,8 +6024,8 @@ fn settings_control_area(panel: LogicalRect, index: usize) -> LogicalRect {
     )
 }
 
-fn settings_gain_rail_in_panel(panel: LogicalRect, index: usize) -> LogicalRect {
-    let control = settings_control_area(panel, index);
+fn settings_gain_rail_in_panel(panel: LogicalRect, rows: usize, index: usize) -> LogicalRect {
+    let control = settings_control_area(panel, rows, index);
     let center = (control.top + control.bottom) / 2.0;
     rect(
         control.left + 5.0,
@@ -5742,7 +6100,7 @@ fn age(modified: SystemTime) -> String {
     }
 }
 
-fn hotkey_capture_label(modifiers: &[String]) -> String {
+fn hotkey_capture_label(modifiers: &[String], text: &Strings) -> String {
     let modifiers = modifiers
         .iter()
         .map(|modifier| match modifier.as_str() {
@@ -5754,7 +6112,7 @@ fn hotkey_capture_label(modifiers: &[String]) -> String {
         })
         .collect::<Vec<_>>();
     if modifiers.is_empty() {
-        "Press shortcut…".into()
+        text.hotkey_prompt.to_owned()
     } else {
         format!("{} + …", modifiers.join(" + "))
     }
@@ -5763,11 +6121,65 @@ fn hotkey_capture_label(modifiers: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CLIP_GROUP_GAP, CLIP_SCROLL_RESERVE, CLIP_SECTION_HEADER, CONTENT_PADDING, Page,
-        SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH, TOOLBAR_HEIGHT, TOOLBAR_TOP, clip_columns,
-        content_bottom, content_top, format_bytes, format_storage_limit, library_layout,
-        page_has_chrome, rect, section_widths, settings_gain_percent, sidebar_width,
+        CLIP_GROUP_GAP, CLIP_SCROLL_RESERVE, CLIP_SECTION_HEADER, CONTENT_PADDING, Page, Palette,
+        SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH, TOOLBAR_HEIGHT, TOOLBAR_TOP, Theme, clip_columns,
+        content_bottom, content_top, format_bytes, format_storage_limit, hover_blend_amount,
+        library_layout, page_has_chrome, palette_for, rect, section_widths, settings_gain_percent,
+        sidebar_width,
     };
+
+    fn luminance(color: u32) -> f32 {
+        let channel = |shift: u32| ((color >> shift) & 0xff) as f32 / 255.0;
+        0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+    }
+
+    fn contrast(palette: Palette) -> f32 {
+        (luminance(palette.primary) - luminance(palette.canvas)).abs()
+    }
+
+    #[test]
+    fn every_theme_keeps_text_readable_and_the_thumbnail_bed_quiet() {
+        for theme in Theme::OPTIONS {
+            let palette = palette_for(theme);
+            assert!(
+                contrast(palette) > 0.6,
+                "{theme:?} does not separate text from the canvas"
+            );
+            assert!(
+                (luminance(palette.stage) - luminance(palette.canvas)).abs() < 0.1,
+                "{theme:?} makes the thumbnail bed shout"
+            );
+            assert_ne!(palette.accent, palette.accent_text);
+        }
+
+        assert!(luminance(palette_for(Theme::Light).canvas) > 0.7);
+        assert!(luminance(palette_for(Theme::Dark).canvas) < 0.1);
+    }
+
+    #[test]
+    fn only_the_cafe_theme_spends_an_accent_on_live_indicators() {
+        assert_eq!(
+            palette_for(Theme::Dark).live,
+            palette_for(Theme::Dark).primary
+        );
+        assert_eq!(
+            palette_for(Theme::Light).live,
+            palette_for(Theme::Light).primary
+        );
+        assert_ne!(
+            palette_for(Theme::Cafe).live,
+            palette_for(Theme::Cafe).primary
+        );
+    }
+
+    #[test]
+    fn hover_strength_scales_the_blend_and_can_switch_it_off() {
+        assert_eq!(hover_blend_amount(1.0, 0.0, 1.0), 0.0);
+        assert_eq!(hover_blend_amount(1.0, 0.55, 1.0), 0.55);
+        assert_eq!(hover_blend_amount(0.5, 1.0, 1.0), 0.5);
+        assert_eq!(hover_blend_amount(1.0, 1.6, 1.0), 1.0);
+        assert_eq!(hover_blend_amount(1.0, 1.0, 0.72), 0.72);
+    }
 
     #[test]
     fn storage_sizes_use_mb_gb_and_tb_labels() {

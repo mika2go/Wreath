@@ -3,12 +3,13 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use wreath_core::clips::{self, Clip, Collection};
-use wreath_core::config::Config;
+use wreath_core::config::{Config, HoverStrength, HoverStyle, Language, Theme};
 use wreath_core::favorites::Favorites;
 use wreath_core::ipc::DaemonState;
 use wreath_core::paths::AppPaths;
 
 use crate::clock::{self, Civil};
+use crate::text::{self, Strings};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -26,10 +27,10 @@ pub enum ClipTab {
 }
 
 impl ClipTab {
-    pub const fn label(self) -> &'static str {
+    pub const fn label(self, text: &Strings) -> &'static str {
         match self {
-            Self::All => "Alle Clips",
-            Self::Favorites => "Favoriten",
+            Self::All => text.tab_all_clips,
+            Self::Favorites => text.tab_favorites,
         }
     }
 }
@@ -45,12 +46,12 @@ pub enum TimeFilter {
 impl TimeFilter {
     pub const OPTIONS: [Self; 4] = [Self::All, Self::Today, Self::Week, Self::Month];
 
-    pub const fn label(self) -> &'static str {
+    pub const fn label(self, text: &Strings) -> &'static str {
         match self {
-            Self::All => "Alle Zeit",
-            Self::Today => "Heute",
-            Self::Week => "Diese Woche",
-            Self::Month => "Dieser Monat",
+            Self::All => text.all_time,
+            Self::Today => text.today,
+            Self::Week => text.this_week,
+            Self::Month => text.this_month,
         }
     }
 
@@ -74,11 +75,11 @@ pub enum TypeFilter {
 impl TypeFilter {
     pub const OPTIONS: [Self; 3] = [Self::All, Self::Replay, Self::Cut];
 
-    pub const fn label(self) -> &'static str {
+    pub const fn label(self, text: &Strings) -> &'static str {
         match self {
-            Self::All => "Alle",
-            Self::Replay => "Replays",
-            Self::Cut => "Zuschnitte",
+            Self::All => text.all,
+            Self::Replay => text.type_replays,
+            Self::Cut => text.type_cuts,
         }
     }
 
@@ -103,12 +104,12 @@ pub enum SizeFilter {
 impl SizeFilter {
     pub const OPTIONS: [Self; 4] = [Self::All, Self::Small, Self::Medium, Self::Large];
 
-    pub const fn label(self) -> &'static str {
+    pub const fn label(self, text: &Strings) -> &'static str {
         match self {
-            Self::All => "Alle",
-            Self::Small => "Bis 25 MB",
-            Self::Medium => "25 bis 100 MB",
-            Self::Large => "Über 100 MB",
+            Self::All => text.all,
+            Self::Small => text.size_small,
+            Self::Medium => text.size_medium,
+            Self::Large => text.size_large,
         }
     }
 
@@ -136,23 +137,23 @@ impl DaemonSnapshot {
         self.state == Some(DaemonState::Recording)
     }
 
-    pub const fn toolbar_headline(&self) -> &'static str {
+    pub const fn toolbar_headline(&self, text: &Strings) -> &'static str {
         match self.state {
-            Some(DaemonState::Recording) => "REPLAY AKTIV",
-            Some(DaemonState::Starting) => "REPLAY STARTET",
-            Some(DaemonState::Paused) => "REPLAY PAUSIERT",
-            Some(DaemonState::Error) => "REPLAY GESTÖRT",
-            None => "RECORDER OFFLINE",
+            Some(DaemonState::Recording) => text.replay_active,
+            Some(DaemonState::Starting) => text.replay_starting,
+            Some(DaemonState::Paused) => text.replay_paused,
+            Some(DaemonState::Error) => text.replay_error,
+            None => text.recorder_offline,
         }
     }
 
-    pub const fn status_headline(&self) -> &'static str {
+    pub const fn status_headline(&self, text: &Strings) -> &'static str {
         match self.state {
-            Some(DaemonState::Recording) => "REPLAY LÄUFT",
-            Some(DaemonState::Starting) => "REPLAY STARTET",
-            Some(DaemonState::Paused) => "REPLAY PAUSIERT",
-            Some(DaemonState::Error) => "REPLAY GESTÖRT",
-            None => "RECORDER OFFLINE",
+            Some(DaemonState::Recording) => text.replay_running,
+            Some(DaemonState::Starting) => text.replay_starting,
+            Some(DaemonState::Paused) => text.replay_paused,
+            Some(DaemonState::Error) => text.replay_error,
+            None => text.recorder_offline,
         }
     }
 }
@@ -193,6 +194,10 @@ pub enum Action {
     ChooseSizeFilter,
     ChooseClipSort,
     ResetFilters,
+    ChooseTheme,
+    ChooseLanguage,
+    ChooseHoverStyle,
+    ChooseHoverStrength,
     ToggleCollectionSort,
     SaveReplay,
     OpenClipsFolder,
@@ -461,6 +466,39 @@ pub const QUALITY_PRESETS: [(u8, &str); 5] = [
     (100, "Insane"),
 ];
 
+pub const fn theme_label(theme: Theme, text: &Strings) -> &'static str {
+    match theme {
+        Theme::Dark => text.theme_dark,
+        Theme::Light => text.theme_light,
+        Theme::Cafe => text.theme_cafe,
+    }
+}
+
+pub const fn hover_style_label(style: HoverStyle, text: &Strings) -> &'static str {
+    match style {
+        HoverStyle::Surface => text.hover_surface,
+        HoverStyle::Outline => text.hover_outline,
+        HoverStyle::Both => text.hover_both,
+    }
+}
+
+pub const fn hover_strength_label(strength: HoverStrength, text: &Strings) -> &'static str {
+    match strength {
+        HoverStrength::Off => text.strength_off,
+        HoverStrength::Subtle => text.strength_subtle,
+        HoverStrength::Normal => text.strength_normal,
+        HoverStrength::Strong => text.strength_strong,
+    }
+}
+
+pub const fn language_label(language: Language, text: &Strings) -> &'static str {
+    match language {
+        Language::System => text.language_system,
+        Language::German => text.language_german,
+        Language::English => text.language_english,
+    }
+}
+
 pub fn quality_label(quality: u8) -> String {
     QUALITY_PRESETS
         .iter()
@@ -470,6 +508,10 @@ pub fn quality_label(quality: u8) -> String {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsMenuKind {
+    Theme,
+    Language,
+    HoverStyle,
+    HoverStrength,
     TimeFilter,
     CollectionFilter,
     TypeFilter,
@@ -553,26 +595,27 @@ impl Prompt {
         }
     }
 
-    pub fn title(&self) -> &'static str {
+    pub fn title(&self, text: &Strings) -> &'static str {
         match self.kind {
-            PromptKind::RenameClip(_) => "Clip umbenennen",
-            PromptKind::RenameCollection(_) => "Sammlung umbenennen",
-            PromptKind::NewCollection => "Neue Sammlung",
+            PromptKind::RenameClip(_) => text.rename_clip_title,
+            PromptKind::RenameCollection(_) => text.rename_collection_title,
+            PromptKind::NewCollection => text.new_collection_title,
         }
     }
 
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self, text: &Strings) -> &'static str {
         match self.kind {
-            PromptKind::RenameClip(_) => "Clip-Name",
-            PromptKind::RenameCollection(_) => "Name der Sammlung",
-            PromptKind::NewCollection => "Name der Sammlung",
+            PromptKind::RenameClip(_) => text.clip_name_label,
+            PromptKind::RenameCollection(_) | PromptKind::NewCollection => {
+                text.collection_name_label
+            }
         }
     }
 
-    pub fn confirm(&self) -> &'static str {
+    pub fn confirm(&self, text: &Strings) -> &'static str {
         match self.kind {
-            PromptKind::RenameClip(_) | PromptKind::RenameCollection(_) => "Umbenennen",
-            PromptKind::NewCollection => "Erstellen",
+            PromptKind::RenameClip(_) | PromptKind::RenameCollection(_) => text.rename,
+            PromptKind::NewCollection => text.create,
         }
     }
 }
@@ -610,6 +653,7 @@ pub struct UiModel {
     pub library_scroll: f32,
     pub favorites: Favorites,
     pub daemon: DaemonSnapshot,
+    pub language: Language,
     pub microphone_level: u8,
     pub microphone_peak_hold: u8,
     pub microphone_test: bool,
@@ -675,6 +719,7 @@ impl UiModel {
         let paths = AppPaths::discover();
         let config = Config::load(&paths).map_err(|error| error.to_string())?;
         let favorites = Favorites::load(&paths.favorites_file, &config.storage.directory);
+        let language = text::resolve(config.appearance.language);
         let mut model = Self {
             paths,
             config,
@@ -698,6 +743,7 @@ impl UiModel {
             library_scroll: 0.0,
             favorites,
             daemon: DaemonSnapshot::default(),
+            language,
             microphone_level: 0,
             microphone_peak_hold: 0,
             microphone_test: false,
@@ -1160,7 +1206,7 @@ impl UiModel {
             let day = civil.day_index();
             if current_day != Some(day) {
                 groups.push(ClipGroup {
-                    label: clock::day_label(civil, today),
+                    label: clock::day_label(civil, today, self.strings()),
                     indices: Vec::new(),
                 });
                 current_day = Some(day);
@@ -1170,6 +1216,14 @@ impl UiModel {
             }
         }
         groups
+    }
+
+    pub fn strings(&self) -> &'static Strings {
+        text::strings(self.language)
+    }
+
+    pub fn refresh_language(&mut self) {
+        self.language = text::resolve(self.config.appearance.language);
     }
 
     pub fn toggle_microphone_test(&mut self) {
@@ -1207,17 +1261,18 @@ impl UiModel {
     }
 
     pub fn microphone_readout(&self) -> String {
+        let text = self.strings();
         if !self.microphone_test {
             return if self.config.audio.microphone {
-                "Testen".to_owned()
+                text.microphone_test.to_owned()
             } else {
-                "Mikrofon aus".to_owned()
+                text.microphone_off.to_owned()
             };
         }
         if self.microphone_signal {
             format!("{} %", self.microphone_level)
         } else {
-            "Kein Signal".to_owned()
+            text.no_signal.to_owned()
         }
     }
 
@@ -1267,14 +1322,15 @@ impl UiModel {
                     .iter()
                     .find(|collection| &collection.path == path)
             })
-            .map_or("Alle", |collection| collection.name.as_str())
+            .map_or(self.strings().all, |collection| collection.name.as_str())
     }
 
-    pub const fn sort_label(&self) -> &'static str {
+    pub fn sort_label(&self) -> &'static str {
+        let text = self.strings();
         if self.clips_oldest_first {
-            "Älteste zuerst"
+            text.sort_oldest
         } else {
-            "Neueste zuerst"
+            text.sort_newest
         }
     }
 
@@ -1453,6 +1509,7 @@ mod tests {
                 PathBuf::from("/clips"),
             ),
             daemon: DaemonSnapshot::default(),
+            language: Language::German,
             microphone_level: 0,
             microphone_peak_hold: 0,
             microphone_test: false,
@@ -2136,17 +2193,18 @@ mod tests {
     #[test]
     fn the_recorder_state_drives_both_replay_labels() {
         let mut model = library_model();
-        assert_eq!(model.daemon.toolbar_headline(), "RECORDER OFFLINE");
+        let text = model.strings();
+        assert_eq!(model.daemon.toolbar_headline(text), "RECORDER OFFLINE");
 
         model.daemon.state = Some(DaemonState::Recording);
         model.daemon.buffered_seconds = 30;
         assert!(model.daemon.is_recording());
-        assert_eq!(model.daemon.toolbar_headline(), "REPLAY AKTIV");
-        assert_eq!(model.daemon.status_headline(), "REPLAY LÄUFT");
+        assert_eq!(model.daemon.toolbar_headline(text), "REPLAY AKTIV");
+        assert_eq!(model.daemon.status_headline(text), "REPLAY LÄUFT");
 
         model.daemon.state = Some(DaemonState::Paused);
         assert!(!model.daemon.is_recording());
-        assert_eq!(model.daemon.status_headline(), "REPLAY PAUSIERT");
+        assert_eq!(model.daemon.status_headline(text), "REPLAY PAUSIERT");
     }
 
     #[test]

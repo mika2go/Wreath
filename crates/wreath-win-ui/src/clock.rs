@@ -1,19 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const MONTHS: [&str; 12] = [
-    "Januar",
-    "Februar",
-    "März",
-    "April",
-    "Mai",
-    "Juni",
-    "Juli",
-    "August",
-    "September",
-    "Oktober",
-    "November",
-    "Dezember",
-];
+use crate::text::Strings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Civil {
@@ -42,16 +29,18 @@ pub fn local(time: SystemTime) -> Civil {
     utc(time)
 }
 
-pub fn day_label(clip: Civil, today: Civil) -> String {
+pub fn day_label(clip: Civil, today: Civil, text: &Strings) -> String {
     match today.day_index() - clip.day_index() {
-        0 => "Heute".to_owned(),
-        1 => "Gestern".to_owned(),
+        0 => text.today.to_owned(),
+        1 => text.yesterday.to_owned(),
         _ => {
-            let month = MONTHS[(clip.month.clamp(1, 12) - 1) as usize];
-            if clip.year == today.year {
-                format!("{}. {month}", clip.day)
-            } else {
-                format!("{}. {month} {}", clip.day, clip.year)
+            let month = text.months[(clip.month.clamp(1, 12) - 1) as usize];
+            let english = text.language == wreath_core::config::Language::English;
+            match (english, clip.year == today.year) {
+                (true, true) => format!("{month} {}", clip.day),
+                (true, false) => format!("{month} {}, {}", clip.day, clip.year),
+                (false, true) => format!("{}. {month}", clip.day),
+                (false, false) => format!("{}. {month} {}", clip.day, clip.year),
             }
         }
     }
@@ -61,8 +50,8 @@ pub fn time_label(civil: Civil) -> String {
     format!("{:02}:{:02}", civil.hour, civil.minute)
 }
 
-pub fn stamp_label(clip: Civil, today: Civil) -> String {
-    format!("{}, {}", day_label(clip, today), time_label(clip))
+pub fn stamp_label(clip: Civil, today: Civil, text: &Strings) -> String {
+    format!("{}, {}", day_label(clip, today, text), time_label(clip))
 }
 
 pub fn within_days(clip: Civil, today: Civil, days: i64) -> bool {
@@ -185,13 +174,31 @@ mod tests {
     #[test]
     fn consecutive_days_are_labelled_relatively() {
         let today = civil(2026, 8, 18, 10, 7);
+        let german = &crate::text::GERMAN;
+        let english = &crate::text::ENGLISH;
 
-        assert_eq!(day_label(today, today), "Heute");
-        assert_eq!(day_label(civil(2026, 8, 17, 23, 59), today), "Gestern");
-        assert_eq!(day_label(civil(2026, 8, 16, 9, 0), today), "16. August");
+        assert_eq!(day_label(today, today, german), "Heute");
         assert_eq!(
-            day_label(civil(2025, 12, 24, 9, 0), today),
+            day_label(civil(2026, 8, 17, 23, 59), today, german),
+            "Gestern"
+        );
+        assert_eq!(
+            day_label(civil(2026, 8, 16, 9, 0), today, german),
+            "16. August"
+        );
+        assert_eq!(
+            day_label(civil(2025, 12, 24, 9, 0), today, german),
             "24. Dezember 2025"
+        );
+
+        assert_eq!(day_label(today, today, english), "Today");
+        assert_eq!(
+            day_label(civil(2026, 8, 16, 9, 0), today, english),
+            "August 16"
+        );
+        assert_eq!(
+            day_label(civil(2025, 12, 24, 9, 0), today, english),
+            "December 24, 2025"
         );
     }
 
@@ -200,12 +207,12 @@ mod tests {
         let today = civil(2026, 8, 18, 10, 7);
 
         assert_eq!(
-            stamp_label(civil(2026, 8, 18, 14, 35), today),
+            stamp_label(civil(2026, 8, 18, 14, 35), today, &crate::text::GERMAN),
             "Heute, 14:35"
         );
         assert_eq!(
-            stamp_label(civil(2026, 8, 17, 9, 8), today),
-            "Gestern, 09:08"
+            stamp_label(civil(2026, 8, 17, 9, 8), today, &crate::text::ENGLISH),
+            "Yesterday, 09:08"
         );
     }
 
