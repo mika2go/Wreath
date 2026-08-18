@@ -62,8 +62,11 @@ Corner radii stay between 4 and 8 px.
   setting sections grow to fill the bar and are dropped from the right when the
   window is too narrow for a legible width.
 - Status bar: persistent 84 px strip attached to the bottom of the main area
-  with a top border, carrying replay state, storage use, hotkey, and a live
-  microphone meter.
+  with a top border, carrying replay state, storage use, hotkey, and the
+  microphone test. The microphone section is a button: while the test runs it
+  opens its own capture stream and shows the level as a percentage with a
+  peak-hold marker, or Kein Signal while nothing arrives; a saved input that
+  disappeared falls back to the Windows default.
 - Clips page: page title, tab row with a thin underline on the active tab,
   search plus filter/grid/list buttons, a separator, and a scrolling clip area
   over the full content width. The filter button opens a 272 px popover under
