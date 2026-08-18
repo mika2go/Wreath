@@ -253,6 +253,12 @@ fn device_id(device: &windows::Win32::Media::Audio::IMMDevice) -> Result<String,
 }
 
 #[cfg(target_os = "windows")]
+const RECORDER_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+#[cfg(target_os = "windows")]
+const PROBE_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1_200);
+
+#[cfg(target_os = "windows")]
 struct CaptureStream {
     format: AudioFormat,
     receiver: crossbeam_channel::Receiver<PcmChunk>,
@@ -287,6 +293,18 @@ impl MicrophoneCapture {
         .map(|stream| Self { stream })
     }
 
+    /// Shorter startup budget for the interface, which opens the device on its
+    /// message loop and must not stall on a wedged microphone.
+    pub fn spawn_for_probe(endpoint_id: Option<&str>) -> Result<Self, AudioError> {
+        CaptureStream::spawn_with_timeout(
+            CaptureEndpoint::Microphone {
+                endpoint_id: endpoint_id.map(str::to_owned),
+            },
+            PROBE_READY_TIMEOUT,
+        )
+        .map(|stream| Self { stream })
+    }
+
     pub fn format(&self) -> AudioFormat {
         self.stream.format
     }
@@ -305,6 +323,13 @@ enum CaptureEndpoint {
 #[cfg(target_os = "windows")]
 impl CaptureStream {
     fn spawn(endpoint: CaptureEndpoint) -> Result<Self, AudioError> {
+        Self::spawn_with_timeout(endpoint, RECORDER_READY_TIMEOUT)
+    }
+
+    fn spawn_with_timeout(
+        endpoint: CaptureEndpoint,
+        ready_timeout: std::time::Duration,
+    ) -> Result<Self, AudioError> {
         use std::sync::mpsc;
 
         use windows::Win32::Foundation::CloseHandle;
@@ -335,7 +360,7 @@ impl CaptureStream {
                 return Err(AudioError(error.to_string()));
             }
         };
-        match ready_receiver.recv() {
+        match ready_receiver.recv_timeout(ready_timeout) {
             Ok(Ok(format)) => Ok(Self {
                 format,
                 receiver: chunk_receiver,
@@ -348,10 +373,30 @@ impl CaptureStream {
                     .map_err(|close_error| AudioError(close_error.to_string()))?;
                 Err(error)
             }
-            Err(error) => {
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // the device is not answering; ask the thread to stop and let a
+                // detached reaper wait for it instead of blocking the caller
+                let _ = unsafe { windows::Win32::System::Threading::SetEvent(stop_event) };
+                let event = stop_event.0 as usize;
+                let reaped = std::thread::Builder::new()
+                    .name("wreath-wasapi-reaper".into())
+                    .spawn(move || {
+                        let _ = thread.join();
+                        let _ = unsafe {
+                            CloseHandle(windows::Win32::Foundation::HANDLE(event as *mut _))
+                        };
+                    });
+                if reaped.is_err() {
+                    wreath_core::diagnostic!(
+                        "Wreath audio: no thread available to close a stalled device"
+                    );
+                }
+                Err(AudioError("the audio device did not start in time".into()))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = thread.join();
                 let _ = unsafe { CloseHandle(stop_event) };
-                Err(AudioError(error.to_string()))
+                Err(AudioError("the audio capture thread stopped".into()))
             }
         }
     }

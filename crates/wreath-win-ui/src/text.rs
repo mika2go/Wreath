@@ -187,6 +187,7 @@ pub struct Strings {
     pub new_clip: &'static str,
     pub prompt_hint: &'static str,
     pub codec_auto: &'static str,
+    pub notice_saved_reload_failed: &'static str,
 
     // notification area
     pub tray_open_app: &'static str,
@@ -284,13 +285,6 @@ impl Strings {
         }
     }
 
-    pub fn buffer_short(&self, value: u16) -> String {
-        match self.language {
-            Language::English => format!("{value} s buffer"),
-            _ => format!("{value} s Puffer"),
-        }
-    }
-
     pub fn clip_count(&self, count: usize) -> String {
         if count == 1 {
             format!("1 {}", self.clip_singular)
@@ -336,6 +330,24 @@ impl Strings {
                 format!("wreath {version} · local, no account and no upload")
             }
             _ => format!("wreath {version} · lokal, ohne Konto und ohne Upload"),
+        }
+    }
+
+    pub fn delete_clip_body(&self, name: &str) -> String {
+        match self.language {
+            Language::English => format!("{name} is removed for good. This cannot be undone."),
+            _ => {
+                format!("{name} wird dauerhaft entfernt. Das kann nicht rückgängig gemacht werden.")
+            }
+        }
+    }
+
+    pub fn delete_collection_body(&self, name: &str) -> String {
+        match self.language {
+            Language::English => {
+                format!("{name} is removed; the clips inside go back to the library.")
+            }
+            _ => format!("{name} wird entfernt; enthaltene Clips kommen zurück in die Bibliothek."),
         }
     }
 
@@ -523,6 +535,7 @@ pub const GERMAN: Strings = Strings {
     new_clip: "Neuer Clip",
     prompt_hint: "Strg+A alles wählen · Strg+C/X/V · Enter bestätigen · Esc abbrechen",
     codec_auto: "Auto (empfohlen)",
+    notice_saved_reload_failed: "Gespeichert, Aufnahme konnte nicht neu geladen werden",
 
     tray_open_app: "wreath öffnen",
     tray_save_replay: "Replay speichern",
@@ -784,6 +797,7 @@ pub const ENGLISH: Strings = Strings {
     new_clip: "New clip",
     prompt_hint: "Ctrl+A select all · Ctrl+C/X/V · Enter to confirm · Esc to cancel",
     codec_auto: "Auto (recommended)",
+    notice_saved_reload_failed: "Saved, but the recording could not be reloaded",
 
     tray_open_app: "Open wreath",
     tray_save_replay: "Save replay",

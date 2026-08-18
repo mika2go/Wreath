@@ -54,8 +54,9 @@ use crate::model::{
 use crate::player::{PLAYER_EVENT, Player};
 use crate::renderer::{
     Renderer, clips_overflow, editor_player_bounds, editor_timeline_fraction, editor_timeline_rail,
-    fullscreen_timeline_rail, fullscreen_volume_rail, player_bounds, player_timeline_rail,
-    player_volume_rail, settings_audio_gain_rail, settings_gain_percent,
+    folder_column_contains, folder_column_overflow, fullscreen_timeline_rail,
+    fullscreen_volume_rail, player_bounds, player_timeline_rail, player_volume_rail,
+    settings_audio_gain_rail, settings_gain_percent,
 };
 use wreath_windows::meter::{MicrophoneMeter, MicrophoneProbe};
 
@@ -496,7 +497,8 @@ unsafe extern "system" fn window_proc(
                     && !matches!(
                         hit.as_ref(),
                         Some(
-                            Action::ToggleFilterPanel
+                            Action::Ignore
+                                | Action::ToggleFilterPanel
                                 | Action::ChooseTimeFilter
                                 | Action::ChooseCollectionFilter
                                 | Action::ChooseTypeFilter
@@ -648,11 +650,21 @@ unsafe extern "system" fn window_proc(
                 let width = (state.width as f32 / scale).max(1.0);
                 let height = (state.height as f32 / scale).max(1.0);
                 let notches = f32::from(signed_high_word(wparam.0 as isize)) / 120.0;
-                let overflow = clips_overflow(&state.model, width, height);
-                if state
-                    .model
-                    .scroll_library_by(-notches * LIBRARY_WHEEL_STEP, overflow)
-                {
+                let scale = state.dpi as f32 / 96.0;
+                let pointer_x = f32::from(signed_low_word(lparam.0)) / scale;
+                let over_folders = folder_column_contains(&state.model, pointer_x);
+                let overflow = if over_folders {
+                    folder_column_overflow(&state.model, width, height)
+                } else {
+                    clips_overflow(&state.model, width, height)
+                };
+                let step = -notches * LIBRARY_WHEEL_STEP;
+                let scrolled = if over_folders {
+                    state.model.scroll_folders_by(step, overflow)
+                } else {
+                    state.model.scroll_library_by(step, overflow)
+                };
+                if scrolled {
                     redraw(window);
                     let _ = unsafe { UpdateWindow(window) };
                     if refresh_hover_after_scroll(window, state) {
@@ -1279,7 +1291,7 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
             state.model.search.clear();
             state.model.active_collection = None;
         }
-        Action::PlaceSearchCaret(_) | Action::PlacePromptCaret(_) => {}
+        Action::Ignore | Action::PlaceSearchCaret(_) | Action::PlacePromptCaret(_) => {}
         Action::DismissNotice => state.model.notice = None,
         Action::MinimizeWindow => unsafe {
             let _ = ShowWindow(window, SW_MINIMIZE);
@@ -1345,7 +1357,8 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
         }
         Action::ChooseStorage => choose_storage(&mut state.model),
         Action::SaveSettings => {
-            save_settings(&mut state.model, "Settings saved and capture reloaded")
+            let message = state.model.strings().notice_settings_saved;
+            save_settings(&mut state.model, message)
         }
         Action::CreateCollection => state.model.begin_new_collection(),
         Action::CancelPrompt => {
@@ -2763,7 +2776,10 @@ fn save_settings(model: &mut UiModel, success: &str) {
         Ok(()) => match reload_capture() {
             Ok(Response::Ok) => model.notice = Some(success.into()),
             Ok(Response::Error { message }) | Err(message) => {
-                model.notice = Some(format!("Saved, but reload failed: {message}"))
+                model.notice = Some(format!(
+                    "{}: {message}",
+                    model.strings().notice_saved_reload_failed
+                ))
             }
             Ok(_) => model.notice = Some(model.strings().notice_settings_saved.to_owned()),
         },
@@ -3245,9 +3261,13 @@ fn select_settings_option(model: &mut UiModel, index: usize) {
         model.library_scroll = 0.0;
     }
     if appearance {
-        // the look applies at once; only the file needs writing
+        // the look applies at once, but the settings page may hold unconfirmed
+        // capture edits, so only the appearance block reaches the file
         let paths = model.paths.clone();
-        if let Err(error) = model.config.save(&paths) {
+        let mut stored =
+            wreath_core::config::Config::load(&paths).unwrap_or_else(|_| model.config.clone());
+        stored.appearance = model.config.appearance;
+        if let Err(error) = stored.save(&paths) {
             model.notice = Some(format!(
                 "{}: {error}",
                 model.strings().notice_appearance_failed
@@ -3255,7 +3275,8 @@ fn select_settings_option(model: &mut UiModel, index: usize) {
         }
     }
     if apply_immediately {
-        save_settings(model, "Einstellung gespeichert und Aufnahme neu geladen");
+        let message = model.strings().notice_setting_applied;
+        save_settings(model, message);
     }
 }
 

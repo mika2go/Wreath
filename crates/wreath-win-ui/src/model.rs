@@ -185,6 +185,7 @@ pub enum Action {
     Refresh,
     SetLibraryGrid(bool),
     SetClipTab(ClipTab),
+    Ignore,
     ToggleFilterPanel,
     ToggleSidebar,
     ToggleMicrophoneTest,
@@ -651,6 +652,7 @@ pub struct UiModel {
     pub filter_type: TypeFilter,
     pub filter_size: SizeFilter,
     pub library_scroll: f32,
+    pub folder_scroll: f32,
     pub favorites: Favorites,
     pub daemon: DaemonSnapshot,
     pub language: Language,
@@ -741,6 +743,7 @@ impl UiModel {
             filter_type: TypeFilter::All,
             filter_size: SizeFilter::All,
             library_scroll: 0.0,
+            folder_scroll: 0.0,
             favorites,
             daemon: DaemonSnapshot::default(),
             language,
@@ -804,15 +807,19 @@ impl UiModel {
         self.selected_clips
             .retain(|path| self.clips.iter().any(|clip| &clip.path == path));
         self.favorites.set_root(&self.config.storage.directory);
-        let stored = self.favorites.len();
-        let paths = self
-            .clips
-            .iter()
-            .map(|clip| clip.path.clone())
-            .collect::<Vec<_>>();
-        self.favorites.retain_existing(&paths);
-        if self.favorites.len() != stored {
-            let _ = self.favorites.save();
+        // an unavailable clip folder scans as empty; pruning then would wipe the
+        // whole list, so only prune what a readable folder tells us
+        if self.config.storage.directory.is_dir() {
+            let stored = self.favorites.len();
+            let paths = self
+                .clips
+                .iter()
+                .map(|clip| clip.path.clone())
+                .collect::<Vec<_>>();
+            self.favorites.retain_existing(&paths);
+            if self.favorites.len() != stored {
+                let _ = self.favorites.save();
+            }
         }
         if self
             .filter_collection
@@ -1348,6 +1355,15 @@ impl UiModel {
         self.favorites.save().map_err(|error| error.to_string())
     }
 
+    pub fn scroll_folders_by(&mut self, delta: f32, overflow: f32) -> bool {
+        let target = (self.folder_scroll + delta).clamp(0.0, overflow.max(0.0));
+        if (target - self.folder_scroll).abs() < 0.5 {
+            return false;
+        }
+        self.folder_scroll = target;
+        true
+    }
+
     pub fn scroll_library_by(&mut self, delta: f32, overflow: f32) -> bool {
         let target = (self.library_scroll + delta).clamp(0.0, overflow.max(0.0));
         if (target - self.library_scroll).abs() < 0.5 {
@@ -1504,6 +1520,7 @@ mod tests {
             filter_type: TypeFilter::All,
             filter_size: SizeFilter::All,
             library_scroll: 0.0,
+            folder_scroll: 0.0,
             favorites: Favorites::load(
                 std::env::temp_dir().join("wreath-model-test-favorites.json"),
                 PathBuf::from("/clips"),
@@ -2205,6 +2222,23 @@ mod tests {
         model.daemon.state = Some(DaemonState::Paused);
         assert!(!model.daemon.is_recording());
         assert_eq!(model.daemon.status_headline(text), "REPLAY PAUSIERT");
+    }
+
+    #[test]
+    fn favourites_survive_a_clip_folder_that_is_not_there() {
+        let mut model = library_model();
+        model.config.storage.directory = std::env::temp_dir().join("wreath-absent-clip-folder");
+        model.favorites = Favorites::load(
+            std::env::temp_dir().join("wreath-model-favourites-offline.json"),
+            &model.config.storage.directory,
+        );
+        model
+            .favorites
+            .toggle(&model.config.storage.directory.join("Kept.mp4"));
+
+        model.refresh().expect("a missing folder scans as empty");
+
+        assert_eq!(model.favorites.len(), 1);
     }
 
     #[test]

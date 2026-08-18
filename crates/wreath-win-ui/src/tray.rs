@@ -42,6 +42,7 @@ struct AppState {
     icon: NOTIFYICONDATAW,
     icon_added: bool,
     recovery: crate::recovery::RecoveryThrottle,
+    strings: &'static crate::text::Strings,
 }
 
 fn taskbar_created_message() -> u32 {
@@ -90,6 +91,7 @@ pub fn run() -> Result<(), String> {
         icon: NOTIFYICONDATAW::default(),
         icon_added: false,
         recovery: crate::recovery::RecoveryThrottle::new(Instant::now()),
+        strings: load_strings(),
     });
     let state = Box::into_raw(state);
     let window = unsafe {
@@ -145,7 +147,7 @@ unsafe extern "system" fn window_proc(
             let state = unsafe { (*create).lpCreateParams } as isize;
             unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, state) };
             if let Some(state) = state_mut(window) {
-                state.icon = tray_icon(window, strings().tray_starting_up);
+                state.icon = tray_icon(window, state.strings.tray_starting_up);
                 state.icon_added = unsafe { Shell_NotifyIconW(NIM_ADD, &state.icon) }.as_bool();
             }
         }
@@ -231,7 +233,10 @@ fn handle_command(window: HWND, command: usize) {
                 Err(error) => notify_error(window, &error),
             }
         }
-        COMMAND_RELOAD_CONFIG => handle_simple(window, Request::Reload),
+        COMMAND_RELOAD_CONFIG => {
+            reload_strings(window);
+            handle_simple(window, Request::Reload);
+        }
         COMMAND_EXIT => {
             let _ = send(Request::Shutdown);
             let _ = unsafe { DestroyWindow(window) };
@@ -258,17 +263,28 @@ fn ensure_icon(window: HWND) {
     }
 }
 
-/// The tray reads the interface language from the configuration whenever it
-/// builds a menu or a tooltip; it has no window of its own to cache it in.
-fn strings() -> &'static crate::text::Strings {
+/// Reads the interface language from the configuration. The result is cached in
+/// the tray state so the status tick does not parse the file every time.
+fn load_strings() -> &'static crate::text::Strings {
     let language = wreath_core::config::Config::load(&wreath_core::paths::AppPaths::discover())
         .map(|config| config.appearance.language)
         .unwrap_or_default();
     crate::text::strings(crate::text::resolve(language))
 }
 
+fn strings(window: HWND) -> &'static crate::text::Strings {
+    state_mut(window).map_or_else(load_strings, |state| state.strings)
+}
+
+fn reload_strings(window: HWND) {
+    let strings = load_strings();
+    if let Some(state) = state_mut(window) {
+        state.strings = strings;
+    }
+}
+
 fn refresh_status(window: HWND) {
-    let text = strings();
+    let text = strings(window);
     let tooltip = match send(Request::Status) {
         Ok(Response::Status {
             state,
@@ -344,7 +360,8 @@ fn reset_recovery(window: HWND) {
 
 fn notify_error(window: HWND, detail: &str) {
     if let Some(state) = state_mut(window) {
-        copy_wide(&mut state.icon.szInfoTitle, strings().tray_error_title);
+        let title = state.strings.tray_error_title;
+        copy_wide(&mut state.icon.szInfoTitle, title);
         copy_wide(&mut state.icon.szInfo, detail);
         state.icon.uFlags = NIF_INFO;
         state.icon.dwInfoFlags = NIIF_ERROR;
@@ -370,7 +387,8 @@ fn show_menu(window: HWND) {
     let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
         return;
     };
-    let text = strings();
+    reload_strings(window);
+    let text = strings(window);
     append_item(menu, COMMAND_OPEN_APP, text.tray_open_app);
     append_item(menu, COMMAND_SAVE, text.tray_save_replay);
     append_separator(menu);

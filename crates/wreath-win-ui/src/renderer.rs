@@ -848,7 +848,7 @@ impl Renderer {
                 height as f32 - 18.0
             };
             let notice_area = rect(
-                SIDEBAR_WIDTH + CONTENT_PADDING,
+                sidebar_width(model.sidebar_collapsed) + CONTENT_PADDING,
                 notice_bottom - 44.0,
                 width as f32 - CONTENT_PADDING,
                 notice_bottom,
@@ -1064,7 +1064,7 @@ impl Renderer {
                     info.bottom - 18.0,
                 ),
                 self.palette.stage,
-                "Ordner öffnen",
+                self.strings.open_folder,
                 self.palette.primary,
                 Some(Action::OpenClipsFolder),
             )?;
@@ -1330,12 +1330,11 @@ impl Renderer {
             || self.strings.automatic.to_owned(),
             |display| display.short_label.clone(),
         );
-        let quality = format!(
-            "{}p · {} FPS",
+        let quality = self.strings.resolution_line(
             model
                 .selected_display()
                 .map_or(1_080, |display| display.height),
-            model.config.capture.frames_per_second
+            model.config.capture.frames_per_second,
         );
         let audio = match (model.config.audio.desktop, model.config.audio.microphone) {
             (true, true) => self.strings.audio_system_and_microphone,
@@ -2032,6 +2031,12 @@ impl Renderer {
             anchor.right,
             anchor.bottom + 8.0 + panel_height,
         );
+        // the panel floats over the clip grid, so it has to swallow every click
+        // inside it before the cards register their own
+        self.hits.push(HitRegion {
+            rect: panel,
+            action: Action::Ignore,
+        });
         self.fill(panel, self.palette.surface_raised, RADIUS_LARGE)?;
         self.stroke(panel, self.palette.border, RADIUS_LARGE, 1.0)?;
         self.text(
@@ -2915,9 +2920,52 @@ impl Renderer {
         });
 
         let dragging = model.clip_drag_preview.as_ref();
-        let mut row_top = area.top + 26.0;
+        let rows = rect(area.left, area.top + 26.0, area.right, area.bottom);
+        let overflow = folder_column_overflow_in(rows, model.collections.len());
+        let scroll = model.folder_scroll.clamp(0.0, overflow);
+        self.push_clip(rows)?;
+        let painted = self.render_folder_rows(model, rows, scroll, dragging);
+        self.pop_clip();
+        painted?;
+        if overflow > 0.0 {
+            let height = rows.bottom - rows.top;
+            let visible = (height / (height + overflow)).clamp(0.1, 1.0);
+            let thumb = height * visible;
+            let top = rows.top + (height - thumb) * (scroll / overflow);
+            self.fill(
+                rect(rows.right - 3.0, top, rows.right - 1.0, top + thumb),
+                self.palette.border,
+                1.5,
+            )?;
+        }
+        if model.collections.is_empty() {
+            self.text(
+                self.strings.no_collections,
+                rect(
+                    rows.left + 4.0,
+                    rows.top + FOLDER_ROW_HEIGHT + 8.0,
+                    rows.right,
+                    rows.top + FOLDER_ROW_HEIGHT + 32.0,
+                ),
+                &self.small.clone(),
+                self.palette.muted,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn render_folder_rows(
+        &mut self,
+        model: &UiModel,
+        rows: LogicalRect,
+        scroll: f32,
+        dragging: Option<&crate::model::ClipDragPreview>,
+    ) -> Result<(), String> {
+        let area = rows;
+        let mut row_top = area.top - scroll;
         self.folder_row(
             rect(area.left, row_top, area.right, row_top + FOLDER_ROW_HEIGHT),
+            rows,
             Glyph::Library,
             self.strings.all_clips,
             model.clips.len(),
@@ -2928,12 +2976,17 @@ impl Renderer {
         row_top += FOLDER_ROW_HEIGHT + 2.0;
 
         for index in model.visible_collection_indices() {
-            if row_top + FOLDER_ROW_HEIGHT > area.bottom {
+            if row_top > area.bottom {
                 break;
+            }
+            if row_top + FOLDER_ROW_HEIGHT < area.top {
+                row_top += FOLDER_ROW_HEIGHT + 2.0;
+                continue;
             }
             let collection = &model.collections[index];
             self.folder_row(
                 rect(area.left, row_top, area.right, row_top + FOLDER_ROW_HEIGHT),
+                rows,
                 Glyph::Folder,
                 &collection.name,
                 collection.clip_count,
@@ -2943,14 +2996,6 @@ impl Renderer {
             )?;
             row_top += FOLDER_ROW_HEIGHT + 2.0;
         }
-        if model.collections.is_empty() {
-            self.text(
-                self.strings.no_collections,
-                rect(area.left + 4.0, row_top + 6.0, area.right, row_top + 30.0),
-                &self.small.clone(),
-                self.palette.muted,
-            )?;
-        }
         Ok(())
     }
 
@@ -2958,6 +3003,7 @@ impl Renderer {
     fn folder_row(
         &mut self,
         area: LogicalRect,
+        viewport: LogicalRect,
         glyph: Glyph,
         name: &str,
         count: usize,
@@ -3023,7 +3069,7 @@ impl Renderer {
             &self.small_right.clone(),
             self.palette.muted,
         )?;
-        self.hits.push(HitRegion { rect: area, action });
+        self.push_clipped_hit(area, viewport, action);
         Ok(())
     }
 
@@ -3654,7 +3700,7 @@ impl Renderer {
             self.palette.secondary,
         )?;
         let Some(clip) = model.active_clip() else {
-            self.empty_state("Clip nicht verfügbar", left, right, 240.0)?;
+            self.empty_state(self.strings.clip_unavailable, left, right, 240.0)?;
             return Ok(());
         };
         let enabled = model.editor_timing.is_some() && !model.editor_working;
@@ -4409,7 +4455,7 @@ impl Renderer {
         self.stroke(bar, self.palette.border, RADIUS, 1.0)?;
         let selected = model.selected_clips.len();
         self.text(
-            &format!("{selected} ausgewählt"),
+            &self.strings.selected_count(selected),
             rect(bar.left + 16.0, bar.top, bar.left + 200.0, bar.bottom),
             &self.body.clone(),
             self.palette.secondary,
@@ -4960,9 +5006,7 @@ impl Renderer {
                     .map_or(self.strings.this_clip, |clip| clip.title.as_str());
                 (
                     self.strings.delete_clip_question,
-                    format!(
-                        "{name} wird dauerhaft entfernt. Das kann nicht rückgängig gemacht werden."
-                    ),
+                    self.strings.delete_clip_body(name),
                     self.strings.delete_clip,
                 )
             }
@@ -4973,9 +5017,7 @@ impl Renderer {
                     .unwrap_or(self.strings.this_collection);
                 (
                     self.strings.delete_collection_question,
-                    format!(
-                        "{name} wird entfernt; enthaltene Clips kommen zurück in die Bibliothek."
-                    ),
+                    self.strings.delete_collection_body(name),
                     self.strings.delete,
                 )
             }
@@ -5883,6 +5925,32 @@ fn content_bottom(height: f32, chrome: bool) -> f32 {
     }
 }
 
+/// Height the folder rows need beyond the column, for the wheel handler.
+fn folder_column_overflow_in(rows: LogicalRect, collections: usize) -> f32 {
+    let content = (collections + 1) as f32 * (FOLDER_ROW_HEIGHT + 2.0);
+    (content - (rows.bottom - rows.top)).max(0.0)
+}
+
+pub fn folder_column_overflow(model: &UiModel, width: f32, height: f32) -> f32 {
+    if model.page != Page::Collections {
+        return 0.0;
+    }
+    let left = sidebar_width(model.sidebar_collapsed) + CONTENT_PADDING;
+    let rows = rect(
+        left,
+        content_top() + 100.0 + 26.0,
+        (left + FOLDER_COLUMN_WIDTH).min(width),
+        content_bottom(height, true),
+    );
+    folder_column_overflow_in(rows, model.collections.len())
+}
+
+/// True while the pointer sits over the collections folder column.
+pub fn folder_column_contains(model: &UiModel, x: f32) -> bool {
+    model.page == Page::Collections
+        && x < sidebar_width(model.sidebar_collapsed) + CONTENT_PADDING + FOLDER_COLUMN_WIDTH
+}
+
 pub fn clips_overflow(model: &UiModel, width: f32, height: f32) -> f32 {
     let collections = match model.page {
         Page::Library => false,
@@ -6121,11 +6189,11 @@ fn hotkey_capture_label(modifiers: &[String], text: &Strings) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CLIP_GROUP_GAP, CLIP_SCROLL_RESERVE, CLIP_SECTION_HEADER, CONTENT_PADDING, Page, Palette,
-        SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH, TOOLBAR_HEIGHT, TOOLBAR_TOP, Theme, clip_columns,
-        content_bottom, content_top, format_bytes, format_storage_limit, hover_blend_amount,
-        library_layout, page_has_chrome, palette_for, rect, section_widths, settings_gain_percent,
-        sidebar_width,
+        CLIP_GROUP_GAP, CLIP_SCROLL_RESERVE, CLIP_SECTION_HEADER, CONTENT_PADDING,
+        FOLDER_ROW_HEIGHT, Page, Palette, SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH, TOOLBAR_HEIGHT,
+        TOOLBAR_TOP, Theme, clip_columns, content_bottom, content_top, folder_column_overflow_in,
+        format_bytes, format_storage_limit, hover_blend_amount, library_layout, page_has_chrome,
+        palette_for, rect, section_widths, settings_gain_percent, sidebar_width,
     };
 
     fn luminance(color: u32) -> f32 {
@@ -6251,6 +6319,16 @@ mod tests {
             layout.height,
             CLIP_SECTION_HEADER + 3.0 * layout.card_height
         );
+    }
+
+    #[test]
+    fn the_folder_column_scrolls_once_its_rows_pass_the_bottom() {
+        let rows = rect(0.0, 0.0, 200.0, 200.0);
+
+        assert_eq!(folder_column_overflow_in(rows, 2), 0.0);
+        let overflow = folder_column_overflow_in(rows, 20);
+        assert!(overflow > 0.0);
+        assert_eq!(overflow, 21.0 * (FOLDER_ROW_HEIGHT + 2.0) - 200.0);
     }
 
     #[test]

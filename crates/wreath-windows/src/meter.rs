@@ -73,7 +73,7 @@ impl MicrophoneProbe {
     pub fn open(endpoint_id: Option<&str>) -> Result<Self, crate::audio::AudioError> {
         Ok(Self {
             endpoint_id: endpoint_id.map(str::to_owned),
-            capture: crate::audio::MicrophoneCapture::spawn(endpoint_id)?,
+            capture: crate::audio::MicrophoneCapture::spawn_for_probe(endpoint_id)?,
         })
     }
 
@@ -83,7 +83,7 @@ impl MicrophoneProbe {
     pub fn open_with_fallback(
         endpoint_id: Option<&str>,
     ) -> Result<(Self, bool), crate::audio::AudioError> {
-        match crate::audio::MicrophoneCapture::spawn(endpoint_id) {
+        match crate::audio::MicrophoneCapture::spawn_for_probe(endpoint_id) {
             Ok(capture) => Ok((
                 Self {
                     endpoint_id: endpoint_id.map(str::to_owned),
@@ -95,7 +95,7 @@ impl MicrophoneProbe {
                 if endpoint_id.is_none() {
                     return Err(error);
                 }
-                let capture = crate::audio::MicrophoneCapture::spawn(None)?;
+                let capture = crate::audio::MicrophoneCapture::spawn_for_probe(None)?;
                 Ok((
                     Self {
                         endpoint_id: endpoint_id.map(str::to_owned),
