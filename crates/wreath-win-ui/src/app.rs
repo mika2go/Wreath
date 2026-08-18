@@ -631,8 +631,11 @@ unsafe extern "system" fn window_proc(
                     .model
                     .scroll_library_by(-notches * LIBRARY_WHEEL_STEP, overflow)
                 {
-                    refresh_hover_after_scroll(window, state);
                     redraw(window);
+                    let _ = unsafe { UpdateWindow(window) };
+                    if refresh_hover_after_scroll(window, state) {
+                        redraw(window);
+                    }
                 }
             }
             LRESULT(0)
@@ -1122,7 +1125,10 @@ fn handle_action(window: HWND, state: &mut AppState, action: Action) {
                 state.model.notice = Some("Clip is no longer available".into());
             }
         }
-        Action::ToggleSelectionMode => state.model.toggle_selection_mode(),
+        Action::ToggleSelectionMode => {
+            state.model.context_menu = None;
+            state.model.toggle_selection_mode();
+        }
         Action::ToggleClipSelection(index) => {
             state.model.toggle_clip_selection(index);
         }
@@ -1653,16 +1659,17 @@ fn poll_microphone_level(state: &mut AppState, now: Instant) -> bool {
     true
 }
 
-fn refresh_hover_after_scroll(window: HWND, state: &mut AppState) {
+fn refresh_hover_after_scroll(window: HWND, state: &mut AppState) -> bool {
     let mut point = POINT::default();
-    if unsafe { GetCursorPos(&mut point) }.is_ok()
-        && unsafe { ScreenToClient(window, &mut point) }.as_bool()
+    if unsafe { GetCursorPos(&mut point) }.is_err()
+        || !unsafe { ScreenToClient(window, &mut point) }.as_bool()
     {
-        let scale = state.dpi as f32 / 96.0;
-        state
-            .renderer
-            .update_hover(point.x as f32 / scale, point.y as f32 / scale);
+        return false;
     }
+    let scale = state.dpi as f32 / 96.0;
+    state
+        .renderer
+        .update_hover(point.x as f32 / scale, point.y as f32 / scale)
 }
 
 fn poll_hotkey_updates(state: &mut AppState) -> bool {
@@ -3069,6 +3076,7 @@ fn load_displays(model: &mut UiModel) -> Result<(), String> {
                     "{} · {}×{} · {:.0} Hz{}",
                     friendly_name, display.width, display.height, display.refresh_rate, primary
                 ),
+                short_label: short_display_label(friendly_name),
                 name: display.name,
                 refresh_rate: display.refresh_rate,
                 width: display.width,
@@ -3077,6 +3085,16 @@ fn load_displays(model: &mut UiModel) -> Result<(), String> {
         })
         .collect();
     Ok(())
+}
+
+fn short_display_label(friendly_name: &str) -> String {
+    let digits = friendly_name
+        .trim_start_matches(|character: char| !character.is_ascii_digit())
+        .trim_end_matches(|character: char| !character.is_ascii_digit());
+    if digits.is_empty() {
+        return friendly_name.to_owned();
+    }
+    format!("Display {digits}")
 }
 
 fn refresh_displays(model: &mut UiModel) {

@@ -582,6 +582,7 @@ impl Prompt {
 pub struct DisplayOption {
     pub name: String,
     pub label: String,
+    pub short_label: String,
     pub refresh_rate: f64,
     pub width: u32,
     pub height: u32,
@@ -1604,6 +1605,7 @@ mod tests {
         model.displays.push(DisplayOption {
             name: "DISPLAY1".into(),
             label: "DISPLAY1 · 2560×1440 · 144 Hz".into(),
+            short_label: "Display 1".into(),
             refresh_rate: 144.0,
             width: 2560,
             height: 1440,
@@ -1620,6 +1622,7 @@ mod tests {
         model.displays.push(DisplayOption {
             name: "DISPLAY1".into(),
             label: "DISPLAY1 · 2560×1440 · 60 Hz".into(),
+            short_label: "Display 1".into(),
             refresh_rate: 60.0,
             width: 2560,
             height: 1440,
@@ -1687,6 +1690,7 @@ mod tests {
         model.displays.push(DisplayOption {
             name: "DISPLAY1".into(),
             label: "DISPLAY1 · 1920×1080 · 30 Hz".into(),
+            short_label: "Display 1".into(),
             refresh_rate: 30.0,
             width: 1920,
             height: 1080,

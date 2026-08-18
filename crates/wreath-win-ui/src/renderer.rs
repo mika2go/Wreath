@@ -76,6 +76,7 @@ const CLIP_LIST_ROW_HEIGHT: f32 = 62.0;
 const CLIP_GROUP_GAP: f32 = 28.0;
 const CLIP_SCROLL_RESERVE: f32 = 14.0;
 const FILTER_ROW_PITCH: f32 = 62.0;
+const METER_WIDTH: f32 = 112.0;
 const LEGACY_PAGE_TOP: f32 = 56.0;
 const NAVIGATION_TOP: f32 = 86.0;
 const NAVIGATION_HEIGHT: f32 = 40.0;
@@ -1046,12 +1047,15 @@ impl Renderer {
         let gear_width = 40.0;
         let action_block = action_width + 14.0 + gear_width + 20.0;
         let status_width = 244.0;
-        let display = model
-            .selected_display()
-            .map_or_else(|| "Automatisch".to_owned(), |display| display.label.clone());
+        let display = model.selected_display().map_or_else(
+            || "Automatisch".to_owned(),
+            |display| display.short_label.clone(),
+        );
         let quality = format!(
-            "{} · {} FPS",
-            quality_label(model.config.capture.quality),
+            "{}p · {} FPS",
+            model
+                .selected_display()
+                .map_or(1_080, |display| display.height),
             model.config.capture.frames_per_second
         );
         let audio = match (model.config.audio.desktop, model.config.audio.microphone) {
@@ -1388,7 +1392,7 @@ impl Renderer {
                         rect(
                             area.left + 26.0,
                             area.top + 44.0,
-                            area.right - 24.0,
+                            (area.left + 26.0 + METER_WIDTH).min(area.right - 12.0),
                             area.top + 60.0,
                         ),
                         model.config.audio.microphone,
@@ -1563,10 +1567,13 @@ impl Renderer {
             )?;
             clips_left = left + FILTER_PANEL_WIDTH + FILTER_PANEL_GAP;
         }
-        let area = rect(clips_left, body_top, right, bottom);
-        if model.selection_mode && !model.selected_clips.is_empty() {
-            self.selection_toolbar(model, area.left, area.right, bottom - 54.0)?;
-        }
+        let selecting = model.selection_mode && !model.selected_clips.is_empty();
+        let area = rect(
+            clips_left,
+            body_top,
+            right,
+            if selecting { bottom - 60.0 } else { bottom },
+        );
 
         let indices = model.visible_clip_indices_at(usize::MAX, today);
         if indices.is_empty() {
@@ -1619,6 +1626,9 @@ impl Renderer {
                 BORDER,
                 1.5,
             )?;
+        }
+        if selecting {
+            self.selection_toolbar(model, area.left, area.right, bottom - 44.0)?;
         }
         if model.collection_picker_open {
             self.render_collection_picker(model, right, top + 44.0)?;
@@ -2406,7 +2416,7 @@ impl Renderer {
             .map_or("Clips in „Alle Clips“", |collection| {
                 collection.name.as_str()
             });
-        let table_top = (card_top + 205.0).min(height - 150.0);
+        let table_top = (card_top + 185.0).min(height - 130.0);
         self.text(
             title,
             rect(left, table_top - 34.0, content_right, table_top),
@@ -3670,7 +3680,7 @@ impl Renderer {
         )?;
         self.fill(rect(left, top + 47.0, right, top + 48.0), BORDER, 0.0)?;
         let indices = model.visible_clip_indices(usize::MAX);
-        let available_rows = (((bottom - top - 94.0) / 71.0).floor() as usize).max(1);
+        let available_rows = (((bottom - top - 62.0) / 71.0).floor() as usize).max(1);
         let total_pages = indices.len().div_ceil(available_rows).max(1);
         let page = model
             .collection_clips_page
@@ -4339,7 +4349,7 @@ impl Renderer {
         )?;
         self.fill(menu, SURFACE_RAISED, RADIUS_LARGE)?;
         self.stroke(menu, BORDER, RADIUS_LARGE, 1.0)?;
-        self.stroke(anchor, ACCENT, RADIUS, 1.0)?;
+        self.stroke(anchor, mix(BORDER, SECONDARY, 0.7), RADIUS, 1.0)?;
 
         let cell_width = (menu_width - 12.0) / columns as f32;
         for (index, item) in menu_state.items.iter().enumerate() {
@@ -5516,16 +5526,24 @@ pub fn library_overflow(model: &UiModel, width: f32, height: f32) -> f32 {
         };
     let area_width = width - CONTENT_PADDING - left - CLIP_SCROLL_RESERVE;
     let layout = library_layout(&counts, area_width, model.library_grid);
-    let viewport = content_bottom(height, true) - (content_top() + 105.0);
+    let selecting = model.selection_mode && !model.selected_clips.is_empty();
+    let mut bottom = content_bottom(height, true);
+    if selecting {
+        bottom -= 60.0;
+    }
+    let viewport = bottom - (content_top() + 105.0);
     (layout.height - viewport.max(0.0)).max(0.0)
 }
 
 fn section_widths(available: f32, preferred: &[f32], minimum: f32) -> Vec<f32> {
+    const MAX_GROWTH: f32 = 1.45;
+
     let mut widths = preferred.to_vec();
     loop {
         let total = widths.iter().sum::<f32>();
         if total <= available {
-            return widths;
+            let growth = (available / total.max(1.0)).min(MAX_GROWTH);
+            return widths.iter().map(|width| width * growth).collect();
         }
         let scale = available / total;
         if widths.iter().all(|width| width * scale >= minimum) {
@@ -5793,10 +5811,16 @@ mod tests {
     }
 
     #[test]
-    fn toolbar_sections_shrink_before_the_last_one_is_dropped() {
+    fn toolbar_sections_fill_the_bar_and_shrink_before_one_is_dropped() {
         let preferred = [150.0, 168.0, 168.0, 180.0];
 
-        assert_eq!(section_widths(700.0, &preferred, 118.0), preferred.to_vec());
+        let spread = section_widths(900.0, &preferred, 118.0);
+        assert_eq!(spread.len(), 4);
+        assert!((spread.iter().sum::<f32>() - 900.0).abs() < 0.01);
+        assert!(spread[0] > preferred[0]);
+
+        let capped = section_widths(4_000.0, &preferred, 118.0);
+        assert!((capped.iter().sum::<f32>() - 666.0 * 1.45).abs() < 0.01);
 
         let scaled = section_widths(600.0, &preferred, 118.0);
         assert_eq!(scaled.len(), 4);
