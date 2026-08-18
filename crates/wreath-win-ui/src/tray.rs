@@ -145,7 +145,7 @@ unsafe extern "system" fn window_proc(
             let state = unsafe { (*create).lpCreateParams } as isize;
             unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, state) };
             if let Some(state) = state_mut(window) {
-                state.icon = tray_icon(window, "Wreath is starting");
+                state.icon = tray_icon(window, strings().tray_starting_up);
                 state.icon_added = unsafe { Shell_NotifyIconW(NIM_ADD, &state.icon) }.as_bool();
             }
         }
@@ -212,8 +212,8 @@ fn handle_command(window: HWND, command: usize) {
             Ok(Response::Error { message }) | Err(message) => notify_error(window, &message),
             Ok(_) => {}
         },
-        COMMAND_PAUSE => handle_simple(window, Request::Pause, "Capture paused"),
-        COMMAND_RESUME => handle_simple(window, Request::Resume, "Capture resumed"),
+        COMMAND_PAUSE => handle_simple(window, Request::Pause),
+        COMMAND_RESUME => handle_simple(window, Request::Resume),
         COMMAND_OPEN_CLIPS => {
             if let Some(state) = state_mut(window) {
                 open_path(&state.clips_directory);
@@ -231,7 +231,7 @@ fn handle_command(window: HWND, command: usize) {
                 Err(error) => notify_error(window, &error),
             }
         }
-        COMMAND_RELOAD_CONFIG => handle_simple(window, Request::Reload, "Settings reloaded"),
+        COMMAND_RELOAD_CONFIG => handle_simple(window, Request::Reload),
         COMMAND_EXIT => {
             let _ = send(Request::Shutdown);
             let _ = unsafe { DestroyWindow(window) };
@@ -241,7 +241,7 @@ fn handle_command(window: HWND, command: usize) {
     refresh_status(window);
 }
 
-fn handle_simple(window: HWND, request: Request, _confirmation: &str) {
+fn handle_simple(window: HWND, request: Request) {
     match send(request) {
         Ok(Response::Ok) => {}
         Ok(Response::Error { message }) | Err(message) => notify_error(window, &message),
@@ -258,7 +258,17 @@ fn ensure_icon(window: HWND) {
     }
 }
 
+/// The tray reads the interface language from the configuration whenever it
+/// builds a menu or a tooltip; it has no window of its own to cache it in.
+fn strings() -> &'static crate::text::Strings {
+    let language = wreath_core::config::Config::load(&wreath_core::paths::AppPaths::discover())
+        .map(|config| config.appearance.language)
+        .unwrap_or_default();
+    crate::text::strings(crate::text::resolve(language))
+}
+
 fn refresh_status(window: HWND) {
+    let text = strings();
     let tooltip = match send(Request::Status) {
         Ok(Response::Status {
             state,
@@ -273,22 +283,22 @@ fn refresh_status(window: HWND) {
                 let detail = error.unwrap_or_else(|| "capture pipeline stopped".into());
                 if recovery_due(window) {
                     match send(Request::Reload) {
-                        Ok(Response::Ok) => "Wreath — recovering capture".into(),
+                        Ok(Response::Ok) => text.tray_recovering.to_owned(),
                         Ok(Response::Error { message }) | Err(message) => {
-                            format!("Wreath error: {detail}; retry failed: {message}")
+                            format!("{}: {detail} · {message}", text.tray_error_title)
                         }
-                        Ok(_) => format!("Wreath error: {detail}"),
+                        Ok(_) => format!("{}: {detail}", text.tray_error_title),
                     }
                 } else {
-                    format!("Wreath error: {detail}")
+                    format!("{}: {detail}", text.tray_error_title)
                 }
             } else {
                 reset_recovery(window);
                 let state = match state {
-                    DaemonState::Starting => "Starting",
-                    DaemonState::Recording => "Recording",
-                    DaemonState::Paused => "Paused",
-                    DaemonState::Error => "Error",
+                    DaemonState::Starting => text.tray_state_starting,
+                    DaemonState::Recording => text.tray_state_recording,
+                    DaemonState::Paused => text.tray_state_paused,
+                    DaemonState::Error => text.tray_state_error,
                 };
                 let codec = codec.as_deref().unwrap_or("no codec");
                 let adapter = adapter
@@ -296,7 +306,7 @@ fn refresh_status(window: HWND) {
                     .map(|adapter| adapter.name.as_str())
                     .unwrap_or("no adapter");
                 format!(
-                    "Wreath — {state} — {codec} — {adapter} — {}s — {}",
+                    "wreath — {state} — {codec} — {adapter} — {}s — {}",
                     buffered_seconds,
                     monitor.as_deref().unwrap_or("no display")
                 )
@@ -308,7 +318,7 @@ fn refresh_status(window: HWND) {
             {
                 wreath_core::diagnostic!("Wreath tray: cannot start the recorder: {error}");
             }
-            "Wreath — daemon unavailable".into()
+            text.tray_unavailable.to_owned()
         }
     };
     if let Some(state) = state_mut(window) {
@@ -334,7 +344,7 @@ fn reset_recovery(window: HWND) {
 
 fn notify_error(window: HWND, detail: &str) {
     if let Some(state) = state_mut(window) {
-        copy_wide(&mut state.icon.szInfoTitle, "Wreath error");
+        copy_wide(&mut state.icon.szInfoTitle, strings().tray_error_title);
         copy_wide(&mut state.icon.szInfo, detail);
         state.icon.uFlags = NIF_INFO;
         state.icon.dwInfoFlags = NIIF_ERROR;
@@ -360,26 +370,27 @@ fn show_menu(window: HWND) {
     let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
         return;
     };
-    append_item(menu, COMMAND_OPEN_APP, "Open Wreath");
-    append_item(menu, COMMAND_SAVE, "Save replay");
+    let text = strings();
+    append_item(menu, COMMAND_OPEN_APP, text.tray_open_app);
+    append_item(menu, COMMAND_SAVE, text.tray_save_replay);
     append_separator(menu);
-    append_item(menu, COMMAND_PAUSE, "Pause capture");
-    append_item(menu, COMMAND_RESUME, "Resume capture");
+    append_item(menu, COMMAND_PAUSE, text.tray_pause);
+    append_item(menu, COMMAND_RESUME, text.tray_resume);
     append_separator(menu);
-    append_item(menu, COMMAND_OPEN_CLIPS, "Open clips");
-    append_item(menu, COMMAND_OPEN_CONFIG, "Open settings file");
-    append_item(menu, COMMAND_RELOAD_CONFIG, "Reload settings");
+    append_item(menu, COMMAND_OPEN_CLIPS, text.tray_open_clips);
+    append_item(menu, COMMAND_OPEN_CONFIG, text.tray_open_config);
+    append_item(menu, COMMAND_RELOAD_CONFIG, text.tray_reload_config);
     append_item(
         menu,
         COMMAND_TOGGLE_AUTOSTART,
         if crate::autostart::is_enabled() {
-            "Disable start with Windows"
+            text.tray_autostart_disable
         } else {
-            "Start with Windows"
+            text.tray_autostart_enable
         },
     );
     append_separator(menu);
-    append_item(menu, COMMAND_EXIT, "Exit Wreath");
+    append_item(menu, COMMAND_EXIT, text.tray_exit);
     let mut point = POINT::default();
     if unsafe { GetCursorPos(&mut point) }.is_ok() {
         unsafe {
