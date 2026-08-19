@@ -3309,7 +3309,7 @@ fn load_displays(model: &mut UiModel) -> Result<(), String> {
 /// The window frame follows the chosen palette, so a light theme does not sit
 /// under a black title bar.
 fn apply_titlebar_theme(window: HWND, theme: Theme) {
-    let dark: i32 = i32::from(theme != Theme::Light);
+    let dark: i32 = i32::from(!theme.is_light());
     let _ = unsafe {
         DwmSetWindowAttribute(
             window,

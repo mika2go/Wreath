@@ -51,10 +51,17 @@ pub enum Theme {
     Dark,
     Light,
     Cafe,
+    Pink,
+    Candy,
 }
 
 impl Theme {
-    pub const OPTIONS: [Self; 3] = [Self::Dark, Self::Light, Self::Cafe];
+    pub const OPTIONS: [Self; 5] = [Self::Dark, Self::Light, Self::Cafe, Self::Pink, Self::Candy];
+
+    /// Themes that paint on a bright canvas, so the window frame follows them.
+    pub const fn is_light(self) -> bool {
+        matches!(self, Self::Light | Self::Candy)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

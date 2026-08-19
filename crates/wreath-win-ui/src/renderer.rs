@@ -136,11 +136,55 @@ const CAFE_PALETTE: Palette = Palette {
     live: 0x7f9b6f,
 };
 
+const PINK_PALETTE: Palette = Palette {
+    canvas: 0x120b0f,
+    rail: 0x160d12,
+    stage: 0x150d11,
+    surface: 0x1d1218,
+    surface_raised: 0x23161d,
+    surface_hover: 0x2b1b24,
+    border: 0x402834,
+    hairline: 0x2e1d27,
+    card: 0x180f14,
+    primary: 0xf9edf3,
+    secondary: 0xc4a6b6,
+    muted: 0x947886,
+    accent: 0xf25a9d,
+    accent_hover: 0xff7ab4,
+    accent_text: 0x180a11,
+    selection: 0x533242,
+    destructive: 0xe6ccd8,
+    live: 0xf25a9d,
+};
+
+const CANDY_PALETTE: Palette = Palette {
+    canvas: 0xfff0f6,
+    rail: 0xffe3ef,
+    stage: 0xffdfec,
+    surface: 0xffffff,
+    surface_raised: 0xffffff,
+    surface_hover: 0xffdcea,
+    border: 0xf7b9d4,
+    hairline: 0xffd3e5,
+    card: 0xffffff,
+    primary: 0x40122a,
+    secondary: 0x8a3f63,
+    muted: 0xa86a88,
+    accent: 0xb3105e,
+    accent_hover: 0xcc1f70,
+    accent_text: 0xffffff,
+    selection: 0xffc6de,
+    destructive: 0x7a2c52,
+    live: 0xff4f9f,
+};
+
 pub const fn palette_for(theme: Theme) -> Palette {
     match theme {
         Theme::Dark => DARK_PALETTE,
         Theme::Light => LIGHT_PALETTE,
         Theme::Cafe => CAFE_PALETTE,
+        Theme::Pink => PINK_PALETTE,
+        Theme::Candy => CANDY_PALETTE,
     }
 }
 
@@ -6225,7 +6269,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_cafe_theme_spends_an_accent_on_live_indicators() {
+    fn only_the_tinted_themes_spend_an_accent_on_live_indicators() {
         assert_eq!(
             palette_for(Theme::Dark).live,
             palette_for(Theme::Dark).primary
@@ -6238,6 +6282,25 @@ mod tests {
             palette_for(Theme::Cafe).live,
             palette_for(Theme::Cafe).primary
         );
+        assert_ne!(
+            palette_for(Theme::Pink).live,
+            palette_for(Theme::Pink).primary
+        );
+        assert_ne!(
+            palette_for(Theme::Candy).live,
+            palette_for(Theme::Candy).primary
+        );
+    }
+
+    #[test]
+    fn the_light_themes_are_the_ones_that_carry_a_light_window_frame() {
+        for theme in Theme::OPTIONS {
+            assert_eq!(
+                theme.is_light(),
+                luminance(palette_for(theme).canvas) > 0.5,
+                "{theme:?} disagrees with its window frame"
+            );
+        }
     }
 
     #[test]
