@@ -696,15 +696,6 @@ impl VideoStage {
         })
     }
 
-    fn rebuild(
-        self,
-        context: &StageContext<'_>,
-        target: DesiredTarget,
-    ) -> Result<Self, crate::video::VideoError> {
-        drop(self);
-        Self::start(context, target)
-    }
-
     fn restart_capture(
         &mut self,
         context: &StageContext<'_>,
@@ -755,29 +746,33 @@ fn resolve_target(
             crate::display::monitor_details(monitor)
     {
         let label = crate::game::display_name(&game.title, &game.executable);
-        return Ok(
-            match crate::game::window_usability(&game.facts, game.confidence) {
-                WindowUsability::Capturable => DesiredTarget {
-                    identity: TargetIdentity::Window(game.window.0 as isize),
-                    probe_size: (game.facts.width, game.facts.height),
-                    source: CaptureSource::Window {
-                        handle: game.window,
-                        title: label.clone(),
-                        monitor: monitor_name,
-                    },
-                    game: Some(label),
+        let usability = match crate::game::window_usability(&game.facts, game.confidence) {
+            WindowUsability::Capturable if !watch.window_capture_allowed(game.window) => {
+                WindowUsability::TooSmall
+            }
+            usability => usability,
+        };
+        return Ok(match usability {
+            WindowUsability::Capturable => DesiredTarget {
+                identity: TargetIdentity::Window(game.window.0 as isize),
+                probe_size: (game.facts.width, game.facts.height),
+                source: CaptureSource::Window {
+                    handle: game.window,
+                    title: label.clone(),
+                    monitor: monitor_name,
                 },
-                WindowUsability::CoversMonitor | WindowUsability::TooSmall => DesiredTarget {
-                    identity: TargetIdentity::Monitor(monitor_name.clone()),
-                    probe_size: (monitor_width, monitor_height),
-                    source: CaptureSource::Monitor {
-                        handle: monitor,
-                        name: monitor_name,
-                    },
-                    game: Some(label),
-                },
+                game: Some(label),
             },
-        );
+            WindowUsability::CoversMonitor | WindowUsability::TooSmall => DesiredTarget {
+                identity: TargetIdentity::Monitor(monitor_name.clone()),
+                probe_size: (monitor_width, monitor_height),
+                source: CaptureSource::Monitor {
+                    handle: monitor,
+                    name: monitor_name,
+                },
+                game: Some(label),
+            },
+        });
     }
     let display = crate::display::select_display(config.capture.monitor.as_deref())?;
     Ok(DesiredTarget {
@@ -810,24 +805,56 @@ fn new_replay_buffer(
 }
 
 #[cfg(target_os = "windows")]
+fn start_stage(
+    context: &StageContext<'_>,
+    target: DesiredTarget,
+    watch: &mut crate::game::GameWatch,
+) -> Result<VideoStage, crate::video::VideoError> {
+    let window = match target.source {
+        crate::capture::CaptureSource::Window { handle, .. } => Some(handle),
+        crate::capture::CaptureSource::Monitor { .. } => None,
+    };
+    let error = match VideoStage::start(context, target) {
+        Ok(stage) => return Ok(stage),
+        Err(error) => error,
+    };
+    let Some(window) = window else {
+        return Err(error);
+    };
+    wreath_core::diagnostic!(
+        "Wreath capture: the game window cannot be captured on its own, recording its monitor instead: {error}"
+    );
+    watch.deny_window_capture(window);
+    let fallback = resolve_target(context.config, watch)?;
+    VideoStage::start(context, fallback)
+}
+
+#[cfg(target_os = "windows")]
+struct RingState<'a> {
+    audio: &'a mut Option<PipelineAudio>,
+    buffer: &'a mut wreath_core::replay_buffer::EncodedReplayBuffer,
+    health: &'a mut CaptureHealth,
+}
+
+#[cfg(target_os = "windows")]
 fn rebuild_stage(
     context: &StageContext<'_>,
     stage: VideoStage,
     target: DesiredTarget,
-    audio: &mut Option<PipelineAudio>,
-    buffer: &mut wreath_core::replay_buffer::EncodedReplayBuffer,
+    watch: &mut crate::game::GameWatch,
+    ring: RingState<'_>,
     status: &std::sync::Arc<std::sync::RwLock<PipelineStatus>>,
-    health: &mut CaptureHealth,
 ) -> Result<VideoStage, crate::video::VideoError> {
-    let stage = stage.rebuild(context, target)?;
-    *buffer = new_replay_buffer(context.config, stage.bitrate_kbps, audio.as_ref())?;
-    if let Some(audio) = audio.as_mut() {
+    drop(stage);
+    let stage = start_stage(context, target, watch)?;
+    *ring.buffer = new_replay_buffer(context.config, stage.bitrate_kbps, ring.audio.as_ref())?;
+    if let Some(audio) = ring.audio.as_mut() {
         audio.discard_queued();
         audio
             .start_new_epoch()
             .map_err(|error| crate::video::VideoError::Initialization(error.to_string()))?;
     }
-    *health = CaptureHealth::started(std::time::Instant::now());
+    *ring.health = CaptureHealth::started(std::time::Instant::now());
     update_status(status, |pipeline| {
         pipeline.monitor = Some(stage.info.monitor.clone());
         pipeline.source = Some(stage.describe());
@@ -857,13 +884,14 @@ fn run_pipeline(
         let runtime = VideoRuntime::initialize()?;
         let codec = runtime.select_encoder(config.capture.codec)?;
         let target = resolve_target(&config, &mut watch)?;
-        let stage = VideoStage::start(
+        let stage = start_stage(
             &StageContext {
                 runtime: &runtime,
                 config: &config,
                 codec,
             },
             target,
+            &mut watch,
         )?;
         let audio = PipelineAudio::initialize(&config.audio)
             .map_err(|error| VideoError::Initialization(error.to_string()))?;
@@ -940,10 +968,13 @@ fn run_pipeline(
                             &context,
                             stage,
                             target,
-                            &mut audio,
-                            &mut buffer,
+                            &mut watch,
+                            RingState {
+                                audio: &mut audio,
+                                buffer: &mut buffer,
+                                health: &mut health,
+                            },
                             status,
-                            &mut health,
                         )?;
                         continue;
                     }
@@ -966,10 +997,13 @@ fn run_pipeline(
                             &context,
                             stage,
                             target,
-                            &mut audio,
-                            &mut buffer,
+                            &mut watch,
+                            RingState {
+                                audio: &mut audio,
+                                buffer: &mut buffer,
+                                health: &mut health,
+                            },
                             status,
-                            &mut health,
                         )?;
                     }
                     continue;

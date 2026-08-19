@@ -278,6 +278,7 @@ pub struct GameWatch {
     windows_game_paths: Vec<String>,
     tracked: Option<(windows::Win32::Foundation::HWND, u32, String)>,
     rejected: Option<(windows::Win32::Foundation::HWND, std::time::Instant)>,
+    uncapturable: Option<windows::Win32::Foundation::HWND>,
 }
 
 #[cfg(target_os = "windows")]
@@ -288,6 +289,7 @@ impl GameWatch {
             windows_game_paths: windows_game_paths(),
             tracked: None,
             rejected: None,
+            uncapturable: None,
         }
     }
 
@@ -317,6 +319,14 @@ impl GameWatch {
             game.facts.height
         );
         Some(game)
+    }
+
+    pub fn deny_window_capture(&mut self, window: windows::Win32::Foundation::HWND) {
+        self.uncapturable = Some(window);
+    }
+
+    pub fn window_capture_allowed(&self, window: windows::Win32::Foundation::HWND) -> bool {
+        self.uncapturable != Some(window)
     }
 
     fn tracked_game(&self) -> Option<GameWindow> {
