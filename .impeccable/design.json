@@ -1,0 +1,196 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-13T11:35:59+02:00",
+  "title": "Design System: Wreath — The Quiet Replay Deck",
+  "extensions": {
+    "colorMeta": {
+      "canvas-black": {
+        "role": "neutral",
+        "displayName": "Canvas Black",
+        "canonical": "#0b0b0c",
+        "tonalRamp": ["#0b0b0c", "#151517", "#222225", "#38383c", "#55555a", "#7c7c82", "#b4b4b8", "#f2f2f3"]
+      },
+      "video-stage": {
+        "role": "neutral",
+        "displayName": "Video Stage",
+        "canonical": "#101011",
+        "tonalRamp": ["#0b0b0c", "#101011", "#1a1a1c", "#2d2d30", "#4b4b50", "#727279", "#ababaf", "#eeeeef"]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Surface",
+        "canonical": "#121214",
+        "tonalRamp": ["#0c0c0d", "#121214", "#1d1d20", "#303034", "#4e4e54", "#76767d", "#adadb2", "#efeff0"]
+      },
+      "surface-raised": {
+        "role": "neutral",
+        "displayName": "Raised Surface",
+        "canonical": "#18181a",
+        "tonalRamp": ["#0d0d0e", "#18181a", "#252528", "#39393e", "#56565c", "#7d7d84", "#b5b5b9", "#f1f1f2"]
+      },
+      "surface-hover": {
+        "role": "neutral",
+        "displayName": "Hover Surface",
+        "canonical": "#222225",
+        "tonalRamp": ["#0f0f10", "#1a1a1c", "#222225", "#38383c", "#55555b", "#7d7d84", "#b6b6ba", "#f2f2f3"]
+      },
+      "contour": {
+        "role": "neutral",
+        "displayName": "Quiet Contour",
+        "canonical": "#2d2d30",
+        "tonalRamp": ["#101011", "#1d1d20", "#2d2d30", "#424247", "#606066", "#85858b", "#bcbcc0", "#f3f3f4"]
+      },
+      "text-primary": {
+        "role": "primary",
+        "displayName": "Primary Text",
+        "canonical": "#f2f2f3",
+        "tonalRamp": ["#222225", "#424247", "#67676d", "#89898f", "#ababaf", "#c9c9cc", "#e1e1e3", "#f2f2f3"]
+      },
+      "text-secondary": {
+        "role": "neutral",
+        "displayName": "Secondary Text",
+        "canonical": "#b4b4b8",
+        "tonalRamp": ["#1a1a1c", "#343438", "#515156", "#707076", "#8d8d93", "#b4b4b8", "#d3d3d5", "#f1f1f2"]
+      },
+      "action-light": {
+        "role": "primary",
+        "displayName": "Action Light",
+        "canonical": "#edeef2",
+        "tonalRamp": ["#202126", "#404148", "#62636b", "#85868e", "#a9aab1", "#c9cad0", "#dfe0e5", "#edeef2"]
+      },
+      "action-light-hover": {
+        "role": "primary",
+        "displayName": "Action Light Hover",
+        "canonical": "#ffffff",
+        "tonalRamp": ["#262626", "#484848", "#6b6b6b", "#8f8f8f", "#b1b1b1", "#d0d0d0", "#e8e8e8", "#ffffff"]
+      },
+      "selection": {
+        "role": "neutral",
+        "displayName": "Selection Slate",
+        "canonical": "#424854",
+        "tonalRamp": ["#15171b", "#22262c", "#343943", "#424854", "#606876", "#858d99", "#b6bbc2", "#eef0f2"]
+      },
+      "ready": {
+        "role": "tertiary",
+        "displayName": "Recorder Ready",
+        "canonical": "#35d07f",
+        "tonalRamp": ["#08271a", "#0e432b", "#17613f", "#208153", "#29a266", "#35d07f", "#8be6b6", "#e7faef"]
+      },
+      "warning": {
+        "role": "tertiary",
+        "displayName": "Attention Amber",
+        "canonical": "#f0b849",
+        "tonalRamp": ["#2b1d05", "#4b3208", "#704c0e", "#986918", "#c68d2d", "#f0b849", "#f7d88f", "#fff5dd"]
+      },
+      "danger": {
+        "role": "tertiary",
+        "displayName": "Destructive Coral",
+        "canonical": "#f15b68",
+        "tonalRamp": ["#310c10", "#55151c", "#7e222b", "#a9313c", "#d14450", "#f15b68", "#f6a0a8", "#ffe9eb"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Rare large status and legacy hero titles." },
+      "headline": { "displayName": "Page Headline", "purpose": "Primary page titles." },
+      "title": { "displayName": "Section Title", "purpose": "Section headings, collection names, and key card values." },
+      "body": { "displayName": "Operating Text", "purpose": "Navigation, buttons, settings labels, and primary metadata." },
+      "label": { "displayName": "Quiet Metadata", "purpose": "Descriptions, timestamps, counts, and table headers." }
+    },
+    "shadows": [],
+    "motion": [
+      { "name": "hover-response", "value": "system animation duration", "purpose": "Subtle tonal interpolation for hover when Windows client-area animation is enabled." },
+      { "name": "reduced-motion", "value": "instant", "purpose": "Disable hover interpolation when Windows reports reduced client-area animation." }
+    ],
+    "breakpoints": [
+      { "name": "compact-sidebar", "value": "1080px" },
+      { "name": "three-column-grid", "value": "650px content width" },
+      { "name": "four-column-grid", "value": "900px content width" },
+      { "name": "preview-detail-panel", "value": "960px content width" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The single dominant action in a page region, such as Speichern.",
+      "html": "<button class=\"ds-btn-primary\">Speichern</button>",
+      "css": ".ds-btn-primary{height:44px;padding:0 20px;border:0;border-radius:8px;background:#edeef2;color:#0b0b0c;font:400 14px 'Segoe UI Variable Text','Segoe UI',sans-serif;transition:background .14s ease}.ds-btn-primary:hover{background:#fff}.ds-btn-primary:focus-visible{outline:1px solid #fff;outline-offset:2px}.ds-btn-primary:active{background:#dfe0e5}"
+    },
+    {
+      "name": "Secondary Action",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A quiet bordered action for navigation, dismissal, or adjacent tools.",
+      "html": "<button class=\"ds-btn-secondary\">Zurück</button>",
+      "css": ".ds-btn-secondary{height:44px;padding:0 18px;border:1px solid #2d2d30;border-radius:8px;background:#121214;color:#f2f2f3;font:400 14px 'Segoe UI Variable Text','Segoe UI',sans-serif;transition:background .14s ease,border-color .14s ease}.ds-btn-secondary:hover{background:#18181a;border-color:#b4b4b8}.ds-btn-secondary:focus-visible{outline:1px solid #f2f2f3;outline-offset:2px}.ds-btn-secondary:active{background:#222225}"
+    },
+    {
+      "name": "Clipped Settings Field",
+      "kind": "input",
+      "refersTo": "field",
+      "description": "Inset single-line control for long paths and device names.",
+      "html": "<button class=\"ds-field\"><span>C:\\Users\\Wreath\\Videos\\Wreath</span><b aria-hidden=\"true\">⌄</b></button>",
+      "css": ".ds-field{width:205px;height:40px;padding:0 11px 0 12px;display:flex;align-items:center;gap:10px;border:1px solid #2d2d30;border-radius:7px;background:#101011;color:#f2f2f3;font:400 12px 'Segoe UI Variable Text','Segoe UI',sans-serif}.ds-field span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}.ds-field b{margin-left:auto;color:#b4b4b8;font-weight:400}.ds-field:hover{background:#18181a}.ds-field:focus-visible{outline:1px solid #f2f2f3;outline-offset:1px}"
+    },
+    {
+      "name": "Sidebar Destination",
+      "kind": "nav",
+      "description": "Primary shell navigation with a restrained active fill.",
+      "html": "<nav class=\"ds-nav\"><button class=\"ds-nav-item active\">▣<span>Clips</span></button><button class=\"ds-nav-item\">▱<span>Collections</span></button><hr><button class=\"ds-nav-item\">▰<span>Ordner öffnen</span></button></nav>",
+      "css": ".ds-nav{width:244px;padding:10px 20px;background:#0b0b0c;color:#f2f2f3;font:400 14px 'Segoe UI Variable Text','Segoe UI',sans-serif}.ds-nav-item{width:100%;height:50px;padding:0 14px;display:flex;align-items:center;gap:14px;border:0;border-radius:8px;background:transparent;color:#f2f2f3;text-align:left}.ds-nav-item:hover{background:#18181a}.ds-nav-item.active{background:#18181a}.ds-nav-item:focus-visible{outline:1px solid #f2f2f3;outline-offset:1px}.ds-nav hr{border:0;border-top:1px solid #2d2d30;margin:12px 0}"
+    },
+    {
+      "name": "Quick Setup Panel",
+      "kind": "card",
+      "description": "A directly clickable Dashboard control that exposes its current capture value.",
+      "html": "<button class=\"ds-quick\"><span class=\"ds-quick-icon\">◴</span><span class=\"ds-quick-chevron\">⌄</span><small>Replay-Dauer</small><strong>30 Sekunden</strong><i></i><em>Pufferlänge festlegen</em></button>",
+      "css": ".ds-quick{width:260px;height:192px;padding:22px;display:grid;grid-template-columns:1fr auto;grid-template-rows:42px 27px 34px 1px 1fr;align-items:center;border:1px solid #2d2d30;border-radius:10px;background:#121214;color:#f2f2f3;text-align:left;font-family:'Segoe UI Variable Text','Segoe UI',sans-serif}.ds-quick:hover{background:#18181a;border-color:#b4b4b8}.ds-quick:focus-visible{outline:1px solid #f2f2f3;outline-offset:2px}.ds-quick-icon{font-size:28px;color:#b4b4b8}.ds-quick-chevron{color:#b4b4b8}.ds-quick small,.ds-quick em{grid-column:1/3;color:#b4b4b8;font-size:12px;font-style:normal}.ds-quick strong{grid-column:1/3;font:600 17px 'Segoe UI Variable Display','Segoe UI',sans-serif}.ds-quick i{grid-column:1/3;height:1px;background:#2d2d30}.ds-quick em{align-self:end}"
+    },
+    {
+      "name": "Collection Card",
+      "kind": "card",
+      "description": "A thin, widening card used in the paginated Alle Clips plus two-collection row.",
+      "html": "<button class=\"ds-collection active\"><span class=\"ds-collection-icon\">▱</span><strong>Highlights</strong><small>Gespeicherte Sammlung</small><em>24 Clips</em></button>",
+      "css": ".ds-collection{min-width:210px;height:116px;padding:16px;display:grid;grid-template-columns:48px 1fr;grid-template-rows:30px 26px 1fr;column-gap:14px;border:1px solid #2d2d30;border-radius:9px;background:#121214;color:#f2f2f3;text-align:left;font-family:'Segoe UI Variable Text','Segoe UI',sans-serif;overflow:hidden}.ds-collection:hover{background:#18181a}.ds-collection.active{background:#18181a;border:2px solid #f2f2f3}.ds-collection:focus-visible{outline:1px solid #f2f2f3;outline-offset:2px}.ds-collection-icon{grid-row:1/3;display:grid;place-items:center;border:1px solid #2d2d30;border-radius:8px}.ds-collection strong,.ds-collection small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ds-collection strong{font:600 17px 'Segoe UI Variable Display','Segoe UI',sans-serif}.ds-collection small,.ds-collection em{color:#b4b4b8;font-size:12px;font-style:normal}.ds-collection em{grid-column:1/3;align-self:end}"
+    },
+    {
+      "name": "Clip Card",
+      "kind": "card",
+      "description": "A real-thumbnail media card with single-line title and quiet metadata.",
+      "html": "<article class=\"ds-clip\"><div class=\"ds-clip-preview\">▶</div><strong>Insane 1v4 Clutch</strong><small>Heute · 85.6 MB</small><button aria-label=\"Clipaktionen\">•••</button></article>",
+      "css": ".ds-clip{position:relative;overflow:hidden;border:1px solid #2d2d30;border-radius:10px;background:#121214;color:#f2f2f3;font-family:'Segoe UI Variable Text','Segoe UI',sans-serif}.ds-clip:hover{border-color:#6d6d73}.ds-clip:focus-within{outline:1px solid #f2f2f3;outline-offset:2px}.ds-clip-preview{aspect-ratio:16/9;display:grid;place-items:center;background:#101011;color:#b4b4b8}.ds-clip strong,.ds-clip small{display:block;margin:10px 36px 0 12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ds-clip strong{font-size:14px}.ds-clip small{margin-top:5px;margin-bottom:10px;color:#b4b4b8;font-size:12px}.ds-clip button{position:absolute;right:8px;bottom:8px;border:0;background:transparent;color:#b4b4b8}.ds-clip button:hover{color:#f2f2f3}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Quiet Replay Deck",
+    "overview": "Wreath is a restrained native Windows control surface: nearly black, compact, and immediately operational. The UI recedes behind the user's recordings; hierarchy comes from spacing, typography, thin contours, and real clip imagery rather than decorative effects. The product uses the normal immersive-dark Windows titlebar. The client area is rendered with Direct2D and DirectWrite, remains monochrome except for state and destructive colors, and preserves native Windows behaviors for moving, maximizing, minimizing, and closing the window.",
+    "keyCharacteristics": [
+      "Native dark Windows frame with a calm monochrome Direct2D client.",
+      "Dense, scan-first layouts with restrained 1px contours and rounded corners.",
+      "Global clips, collection-specific clips, settings, preview, and editing remain visibly distinct workflows.",
+      "Hover and selection clarify existing actions; they do not rearrange content."
+    ],
+    "rules": [
+      { "name": "The Sparse Color Rule", "body": "Chromatic color communicates state; it is never used as page decoration.", "section": "colors" },
+      { "name": "The Single-Line Control Rule", "body": "Interactive labels and field values do not wrap; constrain them to their bounds and ellipsize variable data when needed.", "section": "typography" },
+      { "name": "The Contour Before Shadow Rule", "body": "Use a tonal step and a 1px border before adding elevation; ordinary panels and cards do not cast shadows.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do keep the native Windows dark titlebar and standard window behavior.",
+      "Do preserve the sidebar hierarchy and keep Einstellungen at the bottom.",
+      "Do paginate collection cards as Alle Clips plus no more than two user collections per page.",
+      "Do keep the Clips library global and collection filtering local to Collections.",
+      "Do clip and ellipsize paths, device names, collection titles, and other variable strings inside their controls.",
+      "Do preserve the normal-preview, fullscreen-preview, and editor compositions as three distinct operating modes."
+    ],
+    "donts": [
+      "Don't draw custom minimize, maximize, or close controls in the Direct2D client.",
+      "Don't use nested decorative cards, gradients, glows, or ambient drop shadows.",
+      "Don't make quick setup actions appear only on hover.",
+      "Don't let collection pagination push the clip table downward or off-screen.",
+      "Don't carry an active collection filter into the global Clips page.",
+      "Don't let variable field content touch a border, overlap a chevron, or render outside its control."
+    ]
+  }
+}

@@ -246,14 +246,18 @@ pub enum WindowUsability {
 const MINIMUM_WINDOW_EDGE: u32 = 320;
 
 #[cfg(any(target_os = "windows", test))]
+pub fn window_is_capturable(window: &WindowFacts, confidence: GameConfidence) -> bool {
+    confidence == GameConfidence::Certain
+        && window.width >= MINIMUM_WINDOW_EDGE
+        && window.height >= MINIMUM_WINDOW_EDGE
+}
+
+#[cfg(any(target_os = "windows", test))]
 pub fn window_usability(window: &WindowFacts, confidence: GameConfidence) -> WindowUsability {
     if covers_monitor(window) {
         return WindowUsability::CoversMonitor;
     }
-    if confidence != GameConfidence::Certain
-        || window.width < MINIMUM_WINDOW_EDGE
-        || window.height < MINIMUM_WINDOW_EDGE
-    {
+    if !window_is_capturable(window, confidence) {
         return WindowUsability::TooSmall;
     }
     WindowUsability::Capturable
@@ -820,6 +824,12 @@ mod tests {
             window_usability(&tiny, GameConfidence::Certain),
             WindowUsability::TooSmall
         );
+    }
+
+    #[test]
+    fn a_full_screen_game_window_stays_capturable_as_a_window() {
+        assert!(window_is_capturable(&fullscreen(), GameConfidence::Certain));
+        assert!(!window_is_capturable(&fullscreen(), GameConfidence::Likely));
     }
 
     #[test]

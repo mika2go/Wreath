@@ -44,6 +44,10 @@ fn target_verdict(
     TargetVerdict::Rebuild
 }
 #[cfg(any(target_os = "windows", test))]
+const GAME_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+#[cfg(target_os = "windows")]
+const MAXIMUM_TARGET_FLIPS: u8 = 2;
+#[cfg(any(target_os = "windows", test))]
 const ENCODER_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[cfg(any(target_os = "windows", test))]
@@ -59,9 +63,10 @@ fn capture_verdict(
     since_frame: std::time::Duration,
     since_packet: std::time::Duration,
     silent_for: std::time::Duration,
+    stall_timeout: std::time::Duration,
 ) -> CaptureVerdict {
-    if since_frame >= CAPTURE_STALL_TIMEOUT {
-        if silent_for >= CAPTURE_STALL_TIMEOUT {
+    if since_frame >= stall_timeout {
+        if silent_for >= stall_timeout {
             return CaptureVerdict::RestartCapture;
         }
         return CaptureVerdict::Healthy;
@@ -732,9 +737,17 @@ impl VideoStage {
 }
 
 #[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetPreference {
+    Automatic,
+    OtherWayRound,
+}
+
+#[cfg(target_os = "windows")]
 fn resolve_target(
     config: &wreath_core::config::Config,
     watch: &mut crate::game::GameWatch,
+    preference: TargetPreference,
 ) -> Result<DesiredTarget, crate::video::VideoError> {
     use crate::capture::CaptureSource;
     use crate::game::WindowUsability;
@@ -745,13 +758,20 @@ fn resolve_target(
             crate::display::monitor_details(game.monitor)
     {
         let label = crate::game::display_name(&game.title, &game.executable);
-        let usability = match crate::game::window_usability(&game.facts, game.confidence) {
+        let window_possible = game.visible
+            && watch.window_capture_allowed(game.window)
+            && crate::game::window_is_capturable(&game.facts, game.confidence);
+        let automatic = window_possible
+            && crate::game::window_usability(&game.facts, game.confidence)
+                == WindowUsability::Capturable;
+        let as_window = match preference {
+            TargetPreference::Automatic => automatic,
+            TargetPreference::OtherWayRound => !automatic && window_possible,
+        };
+        let usability = if as_window {
             WindowUsability::Capturable
-                if !game.visible || !watch.window_capture_allowed(game.window) =>
-            {
-                WindowUsability::TooSmall
-            }
-            usability => usability,
+        } else {
+            WindowUsability::CoversMonitor
         };
         return Ok(match usability {
             WindowUsability::Capturable => DesiredTarget {
@@ -826,7 +846,7 @@ fn start_stage(
         "Wreath capture: the game window cannot be captured on its own, recording its monitor instead: {error}"
     );
     watch.deny_window_capture(window);
-    let fallback = resolve_target(context.config, watch)?;
+    let fallback = resolve_target(context.config, watch, TargetPreference::Automatic)?;
     VideoStage::start(context, fallback)
 }
 
@@ -884,7 +904,7 @@ fn run_pipeline(
     let initialized = (|| -> Result<_, VideoError> {
         let runtime = VideoRuntime::initialize()?;
         let codec = runtime.select_encoder(config.capture.codec)?;
-        let target = resolve_target(&config, &mut watch)?;
+        let target = resolve_target(&config, &mut watch, TargetPreference::Automatic)?;
         let stage = start_stage(
             &StageContext {
                 runtime: &runtime,
@@ -931,6 +951,8 @@ fn run_pipeline(
     let mut last_report = std::time::Instant::now();
     let mut last_probe = std::time::Instant::now();
     let mut pending_size = None;
+    let mut preference = TargetPreference::Automatic;
+    let mut flips = 0_u8;
     let mut health = CaptureHealth::started(std::time::Instant::now());
     loop {
         drain_encoder_events(&mut stage, &mut buffer, status, &mut health)?;
@@ -938,7 +960,7 @@ fn run_pipeline(
             let now = std::time::Instant::now();
             if now.saturating_duration_since(last_probe) >= TARGET_PROBE_INTERVAL {
                 last_probe = now;
-                let target = resolve_target(&config, &mut watch)?;
+                let target = resolve_target(&config, &mut watch, preference)?;
                 let switched = target.identity != stage.identity;
                 let resized = target.probe_size != stage.probe_size;
                 match target_verdict(
@@ -981,10 +1003,45 @@ fn run_pipeline(
                     }
                 }
             }
-            match health.check(context.runtime)? {
+            let stall_timeout = if stage.game.is_some() {
+                GAME_STALL_TIMEOUT
+            } else {
+                CAPTURE_STALL_TIMEOUT
+            };
+            match health.check(context.runtime, stall_timeout)? {
                 CaptureAction::Continue => {}
                 CaptureAction::RestartCapture => {
-                    let target = resolve_target(&config, &mut watch)?;
+                    if stage.game.is_some() && flips < MAXIMUM_TARGET_FLIPS {
+                        flips = flips.saturating_add(1);
+                        preference = match preference {
+                            TargetPreference::Automatic => TargetPreference::OtherWayRound,
+                            TargetPreference::OtherWayRound => TargetPreference::Automatic,
+                        };
+                        let target = resolve_target(&config, &mut watch, preference)?;
+                        if target.identity != stage.identity {
+                            wreath_core::diagnostic!(
+                                "Wreath capture: {} delivered no frame for {} seconds, trying {} instead",
+                                stage.describe(),
+                                stall_timeout.as_secs(),
+                                target.source.label()
+                            );
+                            pending_size = None;
+                            stage = rebuild_stage(
+                                &context,
+                                stage,
+                                target,
+                                &mut watch,
+                                RingState {
+                                    audio: &mut audio,
+                                    buffer: &mut buffer,
+                                    health: &mut health,
+                                },
+                                status,
+                            )?;
+                            continue;
+                        }
+                    }
+                    let target = resolve_target(&config, &mut watch, preference)?;
                     if stage.restart_capture(&context, &target)? {
                         health.note_capture_restart(std::time::Instant::now());
                     } else {
@@ -1085,6 +1142,7 @@ fn run_pipeline(
                     health = CaptureHealth::started(std::time::Instant::now());
                     last_probe = std::time::Instant::now();
                     pending_size = None;
+                    flips = 0;
                     update_status(status, |pipeline| {
                         pipeline.state = PipelineRunState::Recording
                     });
@@ -1163,6 +1221,7 @@ fn run_pipeline(
                 continue;
             }
             mismatched_frames = 0;
+            flips = 0;
             health.note_frame(std::time::Instant::now());
             drain_encoder_events(&mut stage, &mut buffer, status, &mut health)?;
             if stage.input_requests == 0 || stage.available_surfaces.is_empty() {
@@ -1357,17 +1416,23 @@ impl CaptureHealth {
         self.last_packet = now;
     }
 
-    fn verdict(&self, now: std::time::Instant) -> CaptureVerdict {
+    fn verdict(
+        &self,
+        now: std::time::Instant,
+        stall_timeout: std::time::Duration,
+    ) -> CaptureVerdict {
         capture_verdict(
             now.saturating_duration_since(self.last_frame),
             now.saturating_duration_since(self.last_packet),
             now.saturating_duration_since(self.last_frame.max(self.capture_started)),
+            stall_timeout,
         )
     }
 
     fn check(
         &mut self,
         runtime: &crate::video::VideoRuntime,
+        stall_timeout: std::time::Duration,
     ) -> Result<CaptureAction, crate::video::VideoError> {
         use crate::video::VideoError;
 
@@ -1377,9 +1442,9 @@ impl CaptureHealth {
                 "the graphics device was lost: {error}"
             )));
         }
-        match self.verdict(now) {
+        match self.verdict(now, stall_timeout) {
             CaptureVerdict::Healthy => {
-                if now.saturating_duration_since(self.last_frame) < CAPTURE_STALL_TIMEOUT {
+                if now.saturating_duration_since(self.last_frame) < stall_timeout {
                     self.silent_restarts = 0;
                 }
                 Ok(CaptureAction::Continue)
@@ -1602,15 +1667,32 @@ mod tests {
         let recent = Duration::from_secs(1);
 
         assert_eq!(
-            capture_verdict(recent, recent, recent),
+            capture_verdict(recent, recent, recent, CAPTURE_STALL_TIMEOUT),
             CaptureVerdict::Healthy
         );
         assert_eq!(
             capture_verdict(
                 CAPTURE_STALL_TIMEOUT,
                 CAPTURE_STALL_TIMEOUT,
+                CAPTURE_STALL_TIMEOUT,
                 CAPTURE_STALL_TIMEOUT
             ),
+            CaptureVerdict::RestartCapture
+        );
+    }
+
+    #[test]
+    fn a_game_that_stops_delivering_is_answered_in_seconds() {
+        use std::time::Duration;
+
+        let quiet = Duration::from_secs(6);
+
+        assert_eq!(
+            capture_verdict(quiet, quiet, quiet, CAPTURE_STALL_TIMEOUT),
+            CaptureVerdict::Healthy
+        );
+        assert_eq!(
+            capture_verdict(quiet, quiet, quiet, GAME_STALL_TIMEOUT),
             CaptureVerdict::RestartCapture
         );
     }
@@ -1622,7 +1704,12 @@ mod tests {
         let silent_all_day = Duration::from_secs(60 * 60 * 8);
 
         assert_eq!(
-            capture_verdict(silent_all_day, silent_all_day, Duration::from_secs(5)),
+            capture_verdict(
+                silent_all_day,
+                silent_all_day,
+                Duration::from_secs(5),
+                CAPTURE_STALL_TIMEOUT
+            ),
             CaptureVerdict::Healthy
         );
     }
@@ -1635,7 +1722,8 @@ mod tests {
             capture_verdict(
                 Duration::from_millis(20),
                 ENCODER_STALL_TIMEOUT,
-                Duration::from_millis(20)
+                Duration::from_millis(20),
+                CAPTURE_STALL_TIMEOUT
             ),
             CaptureVerdict::EncoderStalled
         );
@@ -1648,7 +1736,12 @@ mod tests {
         let silent = Duration::from_secs(60 * 60);
 
         assert_eq!(
-            capture_verdict(silent, silent, Duration::from_secs(1)),
+            capture_verdict(
+                silent,
+                silent,
+                Duration::from_secs(1),
+                CAPTURE_STALL_TIMEOUT
+            ),
             CaptureVerdict::Healthy
         );
     }
