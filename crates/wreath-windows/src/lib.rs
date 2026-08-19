@@ -7,6 +7,7 @@ pub mod conversion;
 pub mod display;
 pub mod encoder;
 pub mod feedback;
+pub mod game;
 pub mod hotkey;
 pub mod memory;
 pub mod meter;
