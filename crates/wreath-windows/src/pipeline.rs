@@ -741,13 +741,14 @@ fn resolve_target(
 
     if config.capture.follow_game
         && let Some(game) = watch.look()
-        && let monitor = crate::game::window_monitor(game.window)
         && let Some((monitor_name, monitor_width, monitor_height)) =
-            crate::display::monitor_details(monitor)
+            crate::display::monitor_details(game.monitor)
     {
         let label = crate::game::display_name(&game.title, &game.executable);
         let usability = match crate::game::window_usability(&game.facts, game.confidence) {
-            WindowUsability::Capturable if !watch.window_capture_allowed(game.window) => {
+            WindowUsability::Capturable
+                if !game.visible || !watch.window_capture_allowed(game.window) =>
+            {
                 WindowUsability::TooSmall
             }
             usability => usability,
@@ -767,7 +768,7 @@ fn resolve_target(
                 identity: TargetIdentity::Monitor(monitor_name.clone()),
                 probe_size: (monitor_width, monitor_height),
                 source: CaptureSource::Monitor {
-                    handle: monitor,
+                    handle: game.monitor,
                     name: monitor_name,
                 },
                 game: Some(label),

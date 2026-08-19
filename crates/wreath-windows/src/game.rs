@@ -267,6 +267,18 @@ pub struct GameWindow {
     pub title: String,
     pub confidence: GameConfidence,
     pub facts: WindowFacts,
+    pub monitor: windows::Win32::Graphics::Gdi::HMONITOR,
+    pub visible: bool,
+}
+
+#[cfg(target_os = "windows")]
+struct TrackedGame {
+    window: windows::Win32::Foundation::HWND,
+    process_id: u32,
+    executable: String,
+    title: String,
+    facts: WindowFacts,
+    monitor: windows::Win32::Graphics::Gdi::HMONITOR,
 }
 
 #[cfg(target_os = "windows")]
@@ -276,7 +288,7 @@ const REINSPECTION_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 pub struct GameWatch {
     configured: Vec<String>,
     windows_game_paths: Vec<String>,
-    tracked: Option<(windows::Win32::Foundation::HWND, u32, String)>,
+    tracked: Option<TrackedGame>,
     rejected: Option<(windows::Win32::Foundation::HWND, std::time::Instant)>,
     uncapturable: Option<windows::Win32::Foundation::HWND>,
 }
@@ -295,9 +307,17 @@ impl GameWatch {
 
     pub fn look(&mut self) -> Option<GameWindow> {
         if let Some(game) = self.tracked_game() {
+            if let Some(tracked) = self.tracked.as_mut()
+                && game.visible
+            {
+                tracked.facts = game.facts;
+                tracked.title = game.title.clone();
+                tracked.monitor = game.monitor;
+            }
             return Some(game);
         }
         self.tracked = None;
+        self.uncapturable = None;
         let foreground = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
         let now = std::time::Instant::now();
         if self.rejected.is_some_and(|(window, seen)| {
@@ -310,7 +330,14 @@ impl GameWatch {
             return None;
         };
         self.rejected = None;
-        self.tracked = Some((game.window, game.process_id, game.executable.clone()));
+        self.tracked = Some(TrackedGame {
+            window: game.window,
+            process_id: game.process_id,
+            executable: game.executable.clone(),
+            title: game.title.clone(),
+            facts: game.facts,
+            monitor: game.monitor,
+        });
         wreath_core::diagnostic!(
             "Wreath capture: {} looks like a game ({:?}), its window is {}x{}",
             game.executable,
@@ -332,21 +359,29 @@ impl GameWatch {
     fn tracked_game(&self) -> Option<GameWindow> {
         use windows::Win32::UI::WindowsAndMessaging::IsWindow;
 
-        let (window, process_id, executable) = self.tracked.as_ref()?;
-        if !unsafe { IsWindow(Some(*window)) }.as_bool() {
+        let tracked = self.tracked.as_ref()?;
+        if !unsafe { IsWindow(Some(tracked.window)) }.as_bool() {
             return None;
         }
-        if window_process_id(*window) != Some(*process_id) {
+        if window_process_id(tracked.window) != Some(tracked.process_id) {
             return None;
         }
-        let facts = window_facts(*window)?;
+        let current = window_facts(tracked.window);
         Some(GameWindow {
-            window: *window,
-            process_id: *process_id,
-            executable: executable.clone(),
-            title: window_title(*window),
+            window: tracked.window,
+            process_id: tracked.process_id,
+            executable: tracked.executable.clone(),
+            title: match current {
+                Some(_) => window_title(tracked.window),
+                None => tracked.title.clone(),
+            },
             confidence: GameConfidence::Certain,
-            facts,
+            facts: current.unwrap_or(tracked.facts),
+            monitor: match current {
+                Some(_) => window_monitor(tracked.window),
+                None => tracked.monitor,
+            },
+            visible: current.is_some(),
         })
     }
 
@@ -371,6 +406,8 @@ impl GameWatch {
             title: window_title(window),
             confidence,
             facts,
+            monitor: window_monitor(window),
+            visible: true,
         })
     }
 }
@@ -432,7 +469,7 @@ fn window_facts(window: windows::Win32::Foundation::HWND) -> Option<WindowFacts>
 }
 
 #[cfg(target_os = "windows")]
-pub fn window_monitor(
+fn window_monitor(
     window: windows::Win32::Foundation::HWND,
 ) -> windows::Win32::Graphics::Gdi::HMONITOR {
     use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromWindow};
