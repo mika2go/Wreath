@@ -14,6 +14,39 @@ const ENCODER_SURFACE_COUNT: usize = 6;
 const HEALTH_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 #[cfg(any(target_os = "windows", test))]
 const CAPTURE_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+#[cfg(target_os = "windows")]
+const TARGET_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetVerdict {
+    Keep,
+    Rebuild,
+    WaitForStableSize,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn target_verdict(
+    switched: bool,
+    resized: bool,
+    window_target: bool,
+    size_already_seen: bool,
+) -> TargetVerdict {
+    if switched {
+        return TargetVerdict::Rebuild;
+    }
+    if !resized {
+        return TargetVerdict::Keep;
+    }
+    if window_target && !size_already_seen {
+        return TargetVerdict::WaitForStableSize;
+    }
+    TargetVerdict::Rebuild
+}
+#[cfg(any(target_os = "windows", test))]
+const GAME_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+#[cfg(target_os = "windows")]
+const MAXIMUM_TARGET_FLIPS: u8 = 2;
 #[cfg(any(target_os = "windows", test))]
 const ENCODER_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -30,9 +63,10 @@ fn capture_verdict(
     since_frame: std::time::Duration,
     since_packet: std::time::Duration,
     silent_for: std::time::Duration,
+    stall_timeout: std::time::Duration,
 ) -> CaptureVerdict {
-    if since_frame >= CAPTURE_STALL_TIMEOUT {
-        if silent_for >= CAPTURE_STALL_TIMEOUT {
+    if since_frame >= stall_timeout {
+        if silent_for >= stall_timeout {
             return CaptureVerdict::RestartCapture;
         }
         return CaptureVerdict::Healthy;
@@ -55,6 +89,7 @@ pub enum PipelineRunState {
 pub struct PipelineStatus {
     pub state: PipelineRunState,
     pub monitor: Option<String>,
+    pub source: Option<String>,
     pub codec: Option<HardwareCodec>,
     pub adapter: Option<GraphicsAdapterInfo>,
     pub buffered_seconds: u16,
@@ -67,6 +102,7 @@ impl Default for PipelineStatus {
         Self {
             state: PipelineRunState::Starting,
             monitor: None,
+            source: None,
             codec: None,
             adapter: None,
             buffered_seconds: 0,
@@ -570,43 +606,78 @@ fn synchronized_master_ready(
 }
 
 #[cfg(target_os = "windows")]
-fn run_pipeline(
-    config: wreath_core::config::Config,
-    commands: crossbeam_channel::Receiver<PipelineCommand>,
-    status: &std::sync::Arc<std::sync::RwLock<PipelineStatus>>,
-    ready: std::sync::mpsc::SyncSender<Result<(), crate::video::VideoError>>,
-) -> Result<(), crate::video::VideoError> {
-    use std::collections::VecDeque;
-    use std::time::Duration;
+struct StageContext<'a> {
+    runtime: &'a crate::video::VideoRuntime,
+    config: &'a wreath_core::config::Config,
+    codec: crate::video::HardwareCodec,
+}
 
-    use crate::capture::MonitorCapture;
-    use crate::conversion::GpuColorConverter;
-    use crate::encoder::{EncoderSettings, HardwareVideoEncoder};
-    use crate::video::{VideoError, VideoRuntime};
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TargetIdentity {
+    Monitor(String),
+    Window(isize),
+}
 
-    let initialized = (|| -> Result<_, VideoError> {
-        let runtime = VideoRuntime::initialize()?;
-        let codec = runtime.select_encoder(config.capture.codec)?;
-        let display = crate::display::select_display(config.capture.monitor.as_deref())?;
-        let (capture, capture_info, frames) = MonitorCapture::start_primary(
+#[cfg(target_os = "windows")]
+struct DesiredTarget {
+    source: crate::capture::CaptureSource,
+    identity: TargetIdentity,
+    probe_size: (u32, u32),
+    game: Option<String>,
+}
+
+#[cfg(target_os = "windows")]
+struct VideoStage {
+    capture: crate::capture::SourceCapture,
+    info: crate::capture::CaptureInfo,
+    frames: crossbeam_channel::Receiver<crate::capture::CapturedFrame>,
+    converter: crate::conversion::GpuColorConverter,
+    encoder: crate::encoder::HardwareVideoEncoder,
+    available_surfaces: Vec<crate::conversion::Nv12Surface>,
+    in_flight_surfaces: std::collections::VecDeque<crate::conversion::Nv12Surface>,
+    input_requests: usize,
+    identity: TargetIdentity,
+    probe_size: (u32, u32),
+    game: Option<String>,
+    bitrate_kbps: u32,
+}
+
+#[cfg(target_os = "windows")]
+impl VideoStage {
+    fn start(
+        context: &StageContext<'_>,
+        target: DesiredTarget,
+    ) -> Result<Self, crate::video::VideoError> {
+        use crate::capture::SourceCapture;
+        use crate::conversion::GpuColorConverter;
+        use crate::encoder::{EncoderSettings, HardwareVideoEncoder};
+
+        let StageContext {
+            runtime,
+            config,
+            codec,
+        } = *context;
+        let (capture, info, frames) = SourceCapture::start(
             runtime.device(),
-            display.handle,
-            &display.target.name,
+            &target.source,
             config.capture.frames_per_second,
             config.capture.cursor,
         )?;
+        let encoded_width = info.width & !1;
+        let encoded_height = info.height & !1;
         let settings = EncoderSettings {
-            width: capture_info.width,
-            height: capture_info.height,
+            width: encoded_width,
+            height: encoded_height,
             frames_per_second: config.capture.frames_per_second,
-            bitrate_kbps: target_bitrate_kbps(&config, capture_info.width, capture_info.height),
+            bitrate_kbps: target_bitrate_kbps(config, encoded_width, encoded_height),
         }
         .validate()?;
         let converter = GpuColorConverter::initialize(
             runtime.device(),
             runtime.context(),
-            settings.width,
-            settings.height,
+            (info.width, info.height),
+            (settings.width, settings.height),
             settings.frames_per_second,
         )?;
         let mut available_surfaces = Vec::with_capacity(ENCODER_SURFACE_COUNT);
@@ -614,44 +685,242 @@ fn run_pipeline(
             available_surfaces.push(converter.create_output_surface()?);
         }
         let encoder = HardwareVideoEncoder::initialize(runtime.device(), codec, settings)?;
-        let audio = PipelineAudio::initialize(&config.audio)
-            .map_err(|error| VideoError::Initialization(error.to_string()))?;
-        let audio_bitrate_kbps = audio
-            .as_ref()
-            .map_or(0, |audio| audio.bytes_per_second() / 125);
-        let memory_budget = replay_memory_budget(estimated_buffer_bytes(
-            settings.bitrate_kbps.saturating_add(audio_bitrate_kbps),
-            config.capture.duration_seconds,
-        ))?;
-        let buffer = wreath_core::replay_buffer::EncodedReplayBuffer::new(
-            Duration::from_secs(u64::from(config.capture.duration_seconds)),
-            memory_budget,
-        )
-        .ok_or_else(|| VideoError::Initialization("invalid replay buffer limits".into()))?;
-        Ok((
-            runtime,
+        Ok(Self {
             capture,
-            capture_info,
+            info,
             frames,
             converter,
-            available_surfaces,
             encoder,
-            audio,
-            buffer,
-        ))
+            available_surfaces,
+            in_flight_surfaces: std::collections::VecDeque::with_capacity(ENCODER_SURFACE_COUNT),
+            input_requests: 0,
+            identity: target.identity,
+            probe_size: target.probe_size,
+            game: target.game,
+            bitrate_kbps: settings.bitrate_kbps,
+        })
+    }
+
+    fn restart_capture(
+        &mut self,
+        context: &StageContext<'_>,
+        target: &DesiredTarget,
+    ) -> Result<bool, crate::video::VideoError> {
+        let StageContext {
+            runtime, config, ..
+        } = *context;
+        if target.identity != self.identity {
+            return Ok(false);
+        }
+        let (capture, info, frames) = crate::capture::SourceCapture::start(
+            runtime.device(),
+            &target.source,
+            config.capture.frames_per_second,
+            config.capture.cursor,
+        )?;
+        if info.width != self.info.width || info.height != self.info.height {
+            return Ok(false);
+        }
+        self.capture = capture;
+        self.frames = frames;
+        self.probe_size = target.probe_size;
+        Ok(true)
+    }
+
+    fn describe(&self) -> String {
+        match (&self.game, &self.identity) {
+            (Some(game), TargetIdentity::Window(_)) => format!("the {game} window"),
+            (Some(game), TargetIdentity::Monitor(monitor)) => format!("{game} on {monitor}"),
+            (None, _) => self.info.monitor.clone(),
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetPreference {
+    Automatic,
+    OtherWayRound,
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_target(
+    config: &wreath_core::config::Config,
+    watch: &mut crate::game::GameWatch,
+    preference: TargetPreference,
+) -> Result<DesiredTarget, crate::video::VideoError> {
+    use crate::capture::CaptureSource;
+    use crate::game::WindowUsability;
+
+    if config.capture.follow_game
+        && let Some(game) = watch.look()
+        && let Some((monitor_name, monitor_width, monitor_height)) =
+            crate::display::monitor_details(game.monitor)
+    {
+        let label = crate::game::display_name(&game.title, &game.executable);
+        let window_possible = game.visible
+            && watch.window_capture_allowed(game.window)
+            && crate::game::window_is_capturable(&game.facts, game.confidence);
+        let automatic = window_possible
+            && crate::game::window_usability(&game.facts, game.confidence)
+                == WindowUsability::Capturable;
+        let as_window = match preference {
+            TargetPreference::Automatic => automatic,
+            TargetPreference::OtherWayRound => !automatic && window_possible,
+        };
+        let usability = if as_window {
+            WindowUsability::Capturable
+        } else {
+            WindowUsability::CoversMonitor
+        };
+        return Ok(match usability {
+            WindowUsability::Capturable => DesiredTarget {
+                identity: TargetIdentity::Window(game.window.0 as isize),
+                probe_size: (game.facts.width, game.facts.height),
+                source: CaptureSource::Window {
+                    handle: game.window,
+                    title: label.clone(),
+                    monitor: monitor_name,
+                },
+                game: Some(label),
+            },
+            WindowUsability::CoversMonitor | WindowUsability::TooSmall => DesiredTarget {
+                identity: TargetIdentity::Monitor(monitor_name.clone()),
+                probe_size: (monitor_width, monitor_height),
+                source: CaptureSource::Monitor {
+                    handle: game.monitor,
+                    name: monitor_name,
+                },
+                game: Some(label),
+            },
+        });
+    }
+    let display = crate::display::select_display(config.capture.monitor.as_deref())?;
+    Ok(DesiredTarget {
+        identity: TargetIdentity::Monitor(display.target.name.clone()),
+        probe_size: (display.target.width, display.target.height),
+        source: CaptureSource::Monitor {
+            handle: display.handle,
+            name: display.target.name,
+        },
+        game: None,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn new_replay_buffer(
+    config: &wreath_core::config::Config,
+    video_bitrate_kbps: u32,
+    audio: Option<&PipelineAudio>,
+) -> Result<wreath_core::replay_buffer::EncodedReplayBuffer, crate::video::VideoError> {
+    let audio_bitrate_kbps = audio.map_or(0, |audio| audio.bytes_per_second() / 125);
+    let memory_budget = replay_memory_budget(estimated_buffer_bytes(
+        video_bitrate_kbps.saturating_add(audio_bitrate_kbps),
+        config.capture.duration_seconds,
+    ))?;
+    wreath_core::replay_buffer::EncodedReplayBuffer::new(
+        std::time::Duration::from_secs(u64::from(config.capture.duration_seconds)),
+        memory_budget,
+    )
+    .ok_or_else(|| crate::video::VideoError::Initialization("invalid replay buffer limits".into()))
+}
+
+#[cfg(target_os = "windows")]
+fn start_stage(
+    context: &StageContext<'_>,
+    target: DesiredTarget,
+    watch: &mut crate::game::GameWatch,
+) -> Result<VideoStage, crate::video::VideoError> {
+    let window = match target.source {
+        crate::capture::CaptureSource::Window { handle, .. } => Some(handle),
+        crate::capture::CaptureSource::Monitor { .. } => None,
+    };
+    let error = match VideoStage::start(context, target) {
+        Ok(stage) => return Ok(stage),
+        Err(error) => error,
+    };
+    let Some(window) = window else {
+        return Err(error);
+    };
+    wreath_core::diagnostic!(
+        "Wreath capture: the game window cannot be captured on its own, recording its monitor instead: {error}"
+    );
+    watch.deny_window_capture(window);
+    let fallback = resolve_target(context.config, watch, TargetPreference::Automatic)?;
+    VideoStage::start(context, fallback)
+}
+
+#[cfg(target_os = "windows")]
+struct RingState<'a> {
+    audio: &'a mut Option<PipelineAudio>,
+    buffer: &'a mut wreath_core::replay_buffer::EncodedReplayBuffer,
+    health: &'a mut CaptureHealth,
+}
+
+#[cfg(target_os = "windows")]
+fn rebuild_stage(
+    context: &StageContext<'_>,
+    stage: VideoStage,
+    target: DesiredTarget,
+    watch: &mut crate::game::GameWatch,
+    ring: RingState<'_>,
+    status: &std::sync::Arc<std::sync::RwLock<PipelineStatus>>,
+) -> Result<VideoStage, crate::video::VideoError> {
+    drop(stage);
+    let stage = start_stage(context, target, watch)?;
+    *ring.buffer = new_replay_buffer(context.config, stage.bitrate_kbps, ring.audio.as_ref())?;
+    if let Some(audio) = ring.audio.as_mut() {
+        audio.discard_queued();
+        audio
+            .start_new_epoch()
+            .map_err(|error| crate::video::VideoError::Initialization(error.to_string()))?;
+    }
+    *ring.health = CaptureHealth::started(std::time::Instant::now());
+    update_status(status, |pipeline| {
+        pipeline.monitor = Some(stage.info.monitor.clone());
+        pipeline.source = Some(stage.describe());
+        pipeline.buffered_seconds = 0;
+        pipeline.encoded_bytes = 0;
+    });
+    wreath_core::diagnostic!(
+        "Wreath capture: the pipeline now records {} at {}x{}",
+        stage.describe(),
+        stage.info.width,
+        stage.info.height
+    );
+    Ok(stage)
+}
+
+#[cfg(target_os = "windows")]
+fn run_pipeline(
+    config: wreath_core::config::Config,
+    commands: crossbeam_channel::Receiver<PipelineCommand>,
+    status: &std::sync::Arc<std::sync::RwLock<PipelineStatus>>,
+    ready: std::sync::mpsc::SyncSender<Result<(), crate::video::VideoError>>,
+) -> Result<(), crate::video::VideoError> {
+    use crate::video::{VideoError, VideoRuntime};
+
+    let mut watch = crate::game::GameWatch::new(&config.capture.games);
+    let initialized = (|| -> Result<_, VideoError> {
+        let runtime = VideoRuntime::initialize()?;
+        let codec = runtime.select_encoder(config.capture.codec)?;
+        let target = resolve_target(&config, &mut watch, TargetPreference::Automatic)?;
+        let stage = start_stage(
+            &StageContext {
+                runtime: &runtime,
+                config: &config,
+                codec,
+            },
+            target,
+            &mut watch,
+        )?;
+        let audio = PipelineAudio::initialize(&config.audio)
+            .map_err(|error| VideoError::Initialization(error.to_string()))?;
+        let buffer = new_replay_buffer(&config, stage.bitrate_kbps, audio.as_ref())?;
+        Ok((runtime, codec, stage, audio, buffer))
     })();
 
-    let (
-        runtime,
-        mut capture,
-        capture_info,
-        mut frames,
-        converter,
-        mut available_surfaces,
-        encoder,
-        mut audio,
-        mut buffer,
-    ) = match initialized {
+    let (runtime, codec, mut stage, mut audio, mut buffer) = match initialized {
         Ok(initialized) => initialized,
         Err(error) => {
             let _ = ready.send(Err(error.clone()));
@@ -661,8 +930,9 @@ fn run_pipeline(
 
     update_status(status, |pipeline| {
         pipeline.state = PipelineRunState::Recording;
-        pipeline.monitor = Some(capture_info.monitor.clone());
-        pipeline.codec = Some(encoder.codec());
+        pipeline.monitor = Some(stage.info.monitor.clone());
+        pipeline.source = Some(stage.describe());
+        pipeline.codec = Some(stage.encoder.codec());
         pipeline.adapter = Some(runtime.adapter().clone());
         pipeline.error = None;
     });
@@ -670,24 +940,133 @@ fn run_pipeline(
         return Ok(());
     }
 
-    let mut input_requests = 0_usize;
-    let mut in_flight_surfaces = VecDeque::with_capacity(ENCODER_SURFACE_COUNT);
+    let context = StageContext {
+        runtime: &runtime,
+        config: &config,
+        codec,
+    };
     let mut recording = true;
     let mut skipped_frames = 0_u64;
+    let mut mismatched_frames = 0_u64;
     let mut last_report = std::time::Instant::now();
+    let mut last_probe = std::time::Instant::now();
+    let mut pending_size = None;
+    let mut preference = TargetPreference::Automatic;
+    let mut flips = 0_u8;
     let mut health = CaptureHealth::started(std::time::Instant::now());
     loop {
-        drain_encoder_events(
-            &encoder,
-            &mut input_requests,
-            &mut buffer,
-            &mut in_flight_surfaces,
-            &mut available_surfaces,
-            status,
-            &mut health,
-        )?;
+        drain_encoder_events(&mut stage, &mut buffer, status, &mut health)?;
         if recording {
-            health.check(&runtime, &config, &capture_info, &mut capture, &mut frames)?;
+            let now = std::time::Instant::now();
+            if now.saturating_duration_since(last_probe) >= TARGET_PROBE_INTERVAL {
+                last_probe = now;
+                let target = resolve_target(&config, &mut watch, preference)?;
+                let switched = target.identity != stage.identity;
+                let resized = target.probe_size != stage.probe_size;
+                match target_verdict(
+                    switched,
+                    resized,
+                    matches!(target.identity, TargetIdentity::Window(_)),
+                    pending_size == Some(target.probe_size),
+                ) {
+                    TargetVerdict::Keep => pending_size = None,
+                    TargetVerdict::WaitForStableSize => pending_size = Some(target.probe_size),
+                    TargetVerdict::Rebuild => {
+                        if switched {
+                            wreath_core::diagnostic!(
+                                "Wreath capture: recording moves from {} to {}",
+                                stage.describe(),
+                                target.game.as_deref().unwrap_or(target.source.label())
+                            );
+                        } else {
+                            wreath_core::diagnostic!(
+                                "Wreath capture: {} changed to {}x{}, rebuilding the capture pipeline",
+                                stage.describe(),
+                                target.probe_size.0,
+                                target.probe_size.1
+                            );
+                        }
+                        pending_size = None;
+                        stage = rebuild_stage(
+                            &context,
+                            stage,
+                            target,
+                            &mut watch,
+                            RingState {
+                                audio: &mut audio,
+                                buffer: &mut buffer,
+                                health: &mut health,
+                            },
+                            status,
+                        )?;
+                        continue;
+                    }
+                }
+            }
+            let stall_timeout = if stage.game.is_some() {
+                GAME_STALL_TIMEOUT
+            } else {
+                CAPTURE_STALL_TIMEOUT
+            };
+            match health.check(context.runtime, stall_timeout)? {
+                CaptureAction::Continue => {}
+                CaptureAction::RestartCapture => {
+                    if stage.game.is_some() && flips < MAXIMUM_TARGET_FLIPS {
+                        flips = flips.saturating_add(1);
+                        preference = match preference {
+                            TargetPreference::Automatic => TargetPreference::OtherWayRound,
+                            TargetPreference::OtherWayRound => TargetPreference::Automatic,
+                        };
+                        let target = resolve_target(&config, &mut watch, preference)?;
+                        if target.identity != stage.identity {
+                            wreath_core::diagnostic!(
+                                "Wreath capture: {} delivered no frame for {} seconds, trying {} instead",
+                                stage.describe(),
+                                stall_timeout.as_secs(),
+                                target.source.label()
+                            );
+                            pending_size = None;
+                            stage = rebuild_stage(
+                                &context,
+                                stage,
+                                target,
+                                &mut watch,
+                                RingState {
+                                    audio: &mut audio,
+                                    buffer: &mut buffer,
+                                    health: &mut health,
+                                },
+                                status,
+                            )?;
+                            continue;
+                        }
+                    }
+                    let target = resolve_target(&config, &mut watch, preference)?;
+                    if stage.restart_capture(&context, &target)? {
+                        health.note_capture_restart(std::time::Instant::now());
+                    } else {
+                        wreath_core::diagnostic!(
+                            "Wreath capture: the capture surface no longer matches {} at {}x{}, rebuilding the pipeline",
+                            stage.describe(),
+                            stage.info.width,
+                            stage.info.height
+                        );
+                        stage = rebuild_stage(
+                            &context,
+                            stage,
+                            target,
+                            &mut watch,
+                            RingState {
+                                audio: &mut audio,
+                                buffer: &mut buffer,
+                                health: &mut health,
+                            },
+                            status,
+                        )?;
+                    }
+                    continue;
+                }
+            }
         }
         if last_report.elapsed() >= std::time::Duration::from_secs(30) {
             last_report = std::time::Instant::now();
@@ -700,6 +1079,7 @@ fn run_pipeline(
                 ),
             );
         }
+        let frames = stage.frames.clone();
         let mut selector = crossbeam_channel::Select::new();
         let command_index = selector.recv(&commands);
         let frame_index = recording.then(|| selector.recv(&frames));
@@ -742,12 +1122,14 @@ fn run_pipeline(
                 }
                 PipelineCommandKind::Resume => {
                     while frames.try_recv().is_ok() {}
-                    if let Err(error) = encoder.flush() {
+                    if let Err(error) = stage.encoder.flush() {
                         let _ = command.reply.send(Err(error.to_string()));
                         continue;
                     }
-                    available_surfaces.extend(in_flight_surfaces.drain(..));
-                    input_requests = 0;
+                    stage
+                        .available_surfaces
+                        .extend(stage.in_flight_surfaces.drain(..));
+                    stage.input_requests = 0;
                     if let Some(audio) = &mut audio
                         && let Err(error) = audio.start_new_epoch()
                     {
@@ -758,6 +1140,9 @@ fn run_pipeline(
                     update_buffer_status(status, &buffer);
                     recording = true;
                     health = CaptureHealth::started(std::time::Instant::now());
+                    last_probe = std::time::Instant::now();
+                    pending_size = None;
+                    flips = 0;
                     update_status(status, |pipeline| {
                         pipeline.state = PipelineRunState::Recording
                     });
@@ -766,14 +1151,15 @@ fn run_pipeline(
                 PipelineCommandKind::Save => {
                     spawn_save(
                         config.storage.directory.clone(),
-                        &encoder,
+                        &stage.encoder,
                         audio.as_ref(),
                         buffer.snapshot(),
                         command.reply,
                     );
                 }
                 PipelineCommandKind::Stop => {
-                    let result = encoder
+                    let result = stage
+                        .encoder
                         .drain()
                         .map(|()| PipelineCommandResult::Ok)
                         .map_err(|error| error.to_string());
@@ -821,17 +1207,24 @@ fn run_pipeline(
             let frame = operation
                 .recv(&frames)
                 .map_err(|error| VideoError::Initialization(error.to_string()))?;
+            if frame.width != stage.info.width || frame.height != stage.info.height {
+                mismatched_frames = mismatched_frames.saturating_add(1);
+                if mismatched_frames.is_power_of_two() {
+                    wreath_core::diagnostic!(
+                        "Wreath capture: {mismatched_frames} frames arrived as {}x{} while the pipeline encodes {}x{}, waiting for the display mode to settle",
+                        frame.width,
+                        frame.height,
+                        stage.info.width,
+                        stage.info.height
+                    );
+                }
+                continue;
+            }
+            mismatched_frames = 0;
+            flips = 0;
             health.note_frame(std::time::Instant::now());
-            drain_encoder_events(
-                &encoder,
-                &mut input_requests,
-                &mut buffer,
-                &mut in_flight_surfaces,
-                &mut available_surfaces,
-                status,
-                &mut health,
-            )?;
-            if input_requests == 0 || available_surfaces.is_empty() {
+            drain_encoder_events(&mut stage, &mut buffer, status, &mut health)?;
+            if stage.input_requests == 0 || stage.available_surfaces.is_empty() {
                 skipped_frames = skipped_frames.saturating_add(1);
                 if skipped_frames.is_power_of_two() {
                     wreath_core::diagnostic!(
@@ -840,18 +1233,16 @@ fn run_pipeline(
                 }
                 continue;
             }
-            if frame.width != capture_info.width || frame.height != capture_info.height {
-                return Err(VideoError::Initialization(
-                    "display resolution changed; reload Wreath to recreate the GPU pipeline".into(),
-                ));
-            }
-            let surface = available_surfaces
+            let surface = stage
+                .available_surfaces
                 .pop()
                 .expect("surface availability checked");
-            converter.convert(&frame.texture, &surface)?;
-            encoder.submit_texture(&surface.texture, frame.timestamp)?;
-            in_flight_surfaces.push_back(surface);
-            input_requests -= 1;
+            stage.converter.convert(&frame.texture, &surface)?;
+            stage
+                .encoder
+                .submit_texture(&surface.texture, frame.timestamp)?;
+            stage.in_flight_surfaces.push_back(surface);
+            stage.input_requests -= 1;
         }
     }
     Ok(())
@@ -1025,22 +1416,24 @@ impl CaptureHealth {
         self.last_packet = now;
     }
 
-    fn verdict(&self, now: std::time::Instant) -> CaptureVerdict {
+    fn verdict(
+        &self,
+        now: std::time::Instant,
+        stall_timeout: std::time::Duration,
+    ) -> CaptureVerdict {
         capture_verdict(
             now.saturating_duration_since(self.last_frame),
             now.saturating_duration_since(self.last_packet),
             now.saturating_duration_since(self.last_frame.max(self.capture_started)),
+            stall_timeout,
         )
     }
 
     fn check(
         &mut self,
         runtime: &crate::video::VideoRuntime,
-        config: &wreath_core::config::Config,
-        capture_info: &crate::capture::CaptureInfo,
-        capture: &mut crate::capture::MonitorCapture,
-        frames: &mut crossbeam_channel::Receiver<crate::capture::CapturedFrame>,
-    ) -> Result<(), crate::video::VideoError> {
+        stall_timeout: std::time::Duration,
+    ) -> Result<CaptureAction, crate::video::VideoError> {
         use crate::video::VideoError;
 
         let now = std::time::Instant::now();
@@ -1049,40 +1442,22 @@ impl CaptureHealth {
                 "the graphics device was lost: {error}"
             )));
         }
-        match self.verdict(now) {
+        match self.verdict(now, stall_timeout) {
             CaptureVerdict::Healthy => {
-                if now.saturating_duration_since(self.last_frame) < CAPTURE_STALL_TIMEOUT {
+                if now.saturating_duration_since(self.last_frame) < stall_timeout {
                     self.silent_restarts = 0;
                 }
-                return Ok(());
+                Ok(CaptureAction::Continue)
             }
-            CaptureVerdict::EncoderStalled => {
-                return Err(VideoError::Initialization(format!(
-                    "the hardware encoder accepted frames but returned none for {} seconds",
-                    ENCODER_STALL_TIMEOUT.as_secs()
-                )));
-            }
-            CaptureVerdict::RestartCapture => {}
+            CaptureVerdict::EncoderStalled => Err(VideoError::Initialization(format!(
+                "the hardware encoder accepted frames but returned none for {} seconds",
+                ENCODER_STALL_TIMEOUT.as_secs()
+            ))),
+            CaptureVerdict::RestartCapture => Ok(CaptureAction::RestartCapture),
         }
+    }
 
-        let display = crate::display::select_display(config.capture.monitor.as_deref())?;
-        let (replacement, replacement_info, replacement_frames) =
-            crate::capture::MonitorCapture::start_primary(
-                runtime.device(),
-                display.handle,
-                &display.target.name,
-                config.capture.frames_per_second,
-                config.capture.cursor,
-            )?;
-        if replacement_info.width != capture_info.width
-            || replacement_info.height != capture_info.height
-        {
-            return Err(VideoError::Initialization(
-                "display resolution changed; reload Wreath to recreate the GPU pipeline".into(),
-            ));
-        }
-        *capture = replacement;
-        *frames = replacement_frames;
+    fn note_capture_restart(&mut self, now: std::time::Instant) {
         self.capture_started = now;
         self.silent_restarts = self.silent_restarts.saturating_add(1);
         if self.silent_restarts.is_power_of_two() {
@@ -1092,31 +1467,35 @@ impl CaptureHealth {
                 self.silent_restarts
             );
         }
-        Ok(())
     }
 }
 
 #[cfg(target_os = "windows")]
+enum CaptureAction {
+    Continue,
+    RestartCapture,
+}
+
+#[cfg(target_os = "windows")]
 fn drain_encoder_events(
-    encoder: &crate::encoder::HardwareVideoEncoder,
-    input_requests: &mut usize,
+    stage: &mut VideoStage,
     buffer: &mut wreath_core::replay_buffer::EncodedReplayBuffer,
-    in_flight: &mut std::collections::VecDeque<crate::conversion::Nv12Surface>,
-    available: &mut Vec<crate::conversion::Nv12Surface>,
     status: &std::sync::Arc<std::sync::RwLock<PipelineStatus>>,
     health: &mut CaptureHealth,
 ) -> Result<(), crate::video::VideoError> {
     use crate::encoder::EncoderEvent;
 
-    while let Some(event) = encoder.try_next_event()? {
+    while let Some(event) = stage.encoder.try_next_event()? {
         match event {
-            EncoderEvent::NeedInput => *input_requests = input_requests.saturating_add(1),
+            EncoderEvent::NeedInput => {
+                stage.input_requests = stage.input_requests.saturating_add(1)
+            }
             EncoderEvent::HaveOutput => {
-                if let Some(packet) = encoder.take_packet()? {
+                if let Some(packet) = stage.encoder.take_packet()? {
                     health.note_packet(std::time::Instant::now());
                     buffer.push(packet);
-                    if let Some(surface) = in_flight.pop_front() {
-                        available.push(surface);
+                    if let Some(surface) = stage.in_flight_surfaces.pop_front() {
+                        stage.available_surfaces.push(surface);
                     }
                     update_buffer_status(status, buffer);
                 }
@@ -1188,6 +1567,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_new_target_is_rebuilt_at_once() {
+        assert_eq!(
+            target_verdict(true, false, true, false),
+            TargetVerdict::Rebuild
+        );
+        assert_eq!(
+            target_verdict(true, true, true, false),
+            TargetVerdict::Rebuild
+        );
+    }
+
+    #[test]
+    fn an_unchanged_target_is_left_alone() {
+        assert_eq!(
+            target_verdict(false, false, false, false),
+            TargetVerdict::Keep
+        );
+        assert_eq!(
+            target_verdict(false, false, true, true),
+            TargetVerdict::Keep
+        );
+    }
+
+    #[test]
+    fn a_display_mode_change_does_not_wait() {
+        assert_eq!(
+            target_verdict(false, true, false, false),
+            TargetVerdict::Rebuild
+        );
+    }
+
+    #[test]
+    fn a_window_has_to_hold_its_new_size_for_one_probe() {
+        assert_eq!(
+            target_verdict(false, true, true, false),
+            TargetVerdict::WaitForStableSize
+        );
+        assert_eq!(
+            target_verdict(false, true, true, true),
+            TargetVerdict::Rebuild
+        );
+    }
+
+    #[test]
     fn replay_memory_has_a_floor_and_accepts_its_limit() {
         assert_eq!(
             replay_memory_budget(1).unwrap(),
@@ -1244,15 +1667,32 @@ mod tests {
         let recent = Duration::from_secs(1);
 
         assert_eq!(
-            capture_verdict(recent, recent, recent),
+            capture_verdict(recent, recent, recent, CAPTURE_STALL_TIMEOUT),
             CaptureVerdict::Healthy
         );
         assert_eq!(
             capture_verdict(
                 CAPTURE_STALL_TIMEOUT,
                 CAPTURE_STALL_TIMEOUT,
+                CAPTURE_STALL_TIMEOUT,
                 CAPTURE_STALL_TIMEOUT
             ),
+            CaptureVerdict::RestartCapture
+        );
+    }
+
+    #[test]
+    fn a_game_that_stops_delivering_is_answered_in_seconds() {
+        use std::time::Duration;
+
+        let quiet = Duration::from_secs(6);
+
+        assert_eq!(
+            capture_verdict(quiet, quiet, quiet, CAPTURE_STALL_TIMEOUT),
+            CaptureVerdict::Healthy
+        );
+        assert_eq!(
+            capture_verdict(quiet, quiet, quiet, GAME_STALL_TIMEOUT),
             CaptureVerdict::RestartCapture
         );
     }
@@ -1264,7 +1704,12 @@ mod tests {
         let silent_all_day = Duration::from_secs(60 * 60 * 8);
 
         assert_eq!(
-            capture_verdict(silent_all_day, silent_all_day, Duration::from_secs(5)),
+            capture_verdict(
+                silent_all_day,
+                silent_all_day,
+                Duration::from_secs(5),
+                CAPTURE_STALL_TIMEOUT
+            ),
             CaptureVerdict::Healthy
         );
     }
@@ -1277,7 +1722,8 @@ mod tests {
             capture_verdict(
                 Duration::from_millis(20),
                 ENCODER_STALL_TIMEOUT,
-                Duration::from_millis(20)
+                Duration::from_millis(20),
+                CAPTURE_STALL_TIMEOUT
             ),
             CaptureVerdict::EncoderStalled
         );
@@ -1290,7 +1736,12 @@ mod tests {
         let silent = Duration::from_secs(60 * 60);
 
         assert_eq!(
-            capture_verdict(silent, silent, Duration::from_secs(1)),
+            capture_verdict(
+                silent,
+                silent,
+                Duration::from_secs(1),
+                CAPTURE_STALL_TIMEOUT
+            ),
             CaptureVerdict::Healthy
         );
     }

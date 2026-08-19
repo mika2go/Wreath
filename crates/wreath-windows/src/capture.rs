@@ -27,24 +27,55 @@ pub struct CapturedFrame {
 #[cfg(target_os = "windows")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureInfo {
+    pub label: String,
     pub monitor: String,
     pub width: u32,
     pub height: u32,
 }
 
 #[cfg(target_os = "windows")]
-pub struct MonitorCapture {
+#[derive(Debug, Clone)]
+pub enum CaptureSource {
+    Monitor {
+        handle: windows::Win32::Graphics::Gdi::HMONITOR,
+        name: String,
+    },
+    Window {
+        handle: windows::Win32::Foundation::HWND,
+        title: String,
+        monitor: String,
+    },
+}
+
+#[cfg(target_os = "windows")]
+impl CaptureSource {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Monitor { name, .. } => name,
+            Self::Window { title, .. } => title,
+        }
+    }
+
+    pub fn monitor(&self) -> &str {
+        match self {
+            Self::Monitor { name, .. } => name,
+            Self::Window { monitor, .. } => monitor,
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub struct SourceCapture {
     frame_pool: Direct3D11CaptureFramePool,
     session: GraphicsCaptureSession,
     frame_arrived_token: i64,
 }
 
 #[cfg(target_os = "windows")]
-impl MonitorCapture {
-    pub fn start_primary(
+impl SourceCapture {
+    pub fn start(
         device: &ID3D11Device,
-        monitor: windows::Win32::Graphics::Gdi::HMONITOR,
-        monitor_name: &str,
+        source: &CaptureSource,
         frames_per_second: u16,
         capture_cursor: bool,
     ) -> Result<(Self, CaptureInfo, Receiver<CapturedFrame>), VideoError> {
@@ -69,13 +100,17 @@ impl MonitorCapture {
 
         let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
             .map_err(initialization_error)?;
-        let item: GraphicsCaptureItem =
-            unsafe { interop.CreateForMonitor(monitor) }.map_err(initialization_error)?;
+        let item: GraphicsCaptureItem = match source {
+            CaptureSource::Monitor { handle, .. } => unsafe { interop.CreateForMonitor(*handle) },
+            CaptureSource::Window { handle, .. } => unsafe { interop.CreateForWindow(*handle) },
+        }
+        .map_err(initialization_error)?;
         let size = item.Size().map_err(initialization_error)?;
         if size.Width <= 0 || size.Height <= 0 {
-            return Err(VideoError::Initialization(
-                "primary monitor has invalid dimensions".into(),
-            ));
+            return Err(VideoError::Initialization(format!(
+                "{} has invalid dimensions",
+                source.label()
+            )));
         }
 
         let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
@@ -135,7 +170,8 @@ impl MonitorCapture {
                 frame_arrived_token,
             },
             CaptureInfo {
-                monitor: monitor_name.into(),
+                label: source.label().into(),
+                monitor: source.monitor().into(),
                 width: size.Width as u32,
                 height: size.Height as u32,
             },
@@ -145,7 +181,7 @@ impl MonitorCapture {
 }
 
 #[cfg(target_os = "windows")]
-impl Drop for MonitorCapture {
+impl Drop for SourceCapture {
     fn drop(&mut self) {
         let _ = self.frame_pool.RemoveFrameArrived(self.frame_arrived_token);
         let _ = self.session.Close();

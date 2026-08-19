@@ -64,6 +64,8 @@ pub enum Response {
         state: DaemonState,
         monitor: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         codec: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         adapter: Option<GraphicsAdapter>,
@@ -151,6 +153,7 @@ mod tests {
         let response = Response::Status {
             state: DaemonState::Recording,
             monitor: Some("DISPLAY-1".into()),
+            source: Some("osu! on DISPLAY-1".into()),
             codec: Some("h264".into()),
             adapter: Some(GraphicsAdapter {
                 name: "Example GPU".into(),
@@ -179,6 +182,7 @@ mod tests {
             Response::Status {
                 state: DaemonState::Recording,
                 monitor: Some("DISPLAY-1".into()),
+                source: None,
                 codec: None,
                 adapter: None,
                 replay_bytes: None,

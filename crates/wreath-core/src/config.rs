@@ -117,6 +117,8 @@ pub struct CaptureConfig {
     pub codec: Codec,
     pub quality: u8,
     pub cursor: bool,
+    pub follow_game: bool,
+    pub games: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -189,6 +191,8 @@ impl Default for CaptureConfig {
             codec: Codec::Auto,
             quality: 75,
             cursor: true,
+            follow_game: true,
+            games: Vec::new(),
         }
     }
 }

@@ -137,6 +137,7 @@ pub fn run() -> Result<(), String> {
                             PipelineRunState::Error => DaemonState::Error,
                         },
                         monitor: status.monitor,
+                        source: status.source,
                         codec: status.codec.map(|codec| codec.as_str().to_owned()),
                         adapter: status.adapter.map(|adapter| GraphicsAdapter {
                             name: adapter.name,
@@ -151,6 +152,7 @@ pub fn run() -> Result<(), String> {
                 None => Response::Status {
                     state: DaemonState::Error,
                     monitor: None,
+                    source: None,
                     codec: None,
                     adapter: None,
                     replay_bytes: None,

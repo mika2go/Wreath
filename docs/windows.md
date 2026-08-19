@@ -49,6 +49,36 @@ the obvious way works instead of being acknowledged and ignored. What no
 registration can repair is elevation: Windows withholds
 the shortcut from an unelevated recorder while an elevated window is in the
 foreground, so the log records at startup which of the two the recorder is.
+Games that ship an anti-cheat are that foreground window, which is why the tray
+offers an autostart with administrator rights: it registers a logon task that
+starts the tray elevated, the only way there without a prompt at every logon.
+The prompt appears once, when the task is registered or removed. The task and
+the `Run` entry do the same job, so one replaces the other rather than joining
+it, and the plain toggle says so instead of arranging two trays at logon.
+
+What is recorded is decided once a second rather than once at startup. The
+foreground window is traced back to its process and graded: a configured entry,
+a known executable, an Unreal shipping build, an install root under Steam, Epic,
+Riot, Roblox, Xbox or Battle.net, a game runtime such as UnityPlayer or an
+anti-cheat module, or Windows' own GameConfigStore make a game certain, while
+Direct3D plus a controller runtime plus a borderless window that fills the
+monitor only make one likely. The shell, the browsers, the launchers and Wreath
+itself are denied before any of that is weighed, and module evidence is read
+where a process allows it and simply missing where an anti-cheat does not, so no
+rule leans on it alone.
+
+A certain game that runs in a real window is recorded as that window, which is
+what keeps the desktop around a windowed osu! or Roblox out of the clip. A game
+whose window fills its monitor is recorded as that monitor instead, because the
+picture is the same one and a monitor keeps delivering where a window item does
+not. Everything else — a likely game, a tiny window, no game at all — is the
+configured or primary monitor, so there is always something to save. The watch
+holds on to the game it found until the window or the process is gone, so
+alt-tabbing to a browser neither ends the recording nor empties the ring, and a
+game that quits hands capture back to the screen within the second. Set
+`follow_game = false` under `[capture]` in `config.toml` to pin capture to the
+configured monitor, and list executables or full paths under `games` to teach
+Wreath something it does not recognize.
 
 Capture itself is watched the same way, because Windows Graphics Capture also
 stops without saying so. A display that went to sleep, a session switch, a
@@ -56,10 +86,28 @@ driver that reset, a monitor whose mode changed: some of those close the session
 and some only end the frames, and from inside the recorder a dead session looks
 exactly like a screen that is holding still. A minute without a frame is
 therefore answered with a new capture session rather than an error — it costs
-milliseconds and delivers the current screen at once. Left alone, that silence
+milliseconds and delivers the current screen at once. A minute is the patience a
+desktop deserves and far more than a game does: a game repaints constantly, so
+five silent seconds already mean capture is broken while the ring quietly keeps
+the screen from before. A recorded game is given those five seconds, and the
+answer is not only a new session on the same item — capture switches to the
+other way of reaching the same game, from its monitor to its window or back,
+because an exclusive fullscreen that starves one of the two can leave the other
+working. Two switches are allowed before it settles into plain session restarts,
+so a game that cannot be captured at all does not rebuild the encoder forever. Left alone, that silence
 is what a machine idling overnight comes back to: audio keeps filling the ring,
 the last video is pushed out of it, and the shortcut can only report that there
-is nothing to save. Two faults are not a stall and are reported as errors for
+is nothing to save. A changed mode is answered before the frames stop: the
+selected display is measured once a second, and a resolution that no longer
+matches rebuilds capture, converter and encoder for the new one within that
+second. A fullscreen game that switches the desktop to its own resolution is the
+ordinary case for that, and it used to end the run and leave the shortcut
+without a pipeline until the next recovery tick thirty seconds later. The replay
+starts over at the new resolution, because one clip cannot carry two of them,
+but the recorder never leaves its recording state. Frames whose size the encoder
+was not built for are dropped instead of encoded and do not count as capture
+activity, so a mode change that shows up in the frames alone still runs into the
+stall and rebuilds. Two faults are not a stall and are reported as errors for
 the recovery path to rebuild: a graphics device that was lost, and an encoder
 that accepts frames for thirty seconds without returning one.
 

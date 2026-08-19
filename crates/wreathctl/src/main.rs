@@ -135,6 +135,7 @@ fn run() -> Result<(), String> {
         Response::Status {
             state,
             monitor,
+            source,
             codec,
             adapter,
             replay_bytes,
@@ -142,7 +143,8 @@ fn run() -> Result<(), String> {
             error,
         } => {
             println!(
-                "{state:?}: monitor={}, buffer={}s",
+                "{state:?}: recording={}, monitor={}, buffer={}s",
+                source.as_deref().unwrap_or("none"),
                 monitor.as_deref().unwrap_or("none"),
                 buffered_seconds
             );
