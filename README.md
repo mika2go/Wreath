@@ -1,5 +1,19 @@
 # Wreath
 
+> [!IMPORTANT]
+> **Windows is the focus.** The Windows build is where the work happens and
+> where every release is tested: capture, tray, clip library, trimming,
+> settings and the signed-in-progress installer are complete there.
+>
+> **Linux works, its frontend does not.** The recorder, `wreathctl` and capture
+> on Hyprland and KDE are in daily use, but the GTK4 window is unfinished and
+> stays that way while the focus is on Windows. Drive Wreath from `wreathctl`
+> and a desktop shortcut there, and treat the window as a preview.
+>
+> Wreath is young on both platforms. It works on the hardware it has been
+> tested on, and each release covers a little more of it. If a session is
+> irreplaceable, keep a second recorder running as well.
+
 Wreath sits in the background and remembers the last half minute. When something
 worth keeping happens, you press one key and it writes the clip. Nothing is
 uploaded, there is no account, and the recording never leaves your machine.
@@ -10,11 +24,6 @@ It runs on Windows 10 and 11, and on Arch-based Linux.
 [Install on Linux](#linux-arch--cachyos) ·
 [Documentation](docs/install.md) ·
 [Report an issue](https://github.com/mika2go/Wreath/issues)
-
-> [!NOTE]
-> Wreath is young. It works on the hardware it has been tested on, and each
-> release covers a little more of it. If a session is irreplaceable, keep a
-> second recorder running as well.
 
 ## What it does
 
@@ -38,9 +47,10 @@ decisions below follow from it.
   Cuts land on a keyframe and copy the streams, so trimming does not re-encode
   unless the cut point leaves no choice.
 - **Native, on both platforms.** The Windows interface is Direct2D and
-  DirectWrite; the Linux recorder is a small background service with a separate
-  GTK4 window that exits when you close it. No Electron, no browser engine, no
-  telemetry, no upload client.
+  DirectWrite and covers the whole product. The Linux recorder is a small
+  background service with a separate GTK4 window; that window is still
+  unfinished, so `wreathctl` is what covers the parts it is missing. No
+  Electron, no browser engine, no telemetry, no upload client.
 
 ## Footprint
 
@@ -109,7 +119,9 @@ The full command set, the log format and the diagnostics live in
 ## Linux (Arch / CachyOS)
 
 The installer targets Arch and Arch-based distributions. Hyprland and KDE Plasma
-are the desktops that get tested.
+are the desktops that get tested. The recorder is complete here; the GTK4 window
+is not, so everything below drives Wreath through `wreathctl` and a desktop
+shortcut.
 
 Run it as your normal desktop user — not through `sudo`:
 
@@ -147,11 +159,15 @@ in the [Linux installation guide](docs/install.md).
 
 | Platform | Capture backend | Replay shortcut | Status |
 | --- | --- | --- | --- |
-| Windows 10 / 11 | Windows Graphics Capture, D3D11, Media Foundation, WASAPI | Native `Ctrl+Alt+R` | Active preview |
+| Windows 10 / 11 | Windows Graphics Capture, D3D11, Media Foundation, WASAPI | Native `Ctrl+Alt+R` | Focus platform |
 | Hyprland / Wayland | GPU Screen Recorder, direct monitor or portal | Registered automatically | Primary Linux target |
 | KDE Plasma / Wayland | GPU Screen Recorder, direct monitor or portal | Set up in Plasma | Tested |
 | KDE Plasma / X11 | GPU Screen Recorder, direct monitor | Set up in Plasma | Tested |
 | Other Linux desktops | Recorder-discovered target or desktop portal | Set up in the desktop | Best effort |
+
+The Linux rows describe the recorder, which is what carries capture there. The
+Linux interface is a separate matter: it is unfinished, and `wreathctl` covers
+what it does not do yet.
 
 ## Where your data lives
 
