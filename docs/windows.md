@@ -59,7 +59,17 @@ therefore answered with a new capture session rather than an error — it costs
 milliseconds and delivers the current screen at once. Left alone, that silence
 is what a machine idling overnight comes back to: audio keeps filling the ring,
 the last video is pushed out of it, and the shortcut can only report that there
-is nothing to save. Two faults are not a stall and are reported as errors for
+is nothing to save. A changed mode is answered before the frames stop: the
+selected display is measured once a second, and a resolution that no longer
+matches rebuilds capture, converter and encoder for the new one within that
+second. A fullscreen game that switches the desktop to its own resolution is the
+ordinary case for that, and it used to end the run and leave the shortcut
+without a pipeline until the next recovery tick thirty seconds later. The replay
+starts over at the new resolution, because one clip cannot carry two of them,
+but the recorder never leaves its recording state. Frames whose size the encoder
+was not built for are dropped instead of encoded and do not count as capture
+activity, so a mode change that shows up in the frames alone still runs into the
+stall and rebuilds. Two faults are not a stall and are reported as errors for
 the recovery path to rebuild: a graphics device that was lost, and an encoder
 that accepts frames for thirty seconds without returning one.
 
