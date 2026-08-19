@@ -34,6 +34,7 @@ const COMMAND_OPEN_CLIPS: usize = 103;
 const COMMAND_OPEN_CONFIG: usize = 104;
 const COMMAND_TOGGLE_AUTOSTART: usize = 105;
 const COMMAND_RELOAD_CONFIG: usize = 106;
+const COMMAND_TOGGLE_ELEVATED: usize = 107;
 const COMMAND_EXIT: usize = 109;
 
 struct AppState {
@@ -227,8 +228,19 @@ fn handle_command(window: HWND, command: usize) {
             }
         }
         COMMAND_TOGGLE_AUTOSTART => {
+            if crate::autostart::elevated_is_enabled() {
+                notify_error(window, strings(window).tray_elevated_blocks_autostart);
+                return;
+            }
             let enable = !crate::autostart::is_enabled();
             match crate::autostart::set_enabled(enable) {
+                Ok(()) => {}
+                Err(error) => notify_error(window, &error),
+            }
+        }
+        COMMAND_TOGGLE_ELEVATED => {
+            let enable = !crate::autostart::elevated_is_enabled();
+            match crate::autostart::set_elevated(enable) {
                 Ok(()) => {}
                 Err(error) => notify_error(window, &error),
             }
@@ -402,13 +414,23 @@ fn show_menu(window: HWND) {
     append_item(menu, COMMAND_OPEN_CLIPS, text.tray_open_clips);
     append_item(menu, COMMAND_OPEN_CONFIG, text.tray_open_config);
     append_item(menu, COMMAND_RELOAD_CONFIG, text.tray_reload_config);
+    let elevated = crate::autostart::elevated_is_enabled();
     append_item(
         menu,
         COMMAND_TOGGLE_AUTOSTART,
-        if crate::autostart::is_enabled() {
+        if crate::autostart::is_enabled() || elevated {
             text.tray_autostart_disable
         } else {
             text.tray_autostart_enable
+        },
+    );
+    append_item(
+        menu,
+        COMMAND_TOGGLE_ELEVATED,
+        if elevated {
+            text.tray_elevated_disable
+        } else {
+            text.tray_elevated_enable
         },
     );
     append_separator(menu);
