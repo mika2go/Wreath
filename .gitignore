@@ -10,3 +10,6 @@ graphify-out/
 /packaging/src/
 /packaging/*-git/
 /packaging/*.pkg.tar.*
+
+# scratch directory of the local design tooling
+.impeccable/
