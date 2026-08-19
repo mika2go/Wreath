@@ -50,6 +50,30 @@ registration can repair is elevation: Windows withholds
 the shortcut from an unelevated recorder while an elevated window is in the
 foreground, so the log records at startup which of the two the recorder is.
 
+What is recorded is decided once a second rather than once at startup. The
+foreground window is traced back to its process and graded: a configured entry,
+a known executable, an Unreal shipping build, an install root under Steam, Epic,
+Riot, Roblox, Xbox or Battle.net, a game runtime such as UnityPlayer or an
+anti-cheat module, or Windows' own GameConfigStore make a game certain, while
+Direct3D plus a controller runtime plus a borderless window that fills the
+monitor only make one likely. The shell, the browsers, the launchers and Wreath
+itself are denied before any of that is weighed, and module evidence is read
+where a process allows it and simply missing where an anti-cheat does not, so no
+rule leans on it alone.
+
+A certain game that runs in a real window is recorded as that window, which is
+what keeps the desktop around a windowed osu! or Roblox out of the clip. A game
+whose window fills its monitor is recorded as that monitor instead, because the
+picture is the same one and a monitor keeps delivering where a window item does
+not. Everything else — a likely game, a tiny window, no game at all — is the
+configured or primary monitor, so there is always something to save. The watch
+holds on to the game it found until the window or the process is gone, so
+alt-tabbing to a browser neither ends the recording nor empties the ring, and a
+game that quits hands capture back to the screen within the second. Set
+`follow_game = false` under `[capture]` in `config.toml` to pin capture to the
+configured monitor, and list executables or full paths under `games` to teach
+Wreath something it does not recognize.
+
 Capture itself is watched the same way, because Windows Graphics Capture also
 stops without saying so. A display that went to sleep, a session switch, a
 driver that reset, a monitor whose mode changed: some of those close the session
