@@ -49,6 +49,12 @@ the obvious way works instead of being acknowledged and ignored. What no
 registration can repair is elevation: Windows withholds
 the shortcut from an unelevated recorder while an elevated window is in the
 foreground, so the log records at startup which of the two the recorder is.
+Games that ship an anti-cheat are that foreground window, which is why the tray
+offers an autostart with administrator rights: it registers a logon task that
+starts the tray elevated, the only way there without a prompt at every logon.
+The prompt appears once, when the task is registered or removed. The task and
+the `Run` entry do the same job, so one replaces the other rather than joining
+it, and the plain toggle says so instead of arranging two trays at logon.
 
 What is recorded is decided once a second rather than once at startup. The
 foreground window is traced back to its process and graded: a configured entry,
@@ -80,7 +86,15 @@ driver that reset, a monitor whose mode changed: some of those close the session
 and some only end the frames, and from inside the recorder a dead session looks
 exactly like a screen that is holding still. A minute without a frame is
 therefore answered with a new capture session rather than an error — it costs
-milliseconds and delivers the current screen at once. Left alone, that silence
+milliseconds and delivers the current screen at once. A minute is the patience a
+desktop deserves and far more than a game does: a game repaints constantly, so
+five silent seconds already mean capture is broken while the ring quietly keeps
+the screen from before. A recorded game is given those five seconds, and the
+answer is not only a new session on the same item — capture switches to the
+other way of reaching the same game, from its monitor to its window or back,
+because an exclusive fullscreen that starves one of the two can leave the other
+working. Two switches are allowed before it settles into plain session restarts,
+so a game that cannot be captured at all does not rebuild the encoder forever. Left alone, that silence
 is what a machine idling overnight comes back to: audio keeps filling the ring,
 the last video is pushed out of it, and the shortcut can only report that there
 is nothing to save. A changed mode is answered before the frames stop: the
