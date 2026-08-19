@@ -16,6 +16,33 @@ const HEALTH_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 const CAPTURE_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 #[cfg(target_os = "windows")]
 const TARGET_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetVerdict {
+    Keep,
+    Rebuild,
+    WaitForStableSize,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn target_verdict(
+    switched: bool,
+    resized: bool,
+    window_target: bool,
+    size_already_seen: bool,
+) -> TargetVerdict {
+    if switched {
+        return TargetVerdict::Rebuild;
+    }
+    if !resized {
+        return TargetVerdict::Keep;
+    }
+    if window_target && !size_already_seen {
+        return TargetVerdict::WaitForStableSize;
+    }
+    TargetVerdict::Rebuild
+}
 #[cfg(any(target_os = "windows", test))]
 const ENCODER_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -889,36 +916,42 @@ fn run_pipeline(
                 let target = resolve_target(&config, &mut watch)?;
                 let switched = target.identity != stage.identity;
                 let resized = target.probe_size != stage.probe_size;
-                let settled = matches!(target.identity, TargetIdentity::Monitor(_))
-                    || pending_size == Some(target.probe_size);
-                if switched || (resized && settled) {
-                    if switched {
-                        wreath_core::diagnostic!(
-                            "Wreath capture: recording moves from {} to {}",
-                            stage.describe(),
-                            target.game.as_deref().unwrap_or(target.source.label())
-                        );
-                    } else {
-                        wreath_core::diagnostic!(
-                            "Wreath capture: {} changed to {}x{}, rebuilding the capture pipeline",
-                            stage.describe(),
-                            target.probe_size.0,
-                            target.probe_size.1
-                        );
+                match target_verdict(
+                    switched,
+                    resized,
+                    matches!(target.identity, TargetIdentity::Window(_)),
+                    pending_size == Some(target.probe_size),
+                ) {
+                    TargetVerdict::Keep => pending_size = None,
+                    TargetVerdict::WaitForStableSize => pending_size = Some(target.probe_size),
+                    TargetVerdict::Rebuild => {
+                        if switched {
+                            wreath_core::diagnostic!(
+                                "Wreath capture: recording moves from {} to {}",
+                                stage.describe(),
+                                target.game.as_deref().unwrap_or(target.source.label())
+                            );
+                        } else {
+                            wreath_core::diagnostic!(
+                                "Wreath capture: {} changed to {}x{}, rebuilding the capture pipeline",
+                                stage.describe(),
+                                target.probe_size.0,
+                                target.probe_size.1
+                            );
+                        }
+                        pending_size = None;
+                        stage = rebuild_stage(
+                            &context,
+                            stage,
+                            target,
+                            &mut audio,
+                            &mut buffer,
+                            status,
+                            &mut health,
+                        )?;
+                        continue;
                     }
-                    pending_size = None;
-                    stage = rebuild_stage(
-                        &context,
-                        stage,
-                        target,
-                        &mut audio,
-                        &mut buffer,
-                        status,
-                        &mut health,
-                    )?;
-                    continue;
                 }
-                pending_size = resized.then_some(target.probe_size);
             }
             match health.check(context.runtime)? {
                 CaptureAction::Continue => {}
@@ -1436,6 +1469,50 @@ fn estimated_buffer_bytes(bitrate_kbps: u32, duration_seconds: u16) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_target_is_rebuilt_at_once() {
+        assert_eq!(
+            target_verdict(true, false, true, false),
+            TargetVerdict::Rebuild
+        );
+        assert_eq!(
+            target_verdict(true, true, true, false),
+            TargetVerdict::Rebuild
+        );
+    }
+
+    #[test]
+    fn an_unchanged_target_is_left_alone() {
+        assert_eq!(
+            target_verdict(false, false, false, false),
+            TargetVerdict::Keep
+        );
+        assert_eq!(
+            target_verdict(false, false, true, true),
+            TargetVerdict::Keep
+        );
+    }
+
+    #[test]
+    fn a_display_mode_change_does_not_wait() {
+        assert_eq!(
+            target_verdict(false, true, false, false),
+            TargetVerdict::Rebuild
+        );
+    }
+
+    #[test]
+    fn a_window_has_to_hold_its_new_size_for_one_probe() {
+        assert_eq!(
+            target_verdict(false, true, true, false),
+            TargetVerdict::WaitForStableSize
+        );
+        assert_eq!(
+            target_verdict(false, true, true, true),
+            TargetVerdict::Rebuild
+        );
+    }
 
     #[test]
     fn replay_memory_has_a_floor_and_accepts_its_limit() {
