@@ -51,10 +51,11 @@ pub enum Theme {
     Dark,
     Light,
     Cafe,
+    Pink,
 }
 
 impl Theme {
-    pub const OPTIONS: [Self; 3] = [Self::Dark, Self::Light, Self::Cafe];
+    pub const OPTIONS: [Self; 4] = [Self::Dark, Self::Light, Self::Cafe, Self::Pink];
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

@@ -472,6 +472,7 @@ pub const fn theme_label(theme: Theme, text: &Strings) -> &'static str {
         Theme::Dark => text.theme_dark,
         Theme::Light => text.theme_light,
         Theme::Cafe => text.theme_cafe,
+        Theme::Pink => text.theme_pink,
     }
 }
 

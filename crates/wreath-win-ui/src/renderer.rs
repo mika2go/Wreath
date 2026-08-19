@@ -136,11 +136,33 @@ const CAFE_PALETTE: Palette = Palette {
     live: 0x7f9b6f,
 };
 
+const PINK_PALETTE: Palette = Palette {
+    canvas: 0x0d0b0c,
+    rail: 0x100d0f,
+    stage: 0x100e10,
+    surface: 0x151217,
+    surface_raised: 0x19151b,
+    surface_hover: 0x1f1a21,
+    border: 0x2e2430,
+    hairline: 0x231d26,
+    card: 0x121014,
+    primary: 0xf4ecf1,
+    secondary: 0xaea3ac,
+    muted: 0x807480,
+    accent: 0xe8659c,
+    accent_hover: 0xf47fb1,
+    accent_text: 0x120a0e,
+    selection: 0x40303c,
+    destructive: 0xdccfd7,
+    live: 0xe8659c,
+};
+
 pub const fn palette_for(theme: Theme) -> Palette {
     match theme {
         Theme::Dark => DARK_PALETTE,
         Theme::Light => LIGHT_PALETTE,
         Theme::Cafe => CAFE_PALETTE,
+        Theme::Pink => PINK_PALETTE,
     }
 }
 
@@ -6225,7 +6247,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_cafe_theme_spends_an_accent_on_live_indicators() {
+    fn only_the_tinted_themes_spend_an_accent_on_live_indicators() {
         assert_eq!(
             palette_for(Theme::Dark).live,
             palette_for(Theme::Dark).primary
@@ -6237,6 +6259,10 @@ mod tests {
         assert_ne!(
             palette_for(Theme::Cafe).live,
             palette_for(Theme::Cafe).primary
+        );
+        assert_ne!(
+            palette_for(Theme::Pink).live,
+            palette_for(Theme::Pink).primary
         );
     }
 

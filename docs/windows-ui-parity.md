@@ -23,14 +23,17 @@ The interface is a quiet desktop utility: the video thumbnails carry all colour,
 everything around them stays neutral. Gradients, glow, and decorative artwork
 are out of scope.
 
-Three palettes ship, chosen in the settings and applied without a restart:
+Four palettes ship, chosen in the settings and applied without a restart:
 
 - **Dark** (default): neutral near-black, the reference palette below.
 - **Light**: cool paper greys, white surfaces, near-black primary button, and a
   light window frame; the title bar follows the theme.
 - **Café**: the same structure with a warm cast in text and accents plus one
   restrained sage accent, used only for live indicators (the replay dot and the
-  microphone meter). Every other palette keeps those neutral.
+  microphone meter).
+- **Pink**: the same structure with a cool rose cast in surfaces and text, and a
+  pink accent that carries the primary button, active navigation, focus strokes
+  and the live indicators. Dark and Light keep all of those neutral.
 
 Hover feedback is personalised: surface, outline or both, at off, subtle, normal
 or strong. Text buttons keep a minimal colour change so they stay recognisable.
