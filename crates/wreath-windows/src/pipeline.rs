@@ -732,9 +732,10 @@ impl VideoStage {
     }
 
     fn describe(&self) -> String {
-        match &self.game {
-            Some(game) => format!("{} on {}", game, self.info.label),
-            None => self.info.label.clone(),
+        match (&self.game, &self.identity) {
+            (Some(game), TargetIdentity::Window(_)) => format!("the {game} window"),
+            (Some(game), TargetIdentity::Monitor(monitor)) => format!("{game} on {monitor}"),
+            (None, _) => self.info.monitor.clone(),
         }
     }
 }
@@ -753,12 +754,7 @@ fn resolve_target(
         && let Some((monitor_name, monitor_width, monitor_height)) =
             crate::display::monitor_details(monitor)
     {
-        let title = game.title.trim();
-        let label = if title.is_empty() {
-            game.executable.clone()
-        } else {
-            title.to_owned()
-        };
+        let label = crate::game::display_name(&game.title, &game.executable);
         return Ok(
             match crate::game::window_usability(&game.facts, game.confidence) {
                 WindowUsability::Capturable => DesiredTarget {
@@ -766,10 +762,10 @@ fn resolve_target(
                     probe_size: (game.facts.width, game.facts.height),
                     source: CaptureSource::Window {
                         handle: game.window,
-                        title: label,
+                        title: label.clone(),
                         monitor: monitor_name,
                     },
-                    game: Some(game.executable),
+                    game: Some(label),
                 },
                 WindowUsability::CoversMonitor | WindowUsability::TooSmall => DesiredTarget {
                     identity: TargetIdentity::Monitor(monitor_name.clone()),
@@ -778,7 +774,7 @@ fn resolve_target(
                         handle: monitor,
                         name: monitor_name,
                     },
-                    game: Some(game.executable),
+                    game: Some(label),
                 },
             },
         );

@@ -289,7 +289,7 @@ fn refresh_status(window: HWND) {
         Ok(Response::Status {
             state,
             monitor,
-            source: _,
+            source,
             codec,
             adapter,
             replay_bytes: _,
@@ -323,9 +323,12 @@ fn refresh_status(window: HWND) {
                     .map(|adapter| adapter.name.as_str())
                     .unwrap_or("no adapter");
                 format!(
-                    "wreath — {state} — {codec} — {adapter} — {}s — {}",
-                    buffered_seconds,
-                    monitor.as_deref().unwrap_or("no display")
+                    "wreath — {state} — {} — {codec} — {adapter} — {}s",
+                    source
+                        .as_deref()
+                        .or(monitor.as_deref())
+                        .unwrap_or("no display"),
+                    buffered_seconds
                 )
             }
         }

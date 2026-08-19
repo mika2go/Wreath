@@ -212,6 +212,19 @@ fn has_module(modules: &[String], wanted: &[&str]) -> bool {
 }
 
 #[cfg(any(target_os = "windows", test))]
+const LONGEST_DISPLAY_NAME: usize = 40;
+
+#[cfg(any(target_os = "windows", test))]
+pub fn display_name(title: &str, executable: &str) -> String {
+    let title = title.trim();
+    let name = if title.is_empty() { executable } else { title };
+    match name.char_indices().nth(LONGEST_DISPLAY_NAME) {
+        Some((end, _)) => format!("{}…", &name[..end]),
+        None => name.to_owned(),
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
 pub fn covers_monitor(window: &WindowFacts) -> bool {
     if window.monitor_width == 0 || window.monitor_height == 0 {
         return false;
@@ -760,6 +773,19 @@ mod tests {
             window_usability(&tiny, GameConfidence::Certain),
             WindowUsability::TooSmall
         );
+    }
+
+    #[test]
+    fn the_window_title_names_the_game_and_the_executable_stands_in() {
+        assert_eq!(
+            display_name("  Marvel Rivals  ", "Marvel-Win64-Shipping.exe"),
+            "Marvel Rivals"
+        );
+        assert_eq!(display_name("   ", "osu!.exe"), "osu!.exe");
+        let long = "A".repeat(60);
+        let shortened = display_name(&long, "game.exe");
+        assert_eq!(shortened.chars().count(), LONGEST_DISPLAY_NAME + 1);
+        assert!(shortened.ends_with('…'));
     }
 
     #[test]
