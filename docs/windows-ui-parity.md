@@ -23,7 +23,7 @@ The interface is a quiet desktop utility: the video thumbnails carry all colour,
 everything around them stays neutral. Gradients, glow, and decorative artwork
 are out of scope.
 
-Four palettes ship, chosen in the settings and applied without a restart:
+Five palettes ship, chosen in the settings and applied without a restart:
 
 - **Dark** (default): neutral near-black, the reference palette below.
 - **Light**: cool paper greys, white surfaces, near-black primary button, and a
@@ -34,6 +34,9 @@ Four palettes ship, chosen in the settings and applied without a restart:
 - **Pink**: the same structure with a cool rose cast in surfaces and text, and a
   pink accent that carries the primary button, active navigation, focus strokes
   and the live indicators. Dark and Light keep all of those neutral.
+- **Candy**: the bright counterpart to Pink — a candy-pink canvas, white cards,
+  a deep raspberry accent for text and strokes, and a hot pink live indicator.
+  It carries a light window frame, like Light.
 
 Hover feedback is personalised: surface, outline or both, at off, subtle, normal
 or strong. Text buttons keep a minimal colour change so they stay recognisable.
