@@ -45,6 +45,38 @@ pub fn select_display(configured: Option<&str>) -> Result<NativeDisplay, crate::
 }
 
 #[cfg(target_os = "windows")]
+pub fn monitor_details(
+    handle: windows::Win32::Graphics::Gdi::HMONITOR,
+) -> Option<(String, u32, u32)> {
+    use std::mem::size_of;
+
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO, MONITORINFOEXW};
+
+    let mut info = MONITORINFOEXW::default();
+    info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+    let read = unsafe {
+        GetMonitorInfoW(
+            handle,
+            (&mut info as *mut MONITORINFOEXW).cast::<MONITORINFO>(),
+        )
+    };
+    if !read.as_bool() {
+        return None;
+    }
+    let end = info
+        .szDevice
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(info.szDevice.len());
+    let rectangle = info.monitorInfo.rcMonitor;
+    Some((
+        String::from_utf16_lossy(&info.szDevice[..end]),
+        u32::try_from(rectangle.right.saturating_sub(rectangle.left)).unwrap_or_default(),
+        u32::try_from(rectangle.bottom.saturating_sub(rectangle.top)).unwrap_or_default(),
+    ))
+}
+
+#[cfg(target_os = "windows")]
 pub fn displays() -> Result<Vec<DisplayTarget>, crate::video::VideoError> {
     enumerate_native_displays()
         .map(|displays| displays.into_iter().map(|display| display.target).collect())

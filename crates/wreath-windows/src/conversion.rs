@@ -23,10 +23,11 @@ impl GpuColorConverter {
     pub fn initialize(
         device: &windows::Win32::Graphics::Direct3D11::ID3D11Device,
         context: &windows::Win32::Graphics::Direct3D11::ID3D11DeviceContext,
-        width: u32,
-        height: u32,
+        source: (u32, u32),
+        encoded: (u32, u32),
         frames_per_second: u16,
     ) -> Result<Self, VideoError> {
+        use windows::Win32::Foundation::RECT;
         use windows::Win32::Graphics::Direct3D11::{
             D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
             D3D11_VIDEO_USAGE_PLAYBACK_NORMAL, ID3D11VideoContext, ID3D11VideoDevice,
@@ -34,9 +35,16 @@ impl GpuColorConverter {
         use windows::Win32::Graphics::Dxgi::Common::DXGI_RATIONAL;
         use windows::core::Interface;
 
+        let (source_width, source_height) = source;
+        let (width, height) = encoded;
         if width == 0 || height == 0 || width % 2 != 0 || height % 2 != 0 {
             return Err(VideoError::Initialization(
                 "GPU conversion requires non-zero even dimensions".into(),
+            ));
+        }
+        if source_width < width || source_height < height {
+            return Err(VideoError::Initialization(
+                "GPU conversion cannot encode more than the captured surface holds".into(),
             ));
         }
         let rate = DXGI_RATIONAL {
@@ -46,8 +54,8 @@ impl GpuColorConverter {
         let description = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
             InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
             InputFrameRate: rate,
-            InputWidth: width,
-            InputHeight: height,
+            InputWidth: source_width,
+            InputHeight: source_height,
             OutputFrameRate: rate,
             OutputWidth: width,
             OutputHeight: height,
@@ -59,6 +67,21 @@ impl GpuColorConverter {
             .map_err(initialization_error)?;
         let processor = unsafe { video_device.CreateVideoProcessor(&enumerator, 0) }
             .map_err(initialization_error)?;
+        let encoded_area = RECT {
+            left: 0,
+            top: 0,
+            right: width as i32,
+            bottom: height as i32,
+        };
+        unsafe {
+            video_context.VideoProcessorSetStreamSourceRect(
+                &processor,
+                0,
+                true,
+                Some(&encoded_area),
+            );
+            video_context.VideoProcessorSetStreamDestRect(&processor, 0, true, Some(&encoded_area));
+        }
 
         Ok(Self {
             device: device.clone(),

@@ -224,6 +224,7 @@ impl Daemon {
         Response::Status {
             state: self.state,
             monitor: self.monitor.clone(),
+            source: self.monitor.clone(),
             codec: None,
             adapter: None,
             replay_bytes: None,

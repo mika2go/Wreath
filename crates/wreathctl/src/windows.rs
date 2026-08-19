@@ -225,6 +225,7 @@ fn print_response(response: Response) -> Result<(), String> {
         Response::Status {
             state,
             monitor,
+            source,
             codec,
             adapter,
             replay_bytes,
@@ -232,6 +233,7 @@ fn print_response(response: Response) -> Result<(), String> {
             error,
         } => {
             println!("state    {state:?}");
+            println!("recording {}", source.as_deref().unwrap_or("none"));
             println!("monitor  {}", monitor.as_deref().unwrap_or("none"));
             println!("codec    {}", codec.as_deref().unwrap_or("none"));
             if let Some(adapter) = adapter {

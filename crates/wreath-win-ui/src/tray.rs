@@ -289,6 +289,7 @@ fn refresh_status(window: HWND) {
         Ok(Response::Status {
             state,
             monitor,
+            source: _,
             codec,
             adapter,
             replay_bytes: _,

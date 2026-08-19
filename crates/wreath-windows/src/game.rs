@@ -257,10 +257,14 @@ pub struct GameWindow {
 }
 
 #[cfg(target_os = "windows")]
+const REINSPECTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[cfg(target_os = "windows")]
 pub struct GameWatch {
     configured: Vec<String>,
     windows_game_paths: Vec<String>,
     tracked: Option<(windows::Win32::Foundation::HWND, u32, String)>,
+    rejected: Option<(windows::Win32::Foundation::HWND, std::time::Instant)>,
 }
 
 #[cfg(target_os = "windows")]
@@ -270,6 +274,7 @@ impl GameWatch {
             configured: configured.to_vec(),
             windows_game_paths: windows_game_paths(),
             tracked: None,
+            rejected: None,
         }
     }
 
@@ -279,7 +284,17 @@ impl GameWatch {
         }
         self.tracked = None;
         let foreground = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
-        let game = self.inspect(foreground)?;
+        let now = std::time::Instant::now();
+        if self.rejected.is_some_and(|(window, seen)| {
+            window == foreground && now < seen + REINSPECTION_INTERVAL
+        }) {
+            return None;
+        }
+        let Some(game) = self.inspect(foreground) else {
+            self.rejected = Some((foreground, now));
+            return None;
+        };
+        self.rejected = None;
         self.tracked = Some((game.window, game.process_id, game.executable.clone()));
         wreath_core::diagnostic!(
             "Wreath capture: {} looks like a game ({:?}), its window is {}x{}",
