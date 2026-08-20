@@ -110,6 +110,10 @@ Section "Uninstall"
   !insertmacro StopWreathProcesses
 
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Wreath"
+  ; The autostart is a logon task because Windows starts no elevated executable
+  ; from the Run key. Removing it needs the rights that registered it.
+  nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Delete /TN "Wreath elevated autostart" /F'
+  Pop $1
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Wreath"
   DeleteRegKey /ifempty HKCU "Software\Wreath"
 
