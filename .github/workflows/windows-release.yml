@@ -6,7 +6,7 @@ on:
       version:
         description: Semantic version without the v prefix
         required: true
-        default: 1.2.0
+        default: 1.4.0
         type: string
 
 permissions:
@@ -68,4 +68,4 @@ jobs:
             --repo $env:GITHUB_REPOSITORY `
             --target $env:GITHUB_SHA `
             --title "Wreath $env:RELEASE_VERSION" `
-            --notes "Adds the Pink and Candy palettes to the Windows interface, so the theme list covers dark, light, cafe, and both pink variants, and the window frame now follows the chosen theme instead of a single light palette. Native Windows tests, clippy, release builds, application launch/resize, running-upgrade, NSIS install, and process-cleanup uninstall gates pass."
+            --notes "Wreath now requests administrator rights in the manifest of the recorder, the tray and the application, so the replay shortcut is delivered while a fullscreen game with an anti-cheat holds the foreground instead of being withheld from an unelevated recorder. Autostart is a single logon task that runs the tray with the highest rights, and a Run entry from an earlier version is converted into it on the first start. Native Windows tests, clippy, release builds, application launch/resize, running-upgrade, NSIS install, and process-cleanup uninstall gates pass."

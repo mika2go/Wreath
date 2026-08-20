@@ -46,15 +46,14 @@ machine that keeps stale registration state cannot leave the shortcut dead until
 the next restart. Choosing the shortcut that is already configured is not a
 no-op either: it registers the combination again, so answering a dead shortcut
 the obvious way works instead of being acknowledged and ignored. What no
-registration can repair is elevation: Windows withholds
-the shortcut from an unelevated recorder while an elevated window is in the
-foreground, so the log records at startup which of the two the recorder is.
-Games that ship an anti-cheat are that foreground window, which is why the tray
-offers an autostart with administrator rights: it registers a logon task that
-starts the tray elevated, the only way there without a prompt at every logon.
-The prompt appears once, when the task is registered or removed. The task and
-the `Run` entry do the same job, so one replaces the other rather than joining
-it, and the plain toggle says so instead of arranging two trays at logon.
+registration can repair is elevation: Windows withholds the shortcut from an
+unelevated recorder while an elevated window is in the foreground, and a game
+that ships an anti-cheat is exactly that window. Wreath therefore requests
+administrator rights in the manifest of all three executables, so the recorder,
+the tray and the application always run elevated and the shortcut arrives over a
+fullscreen game instead of being swallowed by it. The log still records at
+startup which of the two the recorder is, because a build started some other way
+would silently be the wrong one.
 
 What is recorded is decided once a second rather than once at startup. The
 foreground window is traced back to its process and graded: a configured entry,
@@ -113,15 +112,15 @@ that accepts frames for thirty seconds without returning one.
 
 The tray opens or focuses the full application and its menu saves a replay,
 pauses or resumes capture, opens clips or the configuration file, and enables
-per-user startup. Enabling startup writes only `wreath-tray.exe` to
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`; it requires no service
-and no administrator rights. Windows can switch that entry off separately in its
-own startup list, which Wreath reports as disabled rather than claiming an
-autostart that never runs. An entry that points at an installation somewhere
-else is pointed back at the tray next to the running executable, because Windows
-starts nothing and says nothing when the path in it no longer exists while
-Wreath keeps reporting autostart as enabled; only an entry that is already there
-is rewritten, so this never switches autostart on by itself. The tray survives a
+per-user startup. Because Windows starts no elevated executable from
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, enabling startup
+registers a logon task named `Wreath elevated autostart` that runs
+`wreath-tray.exe` for the current user with the highest rights; it requires no
+service, and no prompt appears because the tray asking for it is elevated
+already. A `Run` entry the installer wrote, or one left behind by an older
+version, is converted into that task the first time the tray comes up, and an
+entry Windows itself switched off in its startup list is removed instead, so
+turning startup off there keeps it off here. The tray survives a
 logon that beats Explorer to the notification area and an Explorer restart
 afterwards: it keeps trying to place its icon instead of giving up, and starts
 the recorder later if it could not reach it at logon.
@@ -312,9 +311,11 @@ reinstalls while both processes are running, verifies the upgraded app starts
 again, and verifies that uninstalling a running installation stops the app,
 tray, and recorder before removing their executables. The NSIS setup installs
 per user below `%LOCALAPPDATA%\Wreath`
-and adds Start-menu shortcuts for Wreath and its uninstaller. It does not ask for
-administrator rights. The finish page opens the full application, which starts
-the independent tray and recorder. Upgrades stop the old tray-only process
+and adds Start-menu shortcuts for Wreath and its uninstaller. The setup itself
+does not ask for administrator rights; the application does, once per start,
+because the replay shortcut is dead over an anti-cheat game without them. The
+finish page opens the full application, which starts the independent tray and
+recorder. Upgrades stop the old tray-only process
 before replacing files and preserve an existing autostart opt-in by migrating it
 to `wreath-tray.exe`. Autostart remains opt-in from the tray menu on clean
 installations.

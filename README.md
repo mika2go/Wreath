@@ -75,15 +75,19 @@ here so you can check it yourself rather than take the claim on faith.
 
 1. Open the [latest release](https://github.com/mika2go/Wreath/releases/latest).
 2. Download `Wreath-<version>-x64-setup.exe`.
-3. Run it as your normal user. No administrator rights needed.
-4. Start **Wreath** from the Start menu.
+3. Run it as your normal user. The setup needs no administrator rights.
+4. Start **Wreath** from the Start menu and confirm the Windows prompt.
 
 The installer is not code-signed yet, so SmartScreen will warn about it. Only
 download it from the release page linked above. Every release ships a matching
 `Wreath-<version>-x64-build.json` with SHA-256 hashes and the build's evidence.
 
-Everything installs per user under `%LOCALAPPDATA%\Wreath`. Starting with
-Windows is optional and lives in the tray menu.
+Everything installs per user under `%LOCALAPPDATA%\Wreath`. Wreath runs with
+administrator rights: Windows hands a global shortcut to nothing below the
+elevated window of a game with an anti-cheat, so without them the replay key
+would be dead in exactly the games it exists for. Starting with Windows is
+optional, lives in the tray menu, and registers a logon task that skips the
+prompt.
 
 ### Your first replay
 
