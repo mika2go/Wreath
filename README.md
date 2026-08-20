@@ -36,9 +36,10 @@ decisions below follow from it.
 - **H.264, HEVC or AV1**, up to 60 fps. Higher frame rates dropped frames and
   doubled file size at the resolutions people actually record at, so 60 is the
   ceiling rather than a starting point.
-- **Replay length from 5 seconds to 10 minutes**, bounded by a hard 512 MB
-  memory cap. A configuration that would need more than that is rejected up
-  front instead of silently handing you a shorter clip.
+- **Replay length from 5 seconds to 10 minutes**, inside a memory ceiling you
+  set: 128 MB by default, 32 to 512 MB allowed. The recorder holds that budget
+  whatever you record — a replay that does not fit is trimmed at its start, and
+  the log names the seconds the ceiling holds instead of leaving you guessing.
 - **Desktop sound and your microphone in one audio track**, each with its own
   level — the two levels set the balance. You choose which playback device the
   desktop side is captured from, so it does not follow Windows around when the
@@ -112,6 +113,7 @@ wreathctl microphones
 wreathctl outputs
 wreathctl codecs
 wreathctl config duration 30
+wreathctl config memory 128
 wreathctl config codec h264
 wreathctl config microphone default
 wreathctl config desktop-device default

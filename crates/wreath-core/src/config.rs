@@ -119,6 +119,9 @@ pub struct CaptureConfig {
     pub cursor: bool,
     pub follow_game: bool,
     pub games: Vec<String>,
+    /// Hard ceiling for the encoded replay held in memory. The replay is
+    /// trimmed to fit rather than the recorder growing with the resolution.
+    pub memory_megabytes: u16,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -193,6 +196,7 @@ impl Default for CaptureConfig {
             cursor: true,
             follow_game: true,
             games: Vec::new(),
+            memory_megabytes: 128,
         }
     }
 }
@@ -361,6 +365,11 @@ impl Config {
         if self.capture.quality > 100 {
             return Err(ConfigError::Invalid(
                 "quality must be between 0 and 100".into(),
+            ));
+        }
+        if !(32..=512).contains(&self.capture.memory_megabytes) {
+            return Err(ConfigError::Invalid(
+                "replay memory must be between 32 and 512 megabytes".into(),
             ));
         }
         if self.audio.microphone_gain_percent > 200 {

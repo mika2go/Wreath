@@ -112,21 +112,33 @@ impl Default for PipelineStatus {
     }
 }
 
-pub fn replay_memory_budget(estimated_bytes: u64) -> Result<usize, crate::video::VideoError> {
-    if estimated_bytes > MAX_REPLAY_MEMORY_BYTES {
-        return Err(crate::video::VideoError::Initialization(format!(
-            "configured replay needs about {} MB, exceeding the {} MB Windows memory limit; reduce duration, frame rate, resolution, or quality",
-            estimated_bytes.div_ceil(1_048_576),
-            MAX_REPLAY_MEMORY_BYTES / 1_048_576
-        )));
-    }
+/// The configured ceiling wins over the estimate, so the recorder keeps the
+/// same footprint whatever the display does. A replay that does not fit is
+/// trimmed at its start; `replay_seconds_for_budget` says how much survives.
+pub fn replay_memory_budget(
+    estimated_bytes: u64,
+    limit_megabytes: u16,
+) -> Result<usize, crate::video::VideoError> {
+    let limit = u64::from(limit_megabytes)
+        .saturating_mul(1_048_576)
+        .clamp(MIN_REPLAY_MEMORY_BYTES, MAX_REPLAY_MEMORY_BYTES);
     let generous = estimated_bytes.saturating_mul(5) / 2;
-    let budget = generous.clamp(MIN_REPLAY_MEMORY_BYTES, MAX_REPLAY_MEMORY_BYTES);
+    let budget = generous.clamp(MIN_REPLAY_MEMORY_BYTES, limit);
     usize::try_from(budget).map_err(|_| {
         crate::video::VideoError::Initialization(
             "configured replay memory does not fit this Windows process".into(),
         )
     })
+}
+
+/// Seconds the budget holds at this bitrate, for the line that tells the user
+/// their replay is shorter than the duration they configured.
+pub fn replay_seconds_for_budget(budget_bytes: u64, bitrate_kbps: u32) -> u64 {
+    let bytes_per_second = u64::from(bitrate_kbps).saturating_mul(1_000) / 8;
+    if bytes_per_second == 0 {
+        return 0;
+    }
+    budget_bytes / bytes_per_second
 }
 
 #[cfg(target_os = "windows")]
@@ -814,10 +826,18 @@ fn new_replay_buffer(
     audio: Option<&PipelineAudio>,
 ) -> Result<wreath_core::replay_buffer::EncodedReplayBuffer, crate::video::VideoError> {
     let audio_bitrate_kbps = audio.map_or(0, |audio| audio.bytes_per_second() / 125);
-    let memory_budget = replay_memory_budget(estimated_buffer_bytes(
-        video_bitrate_kbps.saturating_add(audio_bitrate_kbps),
-        config.capture.duration_seconds,
-    ))?;
+    let bitrate_kbps = video_bitrate_kbps.saturating_add(audio_bitrate_kbps);
+    let estimated_bytes = estimated_buffer_bytes(bitrate_kbps, config.capture.duration_seconds);
+    let memory_budget = replay_memory_budget(estimated_bytes, config.capture.memory_megabytes)?;
+    if (memory_budget as u64) < estimated_bytes {
+        wreath_core::diagnostic!(
+            "Wreath replay buffer: the {} MB memory limit holds about {} s at {} kbit/s, not the configured {} s; raise the limit or lower resolution, frame rate or quality",
+            config.capture.memory_megabytes,
+            replay_seconds_for_budget(memory_budget as u64, bitrate_kbps),
+            bitrate_kbps,
+            config.capture.duration_seconds
+        );
+    }
     wreath_core::replay_buffer::EncodedReplayBuffer::new(
         std::time::Duration::from_secs(u64::from(config.capture.duration_seconds)),
         memory_budget,
@@ -1613,20 +1633,35 @@ mod tests {
     #[test]
     fn replay_memory_has_a_floor_and_accepts_its_limit() {
         assert_eq!(
-            replay_memory_budget(1).unwrap(),
+            replay_memory_budget(1, 512).unwrap(),
             MIN_REPLAY_MEMORY_BYTES as usize
         );
         assert_eq!(
-            replay_memory_budget(MAX_REPLAY_MEMORY_BYTES).unwrap(),
+            replay_memory_budget(MAX_REPLAY_MEMORY_BYTES, 512).unwrap(),
             MAX_REPLAY_MEMORY_BYTES as usize
         );
     }
 
     #[test]
-    fn replay_memory_rejects_a_silently_shortened_configuration() {
-        let error = replay_memory_budget(MAX_REPLAY_MEMORY_BYTES + 1).unwrap_err();
+    fn the_configured_limit_caps_what_the_settings_would_ask_for() {
+        let four_k_sixty = estimated_buffer_bytes(60_000, 30);
 
-        assert!(error.to_string().contains("exceeding the 512 MB"));
+        assert_eq!(
+            replay_memory_budget(four_k_sixty, 128).unwrap(),
+            128 * 1_048_576
+        );
+        assert_eq!(
+            replay_memory_budget(four_k_sixty, 512).unwrap(),
+            MAX_REPLAY_MEMORY_BYTES as usize
+        );
+    }
+
+    #[test]
+    fn a_capped_budget_reports_the_seconds_it_still_holds() {
+        let budget = replay_memory_budget(estimated_buffer_bytes(60_000, 30), 128).unwrap();
+
+        assert_eq!(replay_seconds_for_budget(budget as u64, 60_000), 17);
+        assert_eq!(replay_seconds_for_budget(budget as u64, 0), 0);
     }
 
     #[test]
@@ -1643,7 +1678,7 @@ mod tests {
     fn the_memory_budget_leaves_room_above_the_nominal_average() {
         let nominal = estimated_buffer_bytes(20_000, 30);
 
-        let budget = replay_memory_budget(nominal).unwrap() as u64;
+        let budget = replay_memory_budget(nominal, 512).unwrap() as u64;
 
         assert!(budget > nominal.saturating_add(nominal / 2));
         assert!(budget <= MAX_REPLAY_MEMORY_BYTES);

@@ -356,6 +356,9 @@ fn configure(arguments: &[String]) -> Result<(), String> {
         "quality" => {
             config.capture.quality = parse_number(value, "quality")?;
         }
+        "memory" => {
+            config.capture.memory_megabytes = parse_number(value, "memory")?;
+        }
         "desktop-gain" => {
             config.audio.desktop_gain_percent = parse_number(value, "desktop-gain")?;
         }
@@ -469,7 +472,7 @@ fn print_help() {
          shutdown  stop the daemon\n\n\
          examples:\n  wreathctl config monitor DP-1\n  wreathctl config hotkey SUPER+SHIFT+R\n  \
          wreathctl config duration 30\n  wreathctl config fps 60\n  \
-         wreathctl config codec av1\n  \
+         wreathctl config codec av1\n  wreathctl config memory 128\n  \
          wreathctl cut ~/Videos/Wreath/clip.mp4 8 20 --name \"Best bit\""
     );
 }
