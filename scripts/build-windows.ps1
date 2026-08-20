@@ -413,7 +413,29 @@ try {
             }
         }
         if (Test-Path -LiteralPath $SmokeInstallDirectory) {
-            Remove-Item -LiteralPath $SmokeInstallDirectory -Recurse -Force
+            # The uninstaller removes its own directory after this script asked
+            # for it, so the handle can outlive every gate above. The gates that
+            # matter already asserted the files and processes are gone; a temp
+            # directory that lingers is not a reason to fail a release.
+            $CleanupDeadline = [DateTime]::UtcNow.AddSeconds(30)
+            do {
+                try {
+                    Remove-Item `
+                        -LiteralPath $SmokeInstallDirectory `
+                        -Recurse `
+                        -Force `
+                        -ErrorAction Stop
+                    break
+                } catch {
+                    Start-Sleep -Milliseconds 500
+                }
+            } while ([DateTime]::UtcNow -lt $CleanupDeadline)
+            if (Test-Path -LiteralPath $SmokeInstallDirectory) {
+                Write-Warning (
+                    "another process still holds the smoke install directory: " +
+                    $SmokeInstallDirectory
+                )
+            }
         }
     }
     if (-not $SmokePassed) {
